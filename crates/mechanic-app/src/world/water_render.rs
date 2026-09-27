@@ -17,8 +17,8 @@ use bevy::render::render_resource::{AsBindGroup, PrimitiveTopology, VertexFormat
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    PoolView, RunningView, TerrainField, WATER_CELL_METRES, WaterBody, WaterCell, WaterFall,
-    WaterSheet, WaterShift, WaterSurface, WaterTile, joined_water_sheet,
+    WATER_CELL_METRES, WaterBody, WaterCell, WaterFall, WaterSheet, WaterShift, WaterSurface,
+    WaterTile, joined_water_sheet,
 };
 
 use super::{WorldOwned, WorldRuntime};
@@ -178,16 +178,14 @@ pub(crate) struct WaterTiles {
     origin: Option<DVec3>,
     /// Where each moved lake and river stood when the tiles were meshed.
     shifts: std::collections::BTreeMap<WaterBody, WaterShift>,
-    /// Each stored pool's entity, and the level and cells it was drawn at.
-    pools: HashMap<u32, (Entity, f64, usize)>,
+    /// Each tile of the stored water's surface: its entity, what it shows,
+    /// and where it is placed from.
+    surface: HashMap<(i32, i32), (Entity, u64, DVec3)>,
+    /// Floating origin the surface tiles are placed against.
+    surface_origin: DVec3,
     /// The falling streams' entity.
     falls: Option<Entity>,
-    /// The running water's entity.
-    running: Option<Entity>,
-    /// Cells joined to seed-derived water: their entity, and a fingerprint of
-    /// what it shows.
-    joined: Option<(Entity, (usize, u64))>,
-    /// Water revision the pools were drawn at.
+    /// Water revision the stored water was drawn at.
     drawn_revision: Option<u64>,
     /// Cells joined to seed-derived water, which the tiles draw as that
     /// water.
@@ -416,149 +414,6 @@ fn refresh_stale(
     }
 }
 
-/// One column of stored water to draw: its top cell, surface and depth.
-struct SurfaceColumn {
-    cell: WaterCell,
-    level: f64,
-    depth: f64,
-}
-
-/// The columns of a pool whose surface lies open to the air: a pool filling
-/// under a lake has no surface of its own.
-fn open_columns(pool: &PoolView, field: &TerrainField) -> Vec<SurfaceColumn> {
-    pool.surface_cells
-        .iter()
-        .zip(&pool.depths)
-        .filter(|(cell, _)| {
-            let centre = cell.centre();
-            !field.is_water(DVec3::new(centre.x, pool.level + 0.05, centre.z))
-        })
-        .map(|(&cell, &depth)| SurfaceColumn {
-            cell,
-            // A sealed pool pressed higher than its cells shows at their top.
-            level: pool.level.min(cell.bottom() + WATER_CELL_METRES),
-            depth,
-        })
-        .collect()
-}
-
-/// The columns of cells that joined seed-derived water beyond the reach of
-/// that water's own sheet, which draws the joined cells within it: its top
-/// cell, and the depth down to its lowest.
-fn joined_columns(
-    joined: &[(WaterCell, WaterSurface)],
-    field: &TerrainField,
-) -> Vec<SurfaceColumn> {
-    let mut tops = std::collections::BTreeMap::<(i32, i32), (WaterCell, f64, f64)>::new();
-    for &(cell, surface) in joined {
-        if cell.bottom() >= surface.level {
-            continue;
-        }
-        let top = tops
-            .entry((cell.x, cell.z))
-            .or_insert((cell, surface.level, cell.bottom()));
-        if cell.y > top.0.y {
-            top.0 = cell;
-        }
-        top.2 = top.2.min(cell.bottom());
-    }
-    tops.into_values()
-        .filter(|&(cell, ..)| {
-            let centre = cell.centre();
-            field.water_surface(centre.x, centre.z).is_none()
-        })
-        .map(|(cell, level, bottom)| SurfaceColumn {
-            cell,
-            level,
-            depth: level - bottom,
-        })
-        .collect()
-}
-
-/// What a set of columns shows, to the millimetre: drawn again only when
-/// this changes.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a millimetre fingerprint of the drawn levels"
-)]
-fn fingerprint(columns: &[SurfaceColumn]) -> (usize, u64) {
-    (
-        columns.len(),
-        columns
-            .iter()
-            .map(|column| (column.level * 1000.0).round() as i64 as u64)
-            .fold(0_u64, u64::wrapping_add),
-    )
-}
-
-/// A flat quad per column of stored water, placed against `origin`.
-fn columns_mesh(columns: &[SurfaceColumn], origin: DVec3) -> Mesh {
-    let edge = WATER_CELL_METRES;
-    let mut positions = Vec::with_capacity(columns.len() * 4);
-    let mut attributes = Vec::with_capacity(columns.len() * 4);
-    let mut indices = Vec::with_capacity(columns.len() * 6);
-    for &SurfaceColumn { cell, level, depth } in columns {
-        let base = u32::try_from(positions.len()).expect("a pool mesh fits u32 indices");
-        let corner = DVec3::new(f64::from(cell.x) * edge, level, f64::from(cell.z) * edge);
-        for offset in [
-            DVec3::ZERO,
-            DVec3::new(0.0, 0.0, edge),
-            DVec3::new(edge, 0.0, 0.0),
-            DVec3::new(edge, 0.0, edge),
-        ] {
-            positions.push((corner + offset - origin).as_vec3().to_array());
-            attributes.push([depth as f32, 0.0, 0.0]);
-        }
-        indices.extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
-    }
-    surface_mesh(positions, attributes, indices)
-}
-
-/// A quad over each cell of running water, placed against `origin`. Each
-/// corner stands at the mean surface of the running cells around it that lie
-/// within a step of each other, so a sheet down a slope is one surface
-/// rather than a stair, and carries the cells' current for the shader.
-fn running_mesh(cells: &[RunningView], origin: DVec3) -> Mesh {
-    let edge = WATER_CELL_METRES;
-    let by_column = cells
-        .iter()
-        .map(|view| ((view.cell.x, view.cell.z), view))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut positions = Vec::with_capacity(cells.len() * 4);
-    let mut attributes = Vec::with_capacity(cells.len() * 4);
-    let mut indices = Vec::with_capacity(cells.len() * 6);
-    for view in cells {
-        let base = u32::try_from(positions.len()).expect("a running mesh fits u32 indices");
-        let (x, z) = (view.cell.x, view.cell.z);
-        for (cx, cz) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-            let (mut level, mut count) = (0.0, 0.0);
-            for (ox, oz) in [(-1, -1), (-1, 0), (0, -1), (0, 0)] {
-                if let Some(other) = by_column.get(&(x + cx + ox, z + cz + oz))
-                    && (other.level - view.level).abs() <= edge
-                {
-                    level += other.level;
-                    count += 1.0;
-                }
-            }
-            let corner = DVec3::new(
-                f64::from(x + cx) * edge,
-                if count > 0.0 {
-                    level / count
-                } else {
-                    view.level
-                },
-                f64::from(z + cz) * edge,
-            );
-            positions.push((corner - origin).as_vec3().to_array());
-            #[expect(clippy::cast_possible_truncation, reason = "shader attributes are f32")]
-            attributes.push([view.depth as f32, view.flow.x as f32, view.flow.y as f32]);
-        }
-        indices.extend([base, base + 1, base + 2, base + 2, base + 1, base + 3]);
-    }
-    surface_mesh(positions, attributes, indices)
-}
-
 /// Two crossed ribbons along each stream's arc, placed against `origin`,
 /// wider as more water pours.
 fn falls_mesh(falls: &[WaterFall], origin: DVec3) -> Mesh {
@@ -589,11 +444,16 @@ fn falls_mesh(falls: &[WaterFall], origin: DVec3) -> Mesh {
             }
         }
     }
-    surface_mesh(positions, attributes, indices)
+    surface_mesh(positions, None, attributes, indices)
 }
 
-fn surface_mesh(positions: Vec<[f32; 3]>, attributes: Vec<[f32; 3]>, indices: Vec<u32>) -> Mesh {
-    let normals = vec![[0.0, 1.0, 0.0]; positions.len()];
+fn surface_mesh(
+    positions: Vec<[f32; 3]>,
+    normals: Option<Vec<[f32; 3]>>,
+    attributes: Vec<[f32; 3]>,
+    indices: Vec<u32>,
+) -> Mesh {
+    let normals = normals.unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::RENDER_WORLD,
@@ -608,36 +468,51 @@ fn surface_mesh(positions: Vec<[f32; 3]>, attributes: Vec<[f32; 3]>, indices: Ve
     mesh
 }
 
-/// Draws the stored pools and falling streams after each water step. A pool
-/// is drawn again when its level moves by more than 5 mm or its surface
-/// changes shape.
+/// Draws the stored water's surface and its falling streams after each
+/// water batch: a surface tile is meshed again only when what it shows
+/// changes, and follows the floating origin.
 pub(crate) fn draw_stored_water(
     mut commands: Commands,
     mut tiles: ResMut<WaterTiles>,
     runtime: Res<WorldRuntime>,
     mut meshes: ResMut<Assets<Mesh>>,
     materials: Option<ResMut<Assets<WaterRenderMaterial>>>,
+    mut placed: Query<&mut Transform>,
 ) {
     let Some(mut materials) = materials else {
         return;
     };
-    if !super::water::water_enabled() || tiles.drawn_revision == Some(runtime.water_revision) {
+    if !super::water::water_enabled() {
+        return;
+    }
+    let origin = runtime.floating_origin.0;
+    if tiles.surface_origin != origin {
+        tiles.surface_origin = origin;
+        for &(entity, _, from) in tiles.surface.values() {
+            if let Ok(mut transform) = placed.get_mut(entity) {
+                transform.translation = (from - origin).as_vec3();
+            }
+        }
+    }
+    if tiles.drawn_revision == Some(runtime.water_revision) {
         return;
     }
     tiles.drawn_revision = Some(runtime.water_revision);
-    let origin = runtime.floating_origin.0;
-    let field = &runtime.field;
     let material = tiles
         .material
         .get_or_insert_with(|| materials.add(WaterRenderMaterial::default()))
         .clone();
-    let spawn = |commands: &mut Commands, meshes: &mut Assets<Mesh>, name: String, mesh: Mesh| {
+    let spawn = |commands: &mut Commands,
+                 meshes: &mut Assets<Mesh>,
+                 name: String,
+                 mesh: Mesh,
+                 translation: Vec3| {
         commands
             .spawn((
                 Name::new(name),
                 Mesh3d(meshes.add(mesh)),
                 MeshMaterial3d(material.clone()),
-                Transform::IDENTITY,
+                Transform::from_translation(translation),
                 // Shadow cascades cost more than the rest of the water's
                 // shading together.
                 bevy::light::NotShadowReceiver,
@@ -646,37 +521,61 @@ pub(crate) fn draw_stored_water(
             ))
             .id()
     };
-    let mut seen = std::collections::HashSet::new();
-    for pool in &runtime.water.view().pools {
-        seen.insert(pool.id);
-        let columns = open_columns(pool, field);
-        let cells = columns.len();
-        if let Some(&(entity, level, drawn)) = tiles.pools.get(&pool.id) {
-            if (level - pool.level).abs() < 0.005 && drawn == cells {
-                continue;
-            }
-            commands.entity(entity).despawn();
-            tiles.pools.remove(&pool.id);
-        }
-        if cells == 0 {
+    let view = runtime.water.view();
+    let mut seen = HashSet::with_capacity(view.surface.len());
+    for tile in &view.surface {
+        seen.insert(tile.key);
+        if tile.positions.is_empty() {
+            // Unchanged since it was last meshed.
             continue;
         }
+        if let Some((entity, ..)) = tiles.surface.remove(&tile.key) {
+            commands.entity(entity).despawn();
+        }
+        let mesh = surface_mesh(
+            tile.positions.clone(),
+            Some(tile.normals.clone()),
+            tile.attributes.clone(),
+            tile.indices.clone(),
+        );
         let entity = spawn(
             &mut commands,
             &mut meshes,
-            format!("Water pool {}", pool.id),
-            columns_mesh(&columns, origin),
+            format!("Stored water {},{}", tile.key.0, tile.key.1),
+            mesh,
+            (tile.origin - origin).as_vec3(),
         );
-        tiles.pools.insert(pool.id, (entity, pool.level, cells));
+        tiles
+            .surface
+            .insert(tile.key, (entity, tile.fingerprint, tile.origin));
     }
-    tiles.pools.retain(|id, (entity, ..)| {
-        let keep = seen.contains(id);
+    tiles.surface.retain(|key, (entity, ..)| {
+        let keep = seen.contains(key);
         if !keep {
             commands.entity(*entity).despawn();
         }
         keep
     });
-    let cells = &runtime.water.view().joined;
+    note_joined(&mut tiles, &view.joined);
+    // Falling water changes every step: it is drawn afresh each time.
+    if let Some(entity) = tiles.falls.take() {
+        commands.entity(entity).despawn();
+    }
+    let falls = visible_falls(&runtime);
+    tiles.falls = (!falls.is_empty()).then(|| {
+        spawn(
+            &mut commands,
+            &mut meshes,
+            "Falling water".to_owned(),
+            falls_mesh(&falls, origin),
+            Vec3::ZERO,
+        )
+    });
+}
+
+/// Keeps the cells joined to seed-derived water, and marks the lake tiles
+/// over any that joined or left it to be meshed again.
+fn note_joined(tiles: &mut WaterTiles, cells: &[(WaterCell, WaterSurface)]) {
     let set = cells.iter().map(|(cell, _)| *cell).collect::<HashSet<_>>();
     if set != *tiles.joined_cells {
         let stale = set
@@ -686,42 +585,12 @@ pub(crate) fn draw_stored_water(
         tiles.stale.extend(stale);
         tiles.joined_cells = Arc::new(set);
     }
-    let joined = joined_columns(cells, field);
-    let key = fingerprint(&joined);
-    if tiles.joined.is_none_or(|(_, drawn)| drawn != key) {
-        if let Some((entity, _)) = tiles.joined.take() {
-            commands.entity(entity).despawn();
-        }
-        if !joined.is_empty() {
-            let entity = spawn(
-                &mut commands,
-                &mut meshes,
-                "Water joined to a lake".to_owned(),
-                columns_mesh(&joined, origin),
-            );
-            tiles.joined = Some((entity, key));
-        }
-    }
-    // Moving water changes every step: it is drawn afresh each time.
-    for entity in [tiles.running.take(), tiles.falls.take()]
-        .into_iter()
-        .flatten()
-    {
-        commands.entity(entity).despawn();
-    }
-    let (running, falls) = moving_meshes(&runtime, origin);
-    tiles.running =
-        running.map(|mesh| spawn(&mut commands, &mut meshes, "Running water".to_owned(), mesh));
-    tiles.falls =
-        falls.map(|mesh| spawn(&mut commands, &mut meshes, "Falling water".to_owned(), mesh));
 }
 
-/// Meshes of the running water and of the streams in flight, if there are
-/// any. A stream falling under a lake falls through lake water: it does not
-/// show.
-fn moving_meshes(runtime: &WorldRuntime, origin: DVec3) -> (Option<Mesh>, Option<Mesh>) {
-    let running = &runtime.water.view().running;
-    let falls = runtime
+/// The streams in flight to draw. A stream falling under a lake falls
+/// through lake water: it does not show.
+fn visible_falls(runtime: &WorldRuntime) -> Vec<WaterFall> {
+    runtime
         .water_falls
         .iter()
         .filter(|fall| {
@@ -730,22 +599,14 @@ fn moving_meshes(runtime: &WorldRuntime, origin: DVec3) -> (Option<Mesh>, Option
                 .is_some_and(|&top| !runtime.field.is_water(top + DVec3::Y * 0.05))
         })
         .cloned()
-        .collect::<Vec<_>>();
-    (
-        (!running.is_empty()).then(|| running_mesh(running, origin)),
-        (!falls.is_empty()).then(|| falls_mesh(&falls, origin)),
-    )
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use bevy::math::DVec3;
 
-    use bevy::math::DVec2;
-    use bevy::mesh::VertexAttributeValues;
-    use mechanic_world::{RunningView, WaterCell};
-
-    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, running_mesh, wanted_tiles};
+    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, wanted_tiles};
 
     #[test]
     fn tiles_cover_the_reach_once_with_the_finest_nearest() {
@@ -770,34 +631,5 @@ mod tests {
     fn inside(key: TileKey, point: DVec3) -> bool {
         let [x0, z0] = key.minimum();
         (x0..x0 + key.edge()).contains(&point.x) && (z0..z0 + key.edge()).contains(&point.z)
-    }
-
-    #[test]
-    fn running_water_down_a_step_is_one_surface() {
-        let view = |x: i32, y: i32, level: f64| RunningView {
-            cell: WaterCell::new(x, y, 0),
-            level,
-            depth: 0.01,
-            flow: DVec2::new(0.5, 0.0),
-        };
-        let cells = [view(0, 0, 0.01), view(1, -1, -0.19)];
-        let mesh = running_mesh(&cells, DVec3::ZERO);
-        let Some(VertexAttributeValues::Float32x3(positions)) =
-            mesh.attribute(bevy::mesh::Mesh::ATTRIBUTE_POSITION)
-        else {
-            panic!("no positions");
-        };
-        // The corners the two cells share, at x = 0.2 m, stand at one height
-        // between the two surfaces.
-        let shared = positions
-            .iter()
-            .filter(|position| (position[0] - 0.2).abs() < 1.0e-6)
-            .map(|position| position[1])
-            .collect::<Vec<_>>();
-        assert_eq!(shared.len(), 4);
-        assert!(
-            shared.iter().all(|&y| (y - -0.09).abs() < 1.0e-5),
-            "{shared:?}"
-        );
     }
 }

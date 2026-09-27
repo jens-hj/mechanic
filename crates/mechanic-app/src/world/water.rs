@@ -1,13 +1,14 @@
 //! Stored water in the world: stepping it, keeping it in step with the
 //! ground, loading and saving it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, PoolView, RunningView, TerrainField, TerrainOctree, TerrainWater, WaterCell,
-    WaterFall, WaterLedger, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WorldStore,
+    BrickCoord, SurfaceTile, TerrainField, TerrainOctree, TerrainWater, WaterCell, WaterFall,
+    WaterLedger, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -61,12 +62,11 @@ pub(super) fn ground_changed(
 /// What the water looked like after its last batch of steps, to draw.
 #[derive(Default)]
 pub(crate) struct WaterView {
-    /// Every pool.
-    pub(crate) pools: Vec<PoolView>,
+    /// The stored water's surface, tile by tile: tiles unchanged since the
+    /// batch before carry no mesh.
+    pub(crate) surface: Vec<SurfaceTile>,
     /// Cells joined to seed-derived water, with its surface as it stands.
     pub(crate) joined: Vec<(WaterCell, WaterSurface)>,
-    /// Running water.
-    pub(crate) running: Vec<RunningView>,
 }
 
 /// One batch of water steps done on the worker.
@@ -90,19 +90,23 @@ pub(crate) struct WaterRunner {
     /// Bricks whose ground changed since the water last looked.
     pending: Vec<BrickCoord>,
     view: WaterView,
+    /// What each surface tile showed when last meshed.
+    drawn: HashMap<(i32, i32), u64>,
 }
 
 impl WaterRunner {
     /// Water to run, with its view as it stands.
     pub(crate) fn new(world: WaterWorld, field: &TerrainField, edits: &TerrainOctree) -> Self {
         let ground = TerrainWater { field, edits };
-        let view = view(&world, &ground);
+        let view = view(&world, &ground, &HashMap::new());
+        let drawn = fingerprints(&view);
         Self {
             world: Some(world),
             task: None,
             finished: None,
             pending: Vec::new(),
             view,
+            drawn,
         }
     }
 
@@ -124,13 +128,25 @@ impl WaterRunner {
     }
 }
 
-/// The view of the water to draw.
-fn view(world: &WaterWorld, ground: &impl mechanic_world::WaterGround) -> WaterView {
+/// The view of the water to draw, meshing only the surface tiles that
+/// changed since `drawn`.
+fn view(
+    world: &WaterWorld,
+    ground: &impl mechanic_world::WaterGround,
+    drawn: &HashMap<(i32, i32), u64>,
+) -> WaterView {
     WaterView {
-        pools: world.pools().collect(),
+        surface: world.surface_tiles(ground, drawn),
         joined: world.joined_cells(ground),
-        running: world.running_cells(),
     }
+}
+
+/// What each surface tile of a view shows.
+fn fingerprints(view: &WaterView) -> HashMap<(i32, i32), u64> {
+    view.surface
+        .iter()
+        .map(|tile| (tile.key, tile.fingerprint))
+        .collect()
 }
 
 /// Runs the world's stored water on a worker and publishes a view of it
@@ -175,6 +191,7 @@ pub(super) fn step_water(
     let field = runtime.field.clone();
     let edits = runtime.edits.snapshot();
     let bricks = std::mem::take(&mut runtime.water.pending);
+    let drawn = runtime.water.drawn.clone();
     runtime.water.task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let ground = TerrainWater {
             field: &field,
@@ -190,7 +207,7 @@ pub(super) fn step_water(
             done.push((started.elapsed().as_secs_f64() * 1000.0, step));
         }
         WaterBatch {
-            view: view(&world, &ground),
+            view: view(&world, &ground, &drawn),
             surfaces: world.surfaces(field.clone()),
             ledger: world.ledger(),
             world,
@@ -229,6 +246,7 @@ fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
     if moved {
         runtime.autosave.mutate(runtime.clock);
     }
+    runtime.water.drawn = fingerprints(&batch.view);
     runtime.water.view = batch.view;
     runtime.water_falls = batch.falls;
     runtime.water_surfaces = Arc::new(batch.surfaces);

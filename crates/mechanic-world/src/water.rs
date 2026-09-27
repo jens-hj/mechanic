@@ -20,6 +20,7 @@ mod ground;
 mod jet;
 mod pool;
 mod sheet;
+mod surface;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -37,6 +38,7 @@ use jet::{Jet, Launch};
 pub use jet::{JetDoc, Parcel};
 use pool::Pool;
 pub use sheet::{RunningView, SheetDoc};
+pub use surface::{SURFACE_TILE_COLUMNS, SurfaceTile};
 
 use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
 

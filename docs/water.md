@@ -186,13 +186,19 @@ that replaces it is ready. `water_material.wgsl` colours by depth, fades to
 clear at the shore, ripples along the current, and lights through Bevy's
 PBR path, so the sky reflects in it. Water neither casts nor receives shadows.
 
-Stored water draws after each water step. A pool is a flat quad over each
-open column. Running water is a quad per cell whose corners stand at the mean
-surface of the running cells around them, so a sheet down a slope is one
-surface, and it carries each cell's current, so its ripples run with it. A
-stream in flight is two crossed ribbons along its arc, wider as more water
-pours. Lakes and rivers moved from their seed level mesh again once they
-move 2 cm.
+Stored water is one surface (`water/surface.rs`): running sheets, the open
+tops of pools, and cells joined to a lake beyond the lake's own sheet, meshed
+together in tiles of 32 × 32 columns. Every column of visible water is a
+quad, and each corner stands at the depth-weighted mean level of the columns
+around it that lie within a metre of each other, so neighbouring columns
+share corners: water down a slope is one smooth ramp, a pool meets the stream
+feeding it on one edge, and no gaps open between columns at different
+heights. Water more than a metre apart is separate, with a fall between.
+Corners beside dry ground take no depth, so water fades out at its edges.
+Normals follow the surface, and each corner carries the current, so ripples
+run with it. A stream in flight is two crossed ribbons along its arc, wider
+as more water pours. Lakes and rivers moved from their seed level mesh again
+once they move 2 cm.
 
 `MECHANIC_WATER=off` hides it. Looking over a lake at 4112 × 2524 on an M1 Pro,
 the frame rose from 41 ms without water to 45–47 ms with it.
@@ -214,13 +220,14 @@ inlets in every edited brick.
 Stored water is saved in `water.ron` beside `material.bin`. A world without
 one has no stored water.
 
-`world/water_render.rs` draws each stored pool as a flat quad per surface
-column, drawn again when its level moves 5 mm or its surface changes shape,
-and falling water as crossed ribbons. Water under seed-derived water has no
-surface of its own: a pool filling under a lake and a stream falling under it
-are not drawn. Cells that joined a lake are drawn only where the lake's own
-sheet does not reach, such as a trench cut into its bank. A lake drawn down by more than 2 cm
-since its tiles were meshed has them meshed again at its new level.
+The worker meshes the surface tiles whose water changed, each tile
+fingerprinted to the 2 mm, and `world/water_render.rs` swaps just those
+entities in; unchanged tiles stay, and all of them follow the floating
+origin. Falling water is drawn again after each batch. Water under
+seed-derived water has no surface of its own: a pool filling under a lake
+and a stream falling under it are not drawn. A lake drawn down by more than
+2 cm since its tiles were meshed has them meshed again at its new level, and
+lake tiles over cells that joined or left the lake mesh again.
 
 ## Floating
 

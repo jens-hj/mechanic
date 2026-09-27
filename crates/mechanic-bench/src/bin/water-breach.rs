@@ -197,6 +197,7 @@ fn main() {
     water.terrain_changed(&ground, bricks);
     let total = water.ledger().total();
     let mut samples = Samples::default();
+    let mut drawn = std::collections::HashMap::new();
     let seconds = std::env::var("BREACH_SECONDS")
         .ok()
         .and_then(|value| value.parse().ok())
@@ -223,7 +224,11 @@ fn main() {
             samples.phases.push(phases);
             sheets = step.sheet_cells;
             let started = Instant::now();
-            std::hint::black_box(water.running_cells());
+            let tiles = water.surface_tiles(&ground, &drawn);
+            drawn = tiles
+                .iter()
+                .map(|tile| (tile.key, tile.fingerprint))
+                .collect();
             std::hint::black_box(water.joined_cells(&ground));
             samples
                 .view_ms
