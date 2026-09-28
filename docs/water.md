@@ -271,9 +271,17 @@ around it that lie within a metre of each other, so neighbouring columns
 share corners: water down a slope is one smooth ramp, a pool meets the stream
 feeding it on one edge, and no gaps open between columns at different
 heights. Water more than a metre apart is separate, with a fall between.
-Corners beside dry ground take no depth, so water fades out at its edges:
-the shader fades it from 3 mm to 12 mm deep, so water a centimetre or two over
-a lump still shows its surface. A lake, sea or river beside stored water
+Shallow water lies over the drawn ground instead: below 2 cm deep, each
+column counts at a corner as the ground there plus its own depth, and from
+10 cm it counts at its own level, blending between, and the surface's
+normal follows the ground as far as the water lies on it. A mean level over
+a film and the deeper rills beside it sank the film's corners into the
+ground, and the ground showed through in sharp teeth down the slope. The
+ground's height is read where the finest terrain mesh draws it, whose
+samples sit at each cell's lowest corner, and kept per corner until the
+ground there is edited. Corners beside dry ground take no depth, so water
+fades out at its edges: the shader fades it from 3 mm to 12 mm deep, so
+water a centimetre or two over a lump still shows its surface. A lake, sea or river beside stored water
 weighs in on the corners they share as metre-deep water at its current level,
 so a flood or a dug channel meets it at the lake's level and colour, with no
 step between the two surfaces. It does so only where that water shows, not

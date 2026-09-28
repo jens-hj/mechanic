@@ -162,7 +162,7 @@ fn covers(sheet: &crate::WaterSheet, point: DVec2) -> bool {
 
 /// The columns the stored water's surface draws a quad over.
 fn drawn_columns(
-    water: &WaterWorld,
+    water: &mut WaterWorld,
     ground: &impl crate::water::WaterGround,
 ) -> std::collections::HashSet<(i32, i32)> {
     let mut drawn = std::collections::HashSet::new();
@@ -239,7 +239,7 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
     let shifts = water.cycle.shifts(&ground);
     let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &meeting)
         .expect("the lake shows");
-    let drawn = drawn_columns(&water, &ground);
+    let drawn = drawn_columns(&mut water, &ground);
     // Every lake column beside the running water lies under the lake's
     // sheet or the running water's surface: none is left bare between the
     // two.

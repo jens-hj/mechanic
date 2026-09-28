@@ -157,6 +157,22 @@ impl WaterGround for Ground {
         })
     }
 
+    fn ground_top(&self, x: f64, z: f64, near: f64) -> Option<f64> {
+        // The top of the first solid ground under the point, to the
+        // millimetre.
+        let mut y = near + 0.25;
+        let mut open = self.open(DVec3::new(x, y, z));
+        while y > near - 1.25 {
+            y -= 0.001;
+            let now = self.open(DVec3::new(x, y, z));
+            if open && !now {
+                return Some(y + 0.001);
+            }
+            open = now;
+        }
+        None
+    }
+
     fn material(&self, point: DVec3) -> Option<crate::TerrainMaterial> {
         (!self.open(point)).then_some(if self.rock {
             crate::TerrainMaterial::Rock

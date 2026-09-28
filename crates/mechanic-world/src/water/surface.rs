@@ -54,6 +54,14 @@ const ANCHOR_METRES: f64 = 1.0;
 /// sheet, which runs on over it.
 const MEETS_METRES: f64 = 0.1;
 
+/// Water shallower than this, in metres, lies draped over the drawn ground:
+/// each corner stands at the ground there plus the water's depth.
+const DRAPED_METRES: f64 = 0.02;
+
+/// Water deeper than this, in metres, lies level: its corners stand at the
+/// mean level of the water around them. Between the two it blends.
+const LEVEL_METRES: f64 = 0.1;
+
 /// One tile of the stored water's surface, placed at `origin`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SurfaceTile {
@@ -80,7 +88,7 @@ impl WaterWorld {
     /// fingerprint matches `drawn` come back without a mesh: they have not
     /// changed.
     pub fn surface_tiles(
-        &self,
+        &mut self,
         ground: &impl WaterGround,
         drawn: &HashMap<(i32, i32), u64>,
     ) -> Vec<SurfaceTile> {
@@ -110,7 +118,20 @@ impl WaterWorld {
                 });
                 continue;
             }
-            out.push(mesh_tile(&columns, key, &members, fingerprint));
+            let tops = &mut self.tops;
+            let mut top = |x: i32, z: i32, near: f64| {
+                let y = (near / WATER_CELL_METRES).floor();
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "heights are far inside i32"
+                )]
+                let key = (x, y as i32, z);
+                *tops.entry(key).or_insert_with(|| {
+                    let edge = WATER_CELL_METRES;
+                    ground.ground_top(f64::from(x) * edge, f64::from(z) * edge, near)
+                })
+            };
+            out.push(mesh_tile(&columns, key, &members, fingerprint, &mut top));
         }
         out.sort_unstable_by_key(|tile| tile.key);
         out
@@ -296,6 +317,7 @@ fn mesh_tile(
     key: (i32, i32),
     members: &[(i32, i32)],
     fingerprint: u64,
+    top: &mut impl FnMut(i32, i32, f64) -> Option<f64>,
 ) -> SurfaceTile {
     let edge = WATER_CELL_METRES;
     let origin = DVec3::new(
@@ -317,7 +339,7 @@ fn mesh_tile(
         let mut quad = [0_u32; 4];
         for (slot, (cx, cz)) in quad.iter_mut().zip([(0, 0), (0, 1), (1, 0), (1, 1)]) {
             let (corner_x, corner_z) = (x + cx, z + cz);
-            let corner = corner(columns, corner_x, corner_z, column);
+            let corner = corner(columns, corner_x, corner_z, column, top);
             #[expect(clippy::cast_possible_truncation, reason = "a tenth of a millimetre")]
             let height = (corner.level * 10_000.0).round() as i64;
             *slot = *shared
@@ -360,8 +382,18 @@ struct Corner {
 }
 
 /// The corner at `(x, z)` of a column of water `own`, from the four columns
-/// around it that belong to the same water.
-fn corner(columns: &CellMap<(i32, i32), Column>, x: i32, z: i32, own: Column) -> Corner {
+/// around it that belong to the same water. Shallow water lies over the
+/// drawn ground, `top` giving its height at a corner near a level: a mean
+/// level over columns at different heights would sink a film between two
+/// deeper rills into the ground, and the ground would show through it in
+/// teeth running down the slope.
+fn corner(
+    columns: &CellMap<(i32, i32), Column>,
+    x: i32,
+    z: i32,
+    own: Column,
+    top: &mut impl FnMut(i32, i32, f64) -> Option<f64>,
+) -> Corner {
     let around = [(-1, -1), (-1, 0), (0, -1), (0, 0)]
         .map(|(dx, dz)| columns.get(&(x + dx, z + dz)).copied());
     let same = |column: &Column| (column.level - own.level).abs() <= JOINS_METRES;
@@ -383,12 +415,66 @@ fn corner(columns: &CellMap<(i32, i32), Column>, x: i32, z: i32, own: Column) ->
     let edge = WATER_CELL_METRES;
     let dx = 0.5 * (slope(height(0, 0), height(1, 0)) + slope(height(0, 1), height(1, 1))) / edge;
     let dz = 0.5 * (slope(height(0, 0), height(0, 1)) + slope(height(1, 0), height(1, 1))) / edge;
-    Corner {
+    let mut corner = Corner {
         level: level / weight,
         depth: depth / 4.0,
         flow: flow / weight,
         normal: DVec3::new(-dx, 1.0, -dz).normalize(),
+    };
+    drape(
+        &around.map(|column| column.filter(same)),
+        x,
+        z,
+        &mut corner,
+        top,
+    );
+    corner
+}
+
+/// Lays a corner of shallow water over the drawn ground: each column around
+/// it counts as the ground at the corner plus its own depth while shallow,
+/// and at its own level once deep, and the surface's normal follows the
+/// ground as far as the water lies on it.
+fn drape(
+    around: &[Option<Column>; 4],
+    x: i32,
+    z: i32,
+    corner: &mut Corner,
+    top: &mut impl FnMut(i32, i32, f64) -> Option<f64>,
+) {
+    let level = |column: &Column| smoothstep(DRAPED_METRES, LEVEL_METRES, column.depth);
+    if around.iter().flatten().all(|column| level(column) >= 1.0) {
+        return;
     }
+    let Some(ground) = top(x, z, corner.level) else {
+        return;
+    };
+    let (mut height, mut lying, mut weight) = (0.0, 0.0, 0.0);
+    for column in around.iter().flatten() {
+        let w = column.depth.max(LEAST_WEIGHT_METRES);
+        let t = level(column);
+        height += w * (ground + column.depth).mul_add(1.0 - t, column.level * t);
+        lying += w * (1.0 - t);
+        weight += w;
+    }
+    corner.level = height / weight;
+    let lying = lying / weight;
+    let edge = WATER_CELL_METRES;
+    let slope = |a: Option<f64>, b: Option<f64>| a.zip(b).map(|(a, b)| (b - a) / (2.0 * edge));
+    let near = corner.level;
+    if let (Some(dx), Some(dz)) = (
+        slope(top(x - 1, z, near), top(x + 1, z, near)),
+        slope(top(x, z - 1, near), top(x, z + 1, near)),
+    ) {
+        let ground = DVec3::new(-dx, 1.0, -dz).normalize();
+        corner.normal = corner.normal.lerp(ground, lying).normalize();
+    }
+}
+
+/// 0 below `low`, 1 above `high`, and a smooth step between.
+fn smoothstep(low: f64, high: f64, value: f64) -> f64 {
+    let t = ((value - low) / (high - low)).clamp(0.0, 1.0);
+    t * t * 2.0_f64.mul_add(-t, 3.0)
 }
 
 #[cfg(test)]
@@ -425,7 +511,7 @@ mod tests {
         let columns = ramp();
         let mut members = columns.keys().copied().collect::<Vec<_>>();
         members.sort_unstable();
-        let tile = mesh_tile(&columns, (0, 0), &members, 0);
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| None);
         // Every interior edge is shared by two triangles and every boundary
         // edge by one: no gaps between neighbouring columns.
         let mut edges = HashMap::<(u32, u32), u32>::new();
@@ -462,7 +548,7 @@ mod tests {
             );
         }
         let members = [(0, 0), (1, 0), (2, 0), (3, 0)];
-        let tile = mesh_tile(&columns, (0, 0), &members, 0);
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| None);
         let heights = tile
             .positions
             .iter()
@@ -499,7 +585,7 @@ mod tests {
                 seam: false,
             },
         );
-        let tile = mesh_tile(&columns, (0, 0), &[(0, 0)], 0);
+        let tile = mesh_tile(&columns, (0, 0), &[(0, 0)], 0, &mut |_, _, _| None);
         // Only the stored water is drawn; its edge on the lake's side stands
         // at nearly the lake's level, the far edge at its own.
         assert_eq!(tile.positions.len(), 4);
@@ -512,5 +598,99 @@ mod tests {
                 position[0]
             );
         }
+    }
+
+    /// Ground falling 1 in 5 along x, with a groove 4 cm deep along z = 2.
+    fn lumpy(x: f64, z: f64) -> f64 {
+        let groove = (-(z - 0.5).powi(2) / 0.01).exp();
+        -0.2 * x - 0.04 * groove + 0.01 * (x * 17.0).sin()
+    }
+
+    /// A film 5 mm deep down the slope, with a rill 5 cm deep in the groove.
+    fn film_and_rill() -> CellMap<(i32, i32), Column> {
+        let mut columns = CellMap::default();
+        for x in 0..8 {
+            for z in 0..5 {
+                let (cx, cz) = ((f64::from(x) + 0.5) * 0.2, (f64::from(z) + 0.5) * 0.2);
+                let depth = if z == 2 { 0.05 } else { 0.005 };
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: lumpy(cx, cz) + depth,
+                        depth,
+                        flow: DVec2::new(0.5, 0.0),
+                        anchor: false,
+                        seam: false,
+                    },
+                );
+            }
+        }
+        columns
+    }
+
+    /// How far the lowest vertex over the film's columns lies under the
+    /// ground, in metres.
+    fn deepest_under(tile: &super::SurfaceTile) -> f64 {
+        tile.positions
+            .iter()
+            .map(|position| {
+                let [x, y, z] = position.map(f64::from);
+                lumpy(x, z) - y
+            })
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    #[test]
+    fn a_film_beside_a_rill_lies_over_the_ground_it_runs_on() {
+        let columns = film_and_rill();
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        // Levels averaged over the film and the rill in its groove sink the
+        // film's corners into the ground beside the groove.
+        let level = mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| None);
+        assert!(
+            deepest_under(&level) > 0.005,
+            "the averaged surface never dips under the ground"
+        );
+        let edge = super::WATER_CELL_METRES;
+        let draped = mesh_tile(&columns, (0, 0), &members, 0, &mut |x, z, _| {
+            Some(lumpy(f64::from(x) * edge, f64::from(z) * edge))
+        });
+        let under = deepest_under(&draped);
+        assert!(
+            under < -super::VISIBLE_METRES + 1.0e-9,
+            "the film dips {under:.4} m under the ground"
+        );
+    }
+
+    #[test]
+    fn a_pond_over_lumpy_ground_lies_level() {
+        let mut columns = CellMap::default();
+        for x in 0..6 {
+            for z in 0..6 {
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: 1.0,
+                        depth: 0.3,
+                        flow: DVec2::ZERO,
+                        anchor: false,
+                        seam: false,
+                    },
+                );
+            }
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let edge = super::WATER_CELL_METRES;
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |x, z, _| {
+            Some(0.7 + lumpy(f64::from(x) * edge, f64::from(z) * edge))
+        });
+        assert!(
+            tile.positions
+                .iter()
+                .all(|position| (f64::from(position[1]) - 1.0).abs() < 1.0e-3),
+            "the pond follows the ground under it"
+        );
     }
 }

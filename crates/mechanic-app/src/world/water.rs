@@ -100,9 +100,9 @@ pub(crate) struct WaterRunner {
 
 impl WaterRunner {
     /// Water to run, with its view as it stands.
-    pub(crate) fn new(world: WaterWorld, field: &TerrainField, edits: &TerrainOctree) -> Self {
+    pub(crate) fn new(mut world: WaterWorld, field: &TerrainField, edits: &TerrainOctree) -> Self {
         let ground = TerrainWater { field, edits };
-        let view = view(&world, &ground, &HashMap::new());
+        let view = view(&mut world, &ground, &HashMap::new());
         let drawn = fingerprints(&view);
         Self {
             world: Some(world),
@@ -135,7 +135,7 @@ impl WaterRunner {
 /// The view of the water to draw, meshing only the surface tiles that
 /// changed since `drawn`.
 fn view(
-    world: &WaterWorld,
+    world: &mut WaterWorld,
     ground: &impl mechanic_world::WaterGround,
     drawn: &HashMap<(i32, i32), u64>,
 ) -> WaterView {
@@ -213,7 +213,7 @@ pub(super) fn step_water(
             done.push((started.elapsed().as_secs_f64() * 1000.0, step));
         }
         WaterBatch {
-            view: view(&world, &ground, &drawn),
+            view: view(&mut world, &ground, &drawn),
             surfaces: world.surfaces(field.clone()),
             ledger: world.ledger(),
             world,

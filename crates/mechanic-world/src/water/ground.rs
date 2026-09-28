@@ -85,7 +85,18 @@ pub trait WaterGround: WaterNetwork {
     /// Seed-derived water pours only into dug ground: untouched ground, even
     /// in an edited brick, is wet or dry as the seed made it.
     fn dug(&self, cell: WaterCell) -> bool;
+
+    /// Height of the drawn ground at a point: the first surface of the
+    /// finest terrain mesh met going down from a little over `near`, if any
+    /// within a metre and a half.
+    fn ground_top(&self, x: f64, z: f64, near: f64) -> Option<f64>;
 }
+
+/// How far over `near` the search for the drawn ground starts, in metres.
+const TOP_ABOVE_METRES: f64 = 0.25;
+
+/// Terrain cells the search for the drawn ground looks down through.
+const TOP_CELLS: i32 = 30;
 
 /// Terrain, untouched and edited, as the ground water sits in.
 #[derive(Clone, Copy)]
@@ -123,6 +134,32 @@ impl<S: TerrainSource> TerrainWater<'_, S> {
             *open = sample.is_none_or(|sample| !sample.is_solid());
         }
         Some(open)
+    }
+
+    /// Density of the ground at a point of the terrain mesh's lattice: the
+    /// finest mesh places each cell's sample at the cell's lowest corner.
+    fn lattice_density(&self, cell: crate::WorldCell) -> f32 {
+        self.edits
+            .brick(cell.brick())
+            .and_then(|brick| brick.sample(cell.local_in_brick()))
+            .map_or_else(|| self.field.cell_density(cell), |sample| sample.density)
+    }
+
+    /// Where the mesh's ground surface crosses one lattice column, going down
+    /// from `near`.
+    fn lattice_top(&self, x: i32, z: i32, near: f64) -> Option<f64> {
+        let edge = crate::TERRAIN_CELL_METERS;
+        let start = ((near + TOP_ABOVE_METRES) / edge).floor() as i32;
+        let mut above = self.lattice_density(crate::WorldCell::new(x, start, z));
+        for y in (start - TOP_CELLS..start).rev() {
+            let density = self.lattice_density(crate::WorldCell::new(x, y, z));
+            if above <= 0.0 && density > 0.0 {
+                let along = f64::from(density / (density - above));
+                return Some((f64::from(y) + along) * edge);
+            }
+            above = density;
+        }
+        None
     }
 
     /// Open terrain cells of one water cell as the seed made them.
@@ -166,6 +203,30 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
                 .zip(self.seeded_open(cell))
                 .any(|(&now, seeded)| now && !seeded)
         })
+    }
+
+    fn ground_top(&self, x: f64, z: f64, near: f64) -> Option<f64> {
+        // Bilinear between the four lattice columns around the point, as the
+        // mesh's triangles run between them.
+        let edge = crate::TERRAIN_CELL_METERS;
+        let (fx, fz) = (x / edge, z / edge);
+        let (ix, iz) = (fx.floor() as i32, fz.floor() as i32);
+        let (tx, tz) = (fx - fx.floor(), fz - fz.floor());
+        // Only the columns the point lies between are read: a point on the
+        // lattice reads one.
+        let row = |dz: i32| {
+            let first = self.lattice_top(ix, iz + dz, near)?;
+            if tx == 0.0 {
+                return Some(first);
+            }
+            let second = self.lattice_top(ix + 1, iz + dz, near)?;
+            Some((second - first).mul_add(tx, first))
+        };
+        let first = row(0)?;
+        if tz == 0.0 {
+            return Some(first);
+        }
+        Some((row(1)? - first).mul_add(tz, first))
     }
 
     fn implicit(&self, point: DVec3) -> Option<WaterSurface> {

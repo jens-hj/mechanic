@@ -498,6 +498,9 @@ pub struct WaterWorld {
     jets: BTreeMap<WaterCell, Jet>,
     /// This step's launches over lips.
     launches: Vec<Launch>,
+    /// Height of the drawn ground at each surface corner met, by corner and
+    /// the water cell height it was sought from.
+    tops: CellMap<(i32, i32, i32), Option<f64>>,
 }
 
 impl WaterWorld {
@@ -1451,6 +1454,21 @@ impl WaterWorld {
         let bricks = bricks.into_iter().collect::<Vec<_>>();
         for &brick in &bricks {
             self.ground.forget(brick);
+        }
+        // The drawn ground moved in these bricks' columns, and beside them,
+        // where the mesh's last cells read their samples.
+        let changed = bricks
+            .iter()
+            .map(|brick| (brick.x, brick.z))
+            .collect::<std::collections::HashSet<_>>();
+        if !changed.is_empty() {
+            self.tops.retain(|&(x, _, z), _| {
+                let (bx, bz) = (
+                    x.div_euclid(BRICK_EDGE_WATER_CELLS),
+                    z.div_euclid(BRICK_EDGE_WATER_CELLS),
+                );
+                !(-1..=1).any(|dx| (-1..=1).any(|dz| changed.contains(&(bx + dx, bz + dz))))
+            });
         }
         for &brick in &bricks {
             for cell in WaterCell::in_brick(brick) {
