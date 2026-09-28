@@ -160,6 +160,23 @@ fn drawn(water: &WaterWorld) -> f64 {
     -water.surplus_m3(WaterBody::Lake(0))
 }
 
+/// Water standing or running with its surface below `height`, in m³.
+fn held_below(water: &WaterWorld, height: f64) -> f64 {
+    let pools = water
+        .pools()
+        .filter(|pool| pool.level < height)
+        .map(|pool| pool.volume_m3)
+        .sum::<f64>();
+    let area = super::WATER_CELL_METRES * super::WATER_CELL_METRES;
+    let running = water
+        .running_cells()
+        .into_iter()
+        .filter(|running| running.level < height)
+        .map(|running| running.depth * area)
+        .sum::<f64>();
+    pools + running
+}
+
 fn level_at(water: &WaterWorld, ground: &Ground, point: DVec3) -> f64 {
     water
         .surface(ground, point)
@@ -468,7 +485,8 @@ fn a_trench_dug_from_a_river_draws_no_more_than_the_river_carries() {
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
     run(&mut water, &ground, 60);
-    let held = water.stored_m3() + water.joined_m3();
+    let held =
+        water.stored_m3() + water.joined_m3() + water.running_m3() + water.ledger().falling_m3;
     assert!(held > 0.5, "only {held:.2} m³ ran in");
     assert!(held < 1.2 + 1.0e-6, "the stream gave {held:.2} m³");
     let ledger = water.ledger();
@@ -498,7 +516,10 @@ fn a_puddle_evaporates_into_the_air() {
     for _ in 0..3 * 60 {
         water.step(&ground, 60.0);
     }
-    assert_eq!(water.pools().count(), 0, "the puddle is still there");
+    assert!(
+        water.pools().count() == 0 && water.running_m3() < 1.0e-9,
+        "the puddle is still there"
+    );
     let ledger = water.ledger();
     assert!(
         (ledger.total() - 0.01).abs() < 1.0e-9,
@@ -548,15 +569,8 @@ fn water_spilled_on_a_slope_runs_down_it_before_it_pools() {
     let saved = WaterWorld::from_doc(&ground, &water.to_doc());
     assert!((saved.ledger().total() - spilled).abs() < 1.0e-9);
     run(&mut water, &ground, 30);
-    let pit = water
-        .pools()
-        .find(|pool| pool.level < -1.5)
-        .expect("nothing pooled in the pit");
-    assert!(
-        pit.volume_m3 > 0.85 * spilled,
-        "the pit holds {:.3} m³",
-        pit.volume_m3
-    );
+    let pit = held_below(&water, -1.5);
+    assert!(pit > 0.85 * spilled, "the pit holds {pit:.3} m³");
     assert!(
         (water.ledger().total() - spilled).abs() < 1.0e-9,
         "water was made or lost"
@@ -621,6 +635,54 @@ fn a_trickle_down_rough_ground_gathers_into_rills() {
     );
 }
 
+#[test]
+fn a_flood_down_rough_ground_runs_as_one_sheet_without_pools() {
+    let ground = rough_slope();
+    let mut water = WaterWorld::new();
+    for _ in 0..600 {
+        water.deposit(&ground, DVec3::new(0.3, 1.0, 1.2), 0.0005);
+        water.step(&ground, 0.05);
+        // Lumps on open ground are no pits: water fills and runs over them
+        // as running water, never as flat pools stepping down the slope.
+        assert_eq!(water.pools().count(), 0, "the flood broke into pools");
+    }
+    let wet = water.running_cells();
+    assert!(wet.len() > 100, "only {} columns are wet", wet.len());
+}
+
+#[test]
+fn a_pond_in_a_hollow_settles_flat_as_still_running_water() {
+    let ground = pit(false);
+    let mut water = WaterWorld::new();
+    // Poured in over three seconds, as a hose would.
+    for _ in 0..60 {
+        water.deposit(&ground, DVec3::new(0.5, 0.5, 0.5), 0.005);
+        water.step(&ground, 0.05);
+    }
+    run(&mut water, &ground, 20);
+    assert_eq!(water.pools().count(), 0, "the pond became a pool");
+    let levels = water
+        .running_cells()
+        .into_iter()
+        .map(|running| running.level)
+        .collect::<Vec<_>>();
+    let (low, high) = levels
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &level| {
+            (low.min(level), high.max(level))
+        });
+    assert_eq!(levels.len(), 25, "the pond covers {} columns", levels.len());
+    assert!(
+        high - low < 0.001,
+        "the pond lies from {low:.4} to {high:.4} m"
+    );
+    // 0.3 m³ over the square metre floor at -1 m.
+    assert!((low + 0.7).abs() < 0.005, "the pond stands at {low:.3} m");
+    // Still water costs nothing to run.
+    let slot = water.sheets.slot(2, 2).expect("the pond's tile");
+    assert!(water.sheets.asleep(slot.tile), "the still pond is awake");
+}
+
 /// A flat floor 2 m square, of soil or of rock.
 fn floor(rock: bool) -> Ground {
     Ground {
@@ -647,9 +709,9 @@ fn a_film_soaks_into_soil_but_stays_on_rock() {
         }
         let above = water.running_m3() + water.stored_m3();
         if rock {
-            // Only the air takes a little.
+            // Only the air takes some of the film spread over the floor.
             assert!(
-                above > 0.95 * spilled,
+                above > 0.8 * spilled,
                 "rock drank {:.2e} m³",
                 spilled - above
             );
@@ -705,10 +767,7 @@ fn a_pool_spills_over_its_rim_and_runs_down_the_slope_beyond() {
         (-0.01..0.05).contains(&basin),
         "the basin stands at {basin:.3} m"
     );
-    let pit = water
-        .pools()
-        .find(|pool| pool.level < -1.5)
-        .map_or(0.0, |pool| pool.volume_m3);
+    let pit = held_below(&water, -1.5);
     // The basin holds 0.128 m³ below its rim; the rest runs on, less the
     // film left standing over the rim.
     assert!((0.05..0.072).contains(&pit), "the pit got {pit:.3} m³");
@@ -760,10 +819,7 @@ fn a_pool_spilling_over_a_cliff_holds_water_in_the_air_on_the_way_down() {
     run(&mut water, &ground, 60);
     // The basin still trickles over its rim, but the stream is spent.
     assert!(water.ledger().falling_m3 < 1.0e-4, "the stream still runs");
-    let pit = water
-        .pools()
-        .find(|pool| pool.level < -4.0)
-        .map_or(0.0, |pool| pool.volume_m3);
+    let pit = held_below(&water, -4.0);
     assert!(pit > 0.1, "the pit got {pit:.3} m³");
     assert!(
         (water.ledger().total() - 0.2).abs() < 1.0e-9,

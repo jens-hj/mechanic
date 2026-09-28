@@ -30,7 +30,10 @@ it.
   rim: the pool does not take it in but spills onto it as running water.
 - **Running water is a sheet.** See [Running water](#running-water).
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
-  river is an inlet: the water pours in and lands wherever it falls. A pool
+  river is an inlet: the water pours in and lands wherever it falls. Into
+  running water it fills the column, however deep, half the way to the
+  source's level each step, up to where seed-derived water over it begins. A
+  pool
   touching seed-derived water trades with it both ways, never past the point
   where their levels meet, and once it stands at that water's level, or fills
   its own cells under it, it joins it: its cells become part of the lake, sea
@@ -57,8 +60,10 @@ exact. Friction is 0.5 per second plus bed friction by Manning's law,
 `g n² |v| / h^(4/3)` with `n` = 0.03, which grows as water thins: a film
 barely creeps while a stream runs at a few metres a second. A sheet rests on
 the mean height of the ground in its column rather than on the bottom of its
-lowest open 5 cm layer, so a sheet down a slope is a ramp, not a stair. The flows give each sheet cell a current, which
-buoyancy and drag see. Pipes step four times per water step.
+lowest open 5 cm layer, so a sheet down a slope is a ramp, not a stair. The
+flows give each sheet cell a current, which
+buoyancy and drag see. Pipes step in substeps of at most 12.5 ms, four per
+water step.
 
 - **Slopes and lips.** A sheet climbs a step of one water cell and runs
   down a drop of up to five cells, a metre, as a steep chute. A taller drop
@@ -69,11 +74,22 @@ buoyancy and drag see. Pipes step four times per water step.
   changes; standing water in the way is looked up once per step, and not at
   all where the neighbour already runs. The pipes themselves are plain
   arithmetic over the tiles.
+- **Ponds are running water.** Under open sky a sheet may be as deep as it
+  likes; its faces are worked out from the cell its surface is in, so a pond
+  looks over its banks from its top. A hollow fills and spills on as running
+  water, flat when it comes to rest. Earlier, water resting in any hollow
+  became a flat pool over the 20 cm cells, and a flood down lumpy ground broke
+  into pools stepping down the slope like contour lines.
+- **Sleep.** A tile whose water neither changes nor moves by more than
+  0.02 mm a step for 40 steps sleeps: its pipes do not run. Water arriving,
+  higher water beside it, a deposit or a change to its ground wakes it, and
+  it wakes for one step in every 200 to follow slow changes.
 - **Where it ends.** Running water reaching a pool or seed-derived water
-  joins it. A cell whose water is at least a centimetre deep, has no lower
-  neighbour and has barely drained for ten steps becomes a pool, which then
-  floods its hollow and takes in the sheets there. Water landing in a hollow
-  starts a pool at once.
+  joins it, beside it anywhere up its depth or over it; a sheet deeper than
+  its cell does so as a pool, which joins that water over its whole depth.
+  Water rising against a roof, the cell over its surface mostly shut, becomes
+  a pool: caves, tunnels and U-tubes are pools. These checks run when a
+  sheet's surface enters a new cell, and every 16 steps otherwise.
 - **Films.** Water shallower than 2 mm clings to the ground and does not
   run; it evaporates.
 

@@ -13,6 +13,13 @@ const TILE_EDGE: i32 = 32;
 /// Columns in one tile.
 const TILE_COLUMNS: usize = (TILE_EDGE * TILE_EDGE) as usize;
 
+/// Steps a tile's water must lie still before it sleeps.
+const CALM_STEPS: u16 = 40;
+
+/// Steps between the moments a sleeping tile wakes for one step, to follow
+/// changes too slow to wake it, such as water soaking away unevenly.
+const NAP_STEPS: u16 = 200;
+
 /// Where a column lives: its tile's slot and its index in the tile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Slot {
@@ -27,6 +34,11 @@ struct Tile {
     columns: Box<[Sheet]>,
     /// Columns holding a sheet.
     wet: usize,
+    /// The most water changed or moved in any column this step, as a depth
+    /// in metres.
+    stirred: f64,
+    /// Steps its water has lain still.
+    calm: u16,
 }
 
 /// Every sheet of running water.
@@ -35,6 +47,8 @@ pub(super) struct SheetGrid {
     tiles: Vec<Tile>,
     index: CellMap<(i32, i32), usize>,
     wet: usize,
+    /// Steps rested, to spread slow checks over steps.
+    turn: u32,
 }
 
 const fn tile_key(x: i32, z: i32) -> (i32, i32) {
@@ -69,6 +83,8 @@ impl SheetGrid {
                 key,
                 columns: vec![Sheet::default(); TILE_COLUMNS].into_boxed_slice(),
                 wet: 0,
+                stirred: 0.0,
+                calm: 0,
             });
             self.tiles.len() - 1
         });
@@ -93,6 +109,20 @@ impl SheetGrid {
     pub(super) fn get(&self, cell: WaterCell) -> Option<&Sheet> {
         let sheet = self.at(self.slot(cell.x, cell.z)?);
         (sheet.present && sheet.y == cell.y).then_some(sheet)
+    }
+
+    /// The sheet whose water fills a cell: its floor lies in that cell or
+    /// below it, and a pond reaches up into it.
+    pub(super) fn covering(&self, cell: WaterCell) -> Option<&Sheet> {
+        let sheet = self.at(self.slot(cell.x, cell.z)?);
+        sheet.covers(cell).then_some(sheet)
+    }
+
+    /// The sheet whose water fills a cell, to change.
+    pub(super) fn covering_mut(&mut self, cell: WaterCell) -> Option<&mut Sheet> {
+        let slot = self.slot(cell.x, cell.z)?;
+        let sheet = self.at_mut(slot);
+        sheet.covers(cell).then_some(sheet)
     }
 
     /// The sheet in a cell, to change.
@@ -159,6 +189,55 @@ impl SheetGrid {
         wet
     }
 
+    /// Whether a tile's water lies still enough that its pipes need not run
+    /// this step.
+    pub(super) fn asleep(&self, tile: usize) -> bool {
+        let calm = self.tiles[tile].calm;
+        calm >= CALM_STEPS && !calm.is_multiple_of(NAP_STEPS)
+    }
+
+    /// Whether a slot's slow checks are due this step: each column's come
+    /// round every `every` steps.
+    pub(super) fn due(&self, slot: Slot, every: u32) -> bool {
+        let index = u32::try_from(slot.index).expect("a tile's index fits u32");
+        self.turn.wrapping_add(index).is_multiple_of(every)
+    }
+
+    /// Notes water changed or moved in a slot's column, as a depth in
+    /// metres: enough wakes its tile.
+    pub(super) fn stir(&mut self, slot: Slot, depth: f64) {
+        let tile = &mut self.tiles[slot.tile];
+        tile.stirred = tile.stirred.max(depth);
+    }
+
+    /// Wakes the tile a column lives in.
+    pub(super) fn wake(&mut self, x: i32, z: i32) {
+        if let Some(slot) = self.slot(x, z) {
+            self.tiles[slot.tile].calm = 0;
+        }
+    }
+
+    /// Ends a step: tiles whose water barely changed grow calmer, the rest
+    /// wake. `still` is the most change, as a depth in metres, that counts
+    /// as still.
+    pub(super) fn rest(&mut self, still: f64) {
+        self.turn = self.turn.wrapping_add(1);
+        for tile in &mut self.tiles {
+            tile.calm = if tile.stirred < still {
+                // Counting on round the naps, never past them.
+                let calm = tile.calm + 1;
+                if calm >= CALM_STEPS + NAP_STEPS {
+                    calm - NAP_STEPS
+                } else {
+                    calm
+                }
+            } else {
+                0
+            };
+            tile.stirred = 0.0;
+        }
+    }
+
     /// Every sheet with its cell.
     pub(super) fn iter(&self) -> impl Iterator<Item = (WaterCell, &Sheet)> + '_ {
         self.tiles
@@ -198,6 +277,7 @@ impl SheetGrid {
         for (dx, dz) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
             if let Some(slot) = self.slot(x + dx, z + dz) {
                 self.at_mut(slot).forget_routes();
+                self.tiles[slot.tile].calm = 0;
             }
         }
     }

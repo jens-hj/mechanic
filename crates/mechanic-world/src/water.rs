@@ -1287,7 +1287,7 @@ impl WaterWorld {
             pool.settle();
             return taken;
         }
-        if let Some(sheet) = self.sheets.get_mut(cell) {
+        if let Some(sheet) = self.sheets.covering_mut(cell) {
             let taken = volume_m3.min(sheet.volume);
             sheet.volume -= taken;
             return taken;
@@ -1413,7 +1413,14 @@ impl WaterWorld {
             if head <= FILM_METRES {
                 continue;
             }
-            let to = self.landing(ground, cell);
+            let mut to = self.landing(ground, cell);
+            // Inlets into one column of running water share its room.
+            if let End::Seed(seed) | End::Sheet(seed) = to
+                && let Some(slot) = self.sheets.slot(seed.x, seed.z)
+                && self.sheets.at(slot).present
+            {
+                to = End::Sheet(WaterCell::new(seed.x, self.sheets.at(slot).y, seed.z));
+            }
             let left = match to {
                 End::Body(_) | End::Launch(_) => continue,
                 End::Pool(id) => room.entry(to).or_insert_with(|| {
@@ -1424,9 +1431,30 @@ impl WaterWorld {
                 }),
                 End::Seed(seed) | End::Sheet(seed) => {
                     let openings = self.openings(ground, seed);
-                    let running = self.sheets.get(seed).map_or(0.0, |sheet| sheet.volume);
-                    room.entry(to).or_insert_with(|| {
-                        (held_in(seed, openings, surface.level) - running).max(0.0)
+                    // Running water in the column fills towards the source's
+                    // level however deep it grows, half the way per step, up
+                    // to where seed-derived water over it begins.
+                    let running = self
+                        .sheets
+                        .slot(seed.x, seed.z)
+                        .map(|slot| *self.sheets.at(slot))
+                        .filter(|sheet| sheet.present);
+                    let ceiling = running.map(|sheet| {
+                        let mut above = WaterCell::new(seed.x, sheet.top() + 1, seed.z);
+                        for _ in 0..16 {
+                            if self.implicit(ground, above).is_some() {
+                                break;
+                            }
+                            above = above.up();
+                        }
+                        above.bottom()
+                    });
+                    room.entry(to).or_insert_with(|| match (running, ceiling) {
+                        (Some(sheet), Some(ceiling)) => {
+                            0.5 * (surface.level.min(ceiling) - sheet.surface_height()).max(0.0)
+                                * WATER_CELL_METRES.powi(2)
+                        }
+                        _ => held_in(seed, openings, surface.level),
                     })
                 }
             };

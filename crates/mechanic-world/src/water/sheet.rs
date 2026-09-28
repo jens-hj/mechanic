@@ -8,11 +8,17 @@
 //! more than it holds, so water is conserved exactly and a sheet has a
 //! current. A sheet climbs a step of one water cell and runs down a drop of
 //! up to a metre as a steep chute; a taller drop is a lip it pours over.
-//! Water reaching a pool or seed-derived water joins it. Water that stops in
-//! a hollow deep enough becomes a pool.
+//! Water reaching a pool or seed-derived water joins it. Under open sky a
+//! sheet may grow as deep as it likes: a pond is running water that has come
+//! to rest, flat because the pipes have no other resting state, so a flood
+//! fills hollows and spills on without breaking into flat pools that step
+//! down the slope. Only water that rises against a roof, in a cave or a
+//! tunnel, becomes a pool.
 //!
-//! Sheets live in dense tiles ([`super::grid`]), and where each face of a
-//! sheet leads is worked out once from the ground and kept until the ground
+//! Sheets live in dense tiles ([`super::grid`]); a tile whose water lies
+//! still sleeps and costs nothing until water reaches it or its ground
+//! changes. Where each face of a sheet leads is worked out once from the
+//! ground, from the cell its surface is in, and kept until the ground
 //! changes, so the pipes themselves are plain arithmetic.
 
 use std::collections::BTreeSet;
@@ -43,8 +49,18 @@ const FRICTION_PER_SECOND: f64 = 0.5;
 /// short grass and bare soil.
 const ROUGHNESS: f64 = 0.03;
 
-/// Substeps per water step: pipes need shorter steps than pools.
-const SUBSTEPS: u32 = 4;
+/// Longest pipe substep, in seconds: pipes need shorter steps than pools,
+/// and a longer one rocks water back and forth between neighbours.
+const SUBSTEP_SECONDS: f64 = 0.0125;
+
+/// Most water, as a depth in metres, a column may gain, lose or pass on over
+/// a step while its tile counts as still, or stand above a sleeping
+/// neighbour before that wakes.
+const STILL_METRES: f64 = 2.0e-5;
+
+/// Steps between the checks of whether running water has come under still
+/// water or a roof, while its surface stays in one cell.
+const SETTLE_EVERY: u32 = 16;
 
 /// Least water a sheet keeps; less evaporates at once, in m³.
 const DRY_SHEET_M3: f64 = 1.0e-7;
@@ -52,9 +68,6 @@ const DRY_SHEET_M3: f64 = 1.0e-7;
 /// Deepest drop, in water cells, that running water takes as a steep chute
 /// rather than pouring over as a fall.
 const CHUTE_CELLS: i32 = 5;
-
-/// Steps a sheet must lie still in a hollow before it becomes a pool.
-const STILL_STEPS: u8 = 10;
 
 /// The four horizontal directions: -x, +x, -z, +z.
 const DIRECTIONS: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
@@ -87,10 +100,12 @@ pub(super) struct Sheet {
     floor: f64,
     /// Flow out through each horizontal face, in m³/s.
     flux: [f64; 4],
-    /// Steps it has lain still in a hollow.
-    still: u8,
-    /// Where each face leads, once worked out.
-    faces: Option<[Face; 4]>,
+    /// Where each face leads, once worked out, and the height of the cell
+    /// its surface was in then, in water cells.
+    faces: Option<([Face; 4], i32)>,
+    /// The height of the cell its surface was in, in water cells, when it
+    /// was last found neither under still water nor under a roof.
+    settled: Option<i32>,
 }
 
 /// One sheet in a saved world.
@@ -123,6 +138,22 @@ impl Sheet {
         self.floor + self.volume / CELL_AREA_M2
     }
 
+    /// The height of the cell its surface is in, in water cells: a pond
+    /// deeper than its floor's cell reaches up into the cells above.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "heights are far inside i32"
+    )]
+    pub(super) fn top(&self) -> i32 {
+        let top = (self.surface_height() / WATER_CELL_METRES).floor() as i32;
+        top.max(self.y)
+    }
+
+    /// Whether its water reaches up into a cell of its column.
+    pub(super) fn covers(&self, cell: WaterCell) -> bool {
+        self.present && cell.y >= self.y && cell.y <= self.top()
+    }
+
     /// Its surface, where it is deep enough to run.
     pub(super) fn surface(&self) -> Option<WaterSurface> {
         let depth = self.volume / CELL_AREA_M2;
@@ -136,6 +167,7 @@ impl Sheet {
     /// Forgets where its faces lead, since the ground around it changed.
     pub(super) fn forget_routes(&mut self) {
         self.faces = None;
+        self.settled = None;
     }
 }
 
@@ -150,20 +182,6 @@ enum Route {
     Water(End, f64),
     /// Over a lip, pouring down from this cell.
     Lip(WaterCell),
-}
-
-/// Where water leaving `cell` towards a horizontal neighbour goes, for water
-/// not yet running there.
-#[derive(Clone, Copy, Debug)]
-enum Target {
-    /// Onto the floor of this cell.
-    Cell(WaterCell),
-    /// Into standing or seed-derived water with its surface here.
-    Water(End, f64),
-    /// Over a lip.
-    Lip,
-    /// Nowhere: ground stands above the water.
-    Wall,
 }
 
 /// One cell of running water as it is drawn.
@@ -222,6 +240,7 @@ impl WaterWorld {
             self.sheets.place(slot, cell.y, floor);
         }
         self.sheets.at_mut(slot).volume += volume;
+        self.sheets.stir(slot, volume / CELL_AREA_M2);
     }
 
     /// Height of a cell's running surface and its depth, if it has a floor.
@@ -230,7 +249,13 @@ impl WaterWorld {
         ground: &impl WaterGround,
         cell: WaterCell,
     ) -> Option<(f64, f64)> {
-        if let Some(sheet) = self.sheets.get(cell) {
+        // Running water with its floor in this cell or below it, however
+        // deep it reaches.
+        if let Some(slot) = self.sheets.slot(cell.x, cell.z)
+            && let sheet = self.sheets.at(slot)
+            && sheet.present
+            && sheet.y <= cell.y
+        {
             let depth = sheet.volume / CELL_AREA_M2;
             return Some((sheet.floor + depth, depth));
         }
@@ -239,7 +264,7 @@ impl WaterWorld {
 
     /// Running water at a cell: its surface and current, if it runs there.
     pub(super) fn running(&self, cell: WaterCell) -> Option<WaterSurface> {
-        self.sheets.get(cell)?.surface()
+        self.sheets.covering(cell)?.surface()
     }
 
     /// Whether water landing in a cell would stand there rather than run.
@@ -252,11 +277,13 @@ impl WaterWorld {
         let Some((height, _)) = self.sheet_surface(ground, cell) else {
             return true;
         };
-        self.in_hollow(ground, cell, height + volume / CELL_AREA_M2)
+        self.confined(ground, cell, height + volume / CELL_AREA_M2)
     }
 
-    /// Where each face of a sheet in `cell` leads, from the ground alone.
-    fn faces(&mut self, ground: &impl WaterGround, cell: WaterCell) -> [Face; 4] {
+    /// Where each face of a sheet leads, from the ground alone, for water
+    /// whose surface is in `cell` and whose floor is in the cell at height
+    /// `floor_y`: a pond looks over its banks from its top.
+    fn faces(&mut self, ground: &impl WaterGround, cell: WaterCell, floor_y: i32) -> [Face; 4] {
         DIRECTIONS.map(|(dx, dz)| {
             let beside = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
             if let Some(floor) = ground_height(beside, self.openings(ground, beside)) {
@@ -267,10 +294,10 @@ impl WaterWorld {
                         above: beside.y,
                     };
                 }
-                // Its floor drops away: down to a metre the water runs on
-                // down a steep chute, further it pours over.
+                // Its floor drops away: down to a metre below this floor the
+                // water runs on down a steep chute, further it pours over.
                 let mut below = beside;
-                for _ in 0..CHUTE_CELLS {
+                for _ in 0..(cell.y - floor_y).max(0) + CHUTE_CELLS {
                     below = below.below();
                     let Some(floor) = ground_height(below, self.openings(ground, below)) else {
                         break;
@@ -333,8 +360,7 @@ impl WaterWorld {
             Face::Lip { y, lowest } => (y, lowest),
         };
         for y in (bottom..=top).rev() {
-            if let Some(Target::Water(end, level)) = self.standing(ground, WaterCell::new(x, y, z))
-            {
+            if let Some((end, level)) = self.standing(ground, WaterCell::new(x, y, z)) {
                 return Route::Water(end, level);
             }
         }
@@ -349,42 +375,18 @@ impl WaterWorld {
         }
     }
 
-    /// Where water leaving `cell` towards a horizontal neighbour goes, with
-    /// the water's surface at `height`.
-    fn target(
-        &mut self,
-        ground: &impl WaterGround,
-        cell: WaterCell,
-        face: usize,
-        height: f64,
-    ) -> Target {
-        let direction = DIRECTIONS[face];
-        let ground_face = self.faces(ground, cell)[face];
-        match self.route(ground, cell, direction, ground_face) {
-            Route::Wall => Target::Wall,
-            Route::Onto { floor, .. } if floor >= height => Target::Wall,
-            Route::Onto { y, .. } => Target::Cell(WaterCell::new(
-                cell.x + direction.0,
-                y,
-                cell.z + direction.1,
-            )),
-            Route::Water(end, level) => Target::Water(end, level),
-            Route::Lip(_) => Target::Lip,
-        }
-    }
-
     /// Standing water in a cell: a pool or seed-derived water.
-    fn standing(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<Target> {
+    fn standing(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<(End, f64)> {
         if let Some(&id) = self.owner.get(&cell) {
             let level = self.pools.get(&id)?.level;
             // A pool's surface is never below the floor it covers, even
             // before it has water to settle.
             let floor =
                 floor_of(cell, self.openings(ground, cell)).unwrap_or_else(|| cell.bottom());
-            return Some(Target::Water(End::Pool(id), level.max(floor)));
+            return Some((End::Pool(id), level.max(floor)));
         }
         self.implicit(ground, cell)
-            .map(|surface| Target::Water(End::Body(surface.body), surface.level))
+            .map(|surface| (End::Body(surface.body), surface.level))
     }
 
     /// Where each face of every sheet leads this step: the ground's routes,
@@ -393,23 +395,38 @@ impl WaterWorld {
         let wet = self.sheets.wet();
         let mut routes = Vec::with_capacity(wet.len());
         for (slot, cell) in wet {
+            if self.sheets.asleep(slot.tile) {
+                continue;
+            }
             let sheet = *self.sheets.at(slot);
             if sheet.volume / CELL_AREA_M2 < CLING_METRES {
                 routes.push((slot, [Route::Wall; 4]));
                 continue;
             }
-            let faces = if let Some(faces) = sheet.faces {
-                faces
-            } else {
-                let faces = self.faces(ground, cell);
-                self.sheets.at_mut(slot).faces = Some(faces);
-                faces
+            let top = sheet.top();
+            let faces = match sheet.faces {
+                Some((faces, at)) if at == top => faces,
+                _ => {
+                    let faces = self.faces(ground, WaterCell::new(cell.x, top, cell.z), cell.y);
+                    self.sheets.at_mut(slot).faces = Some((faces, top));
+                    faces
+                }
             };
             let mut face_routes = [Route::Wall; 4];
             for (route, (&direction, face)) in
                 face_routes.iter_mut().zip(DIRECTIONS.iter().zip(faces))
             {
                 *route = self.route(ground, cell, direction, face);
+                // Sleeping water standing higher than this wakes to run
+                // down into it.
+                if let Route::Onto { slot: other, .. } = *route
+                    && self.sheets.asleep(other.tile)
+                    && self.sheets.at(other).present
+                    && self.sheets.at(other).surface_height()
+                        > sheet.surface_height() + STILL_METRES
+                {
+                    self.sheets.wake(cell.x + direction.0, cell.z + direction.1);
+                }
             }
             routes.push((slot, face_routes));
         }
@@ -424,12 +441,18 @@ impl WaterWorld {
         dt: f64,
     ) -> (f64, BTreeSet<u32>) {
         let routes = self.routes(ground);
-        let sub = dt / f64::from(SUBSTEPS);
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a positive count of substeps"
+        )]
+        let substeps = (dt / SUBSTEP_SECONDS).ceil().max(1.0) as u32;
+        let sub = dt / f64::from(substeps);
         let mut moved = 0.0;
         let mut into = Vec::new();
         let mut pours = Vec::new();
         let mut flows = vec![[0.0; 4]; routes.len()];
-        for _ in 0..SUBSTEPS {
+        for _ in 0..substeps {
             // Every face's flow first, from the surfaces as they stand.
             for ((slot, faces), flow) in routes.iter().zip(&mut flows) {
                 let sheet = self.sheets.at(*slot);
@@ -476,10 +499,12 @@ impl WaterWorld {
                         continue;
                     }
                     self.sheets.at_mut(*slot).volume -= volume;
+                    self.sheets.stir(*slot, volume / CELL_AREA_M2);
                     moved += volume;
                     match *route {
                         Route::Onto { slot, y, floor } => {
                             self.sheets.place(slot, y, floor).volume += volume;
+                            self.sheets.stir(slot, volume / CELL_AREA_M2);
                         }
                         Route::Water(end, _) => into.push((end, volume)),
                         Route::Lip(over) => {
@@ -513,11 +538,12 @@ impl WaterWorld {
         for (launch, volume) in pours {
             self.pour(launch, volume);
         }
+        self.sheets.rest(STILL_METRES * sub / dt);
         (moved, fed)
     }
 
-    /// Sheets that have lain still in a hollow, deep enough to stand, become
-    /// pools; sheets that dried up evaporate.
+    /// Sheets risen against a roof become pools; sheets that dried up
+    /// evaporate.
     pub(super) fn settle_sheets(&mut self, ground: &impl WaterGround) {
         for (slot, cell) in self.sheets.wet() {
             let sheet = *self.sheets.at(slot);
@@ -529,45 +555,47 @@ impl WaterWorld {
                 self.cycle.evaporate(sheet.volume.max(0.0));
                 continue;
             }
+            // Sleeping water has settled where it lies, and water whose
+            // surface has not left the cell it was last checked in is looked
+            // at again only now and then.
+            if self.sheets.asleep(slot.tile)
+                || (sheet.settled == Some(sheet.top()) && !self.sheets.due(slot, SETTLE_EVERY))
+            {
+                continue;
+            }
             if self.submerge(ground, cell, sheet) {
                 continue;
             }
-            let (height, depth) = (sheet.surface_height(), sheet.volume / CELL_AREA_M2);
-            let draining = sheet.flux.iter().sum::<f64>() > 0.01 * sheet.volume;
-            // Water brimming over its cell's top in a hollow fills a hole: it
-            // stands there as a pool, however it sloshes.
-            let over = height > cell.bottom() + WATER_CELL_METRES;
-            let hollow = depth >= FILM_METRES
-                && (over || !draining)
-                && self.sheet_in_hollow(ground, cell, sheet);
-            let still = if hollow && !draining {
-                sheet.still + 1
-            } else {
-                0
-            };
-            let brimming = hollow && over;
-            if still >= STILL_STEPS || brimming {
+            // Under open sky a pond is running water that has stopped: only
+            // water rising against a roof stands as a pool.
+            if self.confined(ground, cell, sheet.surface_height()) {
                 self.sheets.remove_at(slot);
                 self.start_pool(ground, cell, sheet.volume);
             } else {
-                self.sheets.at_mut(slot).still = still;
+                self.sheets.at_mut(slot).settled = Some(sheet.top());
             }
         }
         self.sheets.compact();
     }
 
-    /// A sheet that stands no higher than still water beside it, whose
-    /// surface covers its floor, lies under that water: a pool floods it and
-    /// takes its water, seed-derived water takes it in as a joined cell.
+    /// A sheet that stands no higher than still water beside it or over it,
+    /// whose surface covers its floor, lies under that water: a pool floods
+    /// it and takes its water, seed-derived water takes it in as a joined
+    /// cell, or as a pool first where the sheet is deeper than its cell.
     /// Water running down past a pool's rim is not under the pool: it is the
     /// pool's spill.
     fn submerge(&mut self, ground: &impl WaterGround, cell: WaterCell, sheet: Sheet) -> bool {
         let height = sheet.surface_height();
         let under = |level: f64| level > sheet.floor + FILM_METRES && height < level + MERGE_METRES;
-        for (dx, dz) in DIRECTIONS {
-            let beside = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
+        // Still water beside it anywhere up its depth, or over it.
+        let top = sheet.top();
+        let mut around = (cell.y..=top)
+            .flat_map(|y| DIRECTIONS.map(|(dx, dz)| WaterCell::new(cell.x + dx, y, cell.z + dz)))
+            .collect::<Vec<_>>();
+        around.push(WaterCell::new(cell.x, top + 1, cell.z));
+        for beside in around {
             // Running water beside it is no still water.
-            if self.sheets.get(beside).is_some() {
+            if self.sheets.covering(beside).is_some() {
                 continue;
             }
             if let Some(&id) = self.owner.get(&beside) {
@@ -590,6 +618,13 @@ impl WaterWorld {
                 continue;
             };
             let level = self.drawn(ground, seed).level;
+            if under(level) && top > cell.y {
+                // A pond deeper than its cell stands as a pool, which joins
+                // the water it meets over all its depth.
+                self.sheets.remove(cell);
+                self.start_pool(ground, cell, sheet.volume);
+                return true;
+            }
             if under(level) {
                 self.sheets.remove(cell);
                 let held = held_in(cell, self.openings(ground, cell), level);
@@ -614,40 +649,19 @@ impl WaterWorld {
         false
     }
 
-    /// Whether no face of a sheet leads lower than its floor.
-    fn sheet_in_hollow(
-        &mut self,
-        ground: &impl WaterGround,
-        cell: WaterCell,
-        sheet: Sheet,
-    ) -> bool {
-        let Some(faces) = sheet.faces else {
-            return self.in_hollow(ground, cell, sheet.surface_height());
-        };
-        DIRECTIONS.iter().zip(faces).all(|(&direction, face)| {
-            match self.route(ground, cell, direction, face) {
-                Route::Onto { floor, .. } => floor >= sheet.floor,
-                Route::Water(_, level) => level >= sheet.floor,
-                Route::Lip(_) => false,
-                Route::Wall => true,
-            }
-        })
-    }
-
-    /// Whether no neighbour of a cell lies lower than its floor, so water
-    /// there stands rather than runs.
-    fn in_hollow(&mut self, ground: &impl WaterGround, cell: WaterCell, height: f64) -> bool {
-        let Some(floor) = floor_of(cell, self.openings(ground, cell)) else {
-            return false;
-        };
-        (0..DIRECTIONS.len()).all(|face| match self.target(ground, cell, face, height) {
-            Target::Cell(other) => {
-                floor_of(other, self.openings(ground, other)).is_none_or(|other| other >= floor)
-            }
-            Target::Water(_, level) => level >= floor,
-            Target::Lip => false,
-            Target::Wall => true,
-        })
+    /// Whether water in the column of `cell` with its surface at `height`
+    /// has ground over it: the cell above its surface is mostly shut, so the
+    /// water fills a cave or a tunnel rather than lying under the sky.
+    fn confined(&mut self, ground: &impl WaterGround, cell: WaterCell, height: f64) -> bool {
+        let top = WaterCell::containing(DVec3::new(cell.centre().x, height, cell.centre().z));
+        let above = WaterCell::new(cell.x, top.y.max(cell.y) + 1, cell.z);
+        let open = self
+            .openings(ground, above)
+            .iter()
+            .map(|&open| u32::from(open))
+            .sum::<u32>();
+        let whole = u32::try_from(super::WATER_CELL_EDGE_CELLS.pow(3)).expect("64 cells");
+        open * 2 < whole
     }
 
     /// Water evaporating from every sheet into the air.
