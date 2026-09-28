@@ -1363,9 +1363,13 @@ impl WaterWorld {
                     pool.queue(cell, floor);
                 }
             } else if self
+                .ground
                 .implicit(ground, neighbour)
+                .map(|surface| self.drawn(ground, surface))
                 .is_some_and(|surface| surface.level > floor + FILM_METRES)
             {
+                // Only the seed's own water pours in: cells joined to it
+                // lie under it and feed nothing beside them.
                 self.inlets.insert(cell);
             }
         }
@@ -1410,7 +1414,7 @@ impl WaterWorld {
                 self.inlets.remove(&cell);
                 continue;
             };
-            if head <= FILM_METRES {
+            if head <= CLING_METRES {
                 continue;
             }
             let mut to = self.landing(ground, cell);

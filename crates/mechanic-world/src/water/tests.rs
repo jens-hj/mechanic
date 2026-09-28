@@ -160,6 +160,11 @@ fn drawn(water: &WaterWorld) -> f64 {
     -water.surplus_m3(WaterBody::Lake(0))
 }
 
+/// Water held in pools, joined cells, running water and falls, in m³.
+fn held(water: &WaterWorld) -> f64 {
+    water.stored_m3() + water.joined_m3() + water.running_m3() + water.ledger().falling_m3
+}
+
 /// Water standing or running with its surface below `height`, in m³.
 fn held_below(water: &WaterWorld, height: f64) -> f64 {
     let pools = water
@@ -267,7 +272,7 @@ fn lake_and_trench(cave: bool) -> Ground {
 }
 
 #[test]
-fn a_trench_dug_from_a_lake_fills_to_the_lake_level_and_joins_it() {
+fn a_trench_dug_from_a_lake_fills_to_the_lake_level() {
     let ground = lake_and_trench(false);
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
@@ -275,22 +280,20 @@ fn a_trench_dug_from_a_lake_fills_to_the_lake_level_and_joins_it() {
     let trench = water
         .surface(&ground, DVec3::new(3.0, 0.0, 0.3))
         .expect("the trench holds water");
-    assert_eq!(
-        trench.body,
-        WaterBody::Lake(0),
-        "the trench did not join the lake"
-    );
+    // Beside the lake, not under it: running water at the lake's level.
+    assert_eq!(trench.body, WaterBody::Running);
     assert!(
         (trench.level - 0.8).abs() < 0.01,
         "the trench stands at {:.3} m",
         trench.level
     );
-    let held = water.stored_m3() + water.joined_m3();
+    let held = held(&water);
     assert!(held > 2.5, "the trench holds only {held:.3} m³");
-    // Joined cells follow the lake as it drops, which its hollow's area does
-    // not count: the books close to the drop over their area.
+    // What the lake gave is in the trench, or risen off it into the air and
+    // come down on the sea.
+    let ledger = water.ledger();
     assert!(
-        (drawn(&water) - held).abs() < 0.01,
+        (drawn(&water) - held - ledger.air_m3 - ledger.sea_m3).abs() < 1.0e-9,
         "the trench holds {held:.3} m³ but the lake gave {:.3} m³",
         drawn(&water)
     );
@@ -304,7 +307,7 @@ fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
     // The last few centimetres run through the trench at a few litres a
     // second.
     run(&mut water, &ground, 240);
-    let held = water.stored_m3() + water.joined_m3();
+    let held = held(&water);
     assert!(held > 36.0, "the cave holds {held:.1} m³");
     let cave = level_at(&water, &ground, DVec3::new(6.0, -2.0, 0.5));
     let lake = level_at(&water, &ground, DVec3::new(-5.0, 0.0, 0.5));
@@ -336,25 +339,30 @@ fn a_channel_from_a_lake_into_a_pit_fills_and_comes_to_rest() {
     let ground = lake_channel_and_pit();
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
-    // The channel pours into the pit at about 11 L/s: it takes some five
-    // minutes to fill.
-    run(&mut water, &ground, 400);
+    // The channel runs into the pit at about 7 L/s, water 5 cm deep at a
+    // quarter of a metre a second: it takes some seven minutes to fill.
+    run(&mut water, &ground, 600);
     let step = water.step(&ground, 0.05);
-    assert_eq!(step.sheet_cells, 0, "water still runs in the channel");
     assert!(step.falls.is_empty(), "water still falls into the pit");
+    // Only a trickle from the lake, making up what rises into the air.
     assert!(
-        step.moved_m3 < 1.0e-6,
+        step.moved_m3 < 5.0e-5,
         "{:.2e} m³ still moves each step",
         step.moved_m3
     );
+    // Running water at rest at the lake's level, fed through the channel.
     for point in [DVec3::new(1.5, 0.75, 0.3), DVec3::new(3.8, 0.0, 0.3)] {
-        let surface = water.surface(&ground, point).expect("the dig holds water");
-        assert_eq!(surface.body, WaterBody::Lake(0), "at {point}");
+        let level = level_at(&water, &ground, point);
+        assert!(
+            (level - 0.8).abs() < 0.01,
+            "at {point} the dig stands at {level:.3} m"
+        );
     }
     // The pit's 3.1 m³ below the channel came from the lake.
-    let held = water.stored_m3() + water.joined_m3();
+    let held = held(&water);
     assert!(held > 3.0, "the dig holds only {held:.3} m³");
-    assert!((drawn(&water) - held).abs() < 0.01);
+    let ledger = water.ledger();
+    assert!((drawn(&water) - held - ledger.air_m3 - ledger.sea_m3).abs() < 1.0e-9);
 }
 
 /// A lake over a bed 2 m down, with a 1 m hole dug into the bed.
@@ -569,8 +577,10 @@ fn water_spilled_on_a_slope_runs_down_it_before_it_pools() {
     let saved = WaterWorld::from_doc(&ground, &water.to_doc());
     assert!((saved.ledger().total() - spilled).abs() < 1.0e-9);
     run(&mut water, &ground, 30);
+    // A film up to 2 mm deep clings to each of the eight steps, some 2.6 L
+    // in all; the rest runs down into the pit.
     let pit = held_below(&water, -1.5);
-    assert!(pit > 0.85 * spilled, "the pit holds {pit:.3} m³");
+    assert!(pit > 0.7 * spilled, "the pit holds {pit:.3} m³");
     assert!(
         (water.ledger().total() - spilled).abs() < 1.0e-9,
         "water was made or lost"
@@ -681,6 +691,72 @@ fn a_pond_in_a_hollow_settles_flat_as_still_running_water() {
     // Still water costs nothing to run.
     let slot = water.sheets.slot(2, 2).expect("the pond's tile");
     assert!(water.sheets.asleep(slot.tile), "the still pond is awake");
+}
+
+/// A lake to the west, a bank a metre high, and beyond it a flat field
+/// 10 cm under the lake, with a 40 cm breach cut through the bank.
+fn lake_bank_and_field() -> Ground {
+    Ground {
+        rooms: vec![
+            room([-20.0, 1.0, -20.0], [20.0, 3.0, 20.0]),
+            room([0.4, 0.7, -6.0], [12.0, 3.0, 6.0]),
+            room([0.0, 0.7, -0.2], [0.4, 3.0, 0.2]),
+        ],
+        lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
+        river: None,
+        rock: true,
+    }
+}
+
+/// How far the farthest stored water lies from a point, in metres.
+fn front(water: &WaterWorld, ground: &Ground, from: DVec2) -> f64 {
+    let distance = |cell: WaterCell| {
+        let centre = cell.centre();
+        (DVec2::new(centre.x, centre.z) - from).length()
+    };
+    let running = water
+        .running_cells()
+        .into_iter()
+        .map(|running| running.cell);
+    let pools = water.pools().flat_map(|pool| pool.surface_cells);
+    let joined = water.joined_cells(ground).into_iter().map(|(cell, _)| cell);
+    running
+        .chain(pools)
+        .chain(joined)
+        .map(distance)
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn a_breach_floods_a_field_as_a_front_moving_at_shallow_water_speed() {
+    let ground = lake_bank_and_field();
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    let breach = DVec2::new(0.4, 0.0);
+    let mut fronts = Vec::new();
+    for _ in 0..30 {
+        run(&mut water, &ground, 1);
+        fronts.push(front(&water, &ground, breach));
+    }
+    // Water 10 cm deep over grass spreads at a few tens of centimetres a
+    // second, slowing as it thins: it never races along the ground at the
+    // lake's level.
+    assert!(fronts[0] < 1.0, "a metre out after a second: {fronts:.2?}");
+    assert!(
+        fronts[9] < 4.0,
+        "four metres out after ten seconds: {fronts:.2?}"
+    );
+    assert!(
+        fronts[29] > fronts[9] + 0.5,
+        "the flood stopped: {fronts:.2?}"
+    );
+    assert_eq!(
+        water.joined_cells(&ground).len(),
+        0,
+        "the field joined the lake"
+    );
+    let ledger = water.ledger();
+    assert!(ledger.total().abs() < 1.0e-9, "water was made or lost");
 }
 
 /// A flat floor 2 m square, of soil or of rock.

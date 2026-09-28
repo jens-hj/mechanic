@@ -32,13 +32,16 @@ it.
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
   river is an inlet: the water pours in and lands wherever it falls. Into
   running water it fills the column, however deep, half the way to the
-  source's level each step, up to where seed-derived water over it begins. A
+  source's level each step, up to where seed-derived water over it begins,
+  while the head over the lip is at least 2 mm. Only the seed's own water
+  pours in: cells joined to it lie under it and feed nothing beside them. A
   pool
   touching seed-derived water trades with it both ways, never past the point
   where their levels meet, and once it stands at that water's level, or fills
   its own cells under it, it joins it: its cells become part of the lake, sea
   or river, and whatever it counted above its own cells returns to it. A hole
-  dug under a lake or a trench cut from it therefore ends up lake. The water
+  dug under a lake therefore ends up lake; a trench cut from it fills with
+  running water at the lake's level. The water
   a joined cell holds is booked to the cell; filling the cell with ground
   hands it back. Water taken from a lake lowers the whole lake by the volume
   over its area; water returned to it raises it again. A lake covers at
@@ -58,7 +61,11 @@ pipe's flow gathers speed with the difference in surface height across it
 and loses it to friction, and no cell sends more than it holds, so volume is
 exact. Friction is 0.5 per second plus bed friction by Manning's law,
 `g n² |v| / h^(4/3)` with `n` = 0.03, which grows as water thins: a film
-barely creeps while a stream runs at a few metres a second. A sheet rests on
+barely creeps while a stream runs at a few metres a second. A pipe is as deep
+as the water over its face, up to a metre, so a film is pushed as a film:
+together with Manning's friction this gives Manning's law, and a flood 10 cm
+deep spreads over flat grass at a few tens of centimetres a second. Water
+reaches ground only by flowing there. A sheet rests on
 the mean height of the ground in its column rather than on the bottom of its
 lowest open 5 cm layer, so a sheet down a slope is a ramp, not a stair. The
 flows give each sheet cell a current, which
@@ -84,9 +91,14 @@ water step.
   0.02 mm a step for 40 steps sleeps: its pipes do not run. Water arriving,
   higher water beside it, a deposit or a change to its ground wakes it, and
   it wakes for one step in every 200 to follow slow changes.
-- **Where it ends.** Running water reaching a pool or seed-derived water
-  joins it, beside it anywhere up its depth or over it; a sheet deeper than
-  its cell does so as a pool, which joins that water over its whole depth.
+- **Where it ends.** Running water pours into a pool or seed-derived water
+  through its faces. A pool beside it or over it takes it in, and
+  seed-derived water only over it, as in a hole dug under a lake; a sheet
+  deeper than its cell goes in as a pool, which joins that water over its
+  whole depth. Running water beside a lake at the lake's level stays running
+  water: letting the lake take in whatever touched it spread the lake along
+  its contour a cell a step, faster than water flows. A lip whose drop is
+  filled with running water up to it leads onto that water.
   Water rising against a roof, the cell over its surface mostly shut, becomes
   a pool: caves, tunnels and U-tubes are pools. These checks run when a
   sheet's surface enters a new cell, and every 16 steps otherwise.

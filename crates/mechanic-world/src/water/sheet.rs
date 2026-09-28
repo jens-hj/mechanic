@@ -38,9 +38,10 @@ use crate::WaterSurface;
 /// Horizontal area of one water cell, in square metres.
 const CELL_AREA_M2: f64 = WATER_CELL_METRES * WATER_CELL_METRES;
 
-/// Pipe cross-section over its length, in metres: the pipes behave like
-/// water 20 cm deep, so waves cross a cell in a tenth of a second.
-const PIPE_METRES: f64 = WATER_CELL_METRES;
+/// Deepest water a pipe's drive counts, in metres: deeper water drives no
+/// harder, which keeps waves slow enough for the substeps (3 m/s, a fifth
+/// of a cell per substep).
+const DRIVE_METRES: f64 = 1.0;
 
 /// How fast friction takes a pipe's flow whatever its depth, per second.
 const FRICTION_PER_SECOND: f64 = 0.5;
@@ -285,8 +286,16 @@ impl WaterWorld {
     /// `floor_y`: a pond looks over its banks from its top.
     fn faces(&mut self, ground: &impl WaterGround, cell: WaterCell, floor_y: i32) -> [Face; 4] {
         DIRECTIONS.map(|(dx, dz)| {
-            let beside = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
-            if let Some(floor) = ground_height(beside, self.openings(ground, beside)) {
+            let level = WaterCell::new(cell.x + dx, cell.y, cell.z + dz);
+            // The highest opening beside the water, from its surface down to
+            // its floor: a pond drains through a hole in its bank.
+            let mut beside = level;
+            let mut open = ground_height(beside, self.openings(ground, beside));
+            while open.is_none() && beside.y > floor_y {
+                beside = beside.below();
+                open = ground_height(beside, self.openings(ground, beside));
+            }
+            if let Some(floor) = open {
                 if !self.drops(ground, beside) {
                     return Face::Onto {
                         y: beside.y,
@@ -316,7 +325,7 @@ impl WaterWorld {
                 };
             }
             // Solid beside: the water may climb a step of one cell.
-            let above = beside.up();
+            let above = level.up();
             let open_above = floor_of(cell.up(), self.openings(ground, cell.up())).is_some();
             match ground_height(above, self.openings(ground, above)) {
                 Some(floor) if open_above => Face::Onto {
@@ -353,6 +362,20 @@ impl WaterWorld {
             && self.sheets.at(slot).y == y
         {
             return Route::Onto { slot, y, floor };
+        }
+        // Running water filling the drop beyond a lip up to it takes the
+        // water as its own: a full pit is no fall.
+        if let Face::Lip { y, .. } = face
+            && let Some(slot) = self.sheets.slot(x, z)
+            && let sheet = self.sheets.at(slot)
+            && sheet.present
+            && sheet.surface_height() >= WaterCell::new(x, y, z).bottom()
+        {
+            return Route::Onto {
+                slot,
+                y: sheet.y,
+                floor: sheet.floor,
+            };
         }
         let (top, bottom) = match face {
             Face::Wall => return Route::Wall,
@@ -459,23 +482,30 @@ impl WaterWorld {
                 let height = sheet.surface_height();
                 let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
                 for (face, route) in faces.iter().enumerate() {
+                    // The surface beyond the face, and the floor the water
+                    // crosses it over.
                     let beyond = match *route {
                         Route::Wall => None,
                         Route::Onto { floor, .. } if floor >= height => None,
                         Route::Onto { slot, floor, .. } => {
                             let other = self.sheets.at(slot);
-                            Some(if other.present {
-                                other.surface_height()
-                            } else {
-                                floor
-                            })
+                            Some((
+                                if other.present {
+                                    other.surface_height()
+                                } else {
+                                    floor
+                                },
+                                floor.max(sheet.floor),
+                            ))
                         }
-                        Route::Water(_, level) => Some(level),
-                        Route::Lip(over) => Some(over.bottom()),
+                        Route::Water(_, level) => Some((level, sheet.floor)),
+                        Route::Lip(over) => Some((over.bottom(), sheet.floor)),
                     };
-                    flow[face] = beyond.map_or(0.0, |beyond| {
-                        let driven =
-                            sheet.flux[face] + sub * GRAVITY * PIPE_METRES * (height - beyond);
+                    flow[face] = beyond.map_or(0.0, |(beyond, sill)| {
+                        // The pipe is as deep as the water over the face:
+                        // a film is pushed as a film, not as a stream.
+                        let across = (height.max(beyond) - sill).clamp(CLING_METRES, DRIVE_METRES);
+                        let driven = sheet.flux[face] + sub * GRAVITY * across * (height - beyond);
                         (driven / (1.0 + friction(sheet.flux[face], depth) * sub)).max(0.0)
                     });
                 }
@@ -578,10 +608,11 @@ impl WaterWorld {
         self.sheets.compact();
     }
 
-    /// A sheet that stands no higher than still water beside it or over it,
-    /// whose surface covers its floor, lies under that water: a pool floods
-    /// it and takes its water, seed-derived water takes it in as a joined
-    /// cell, or as a pool first where the sheet is deeper than its cell.
+    /// A sheet that stands no higher than a pool beside it or over it, or
+    /// seed-derived water over it, whose surface covers its floor, lies under
+    /// that water: a pool floods it and takes its water, seed-derived water
+    /// takes it in as a joined cell, or as a pool first where the sheet is
+    /// deeper than its cell.
     /// Water running down past a pool's rim is not under the pool: it is the
     /// pool's spill.
     fn submerge(&mut self, ground: &impl WaterGround, cell: WaterCell, sheet: Sheet) -> bool {
@@ -592,7 +623,8 @@ impl WaterWorld {
         let mut around = (cell.y..=top)
             .flat_map(|y| DIRECTIONS.map(|(dx, dz)| WaterCell::new(cell.x + dx, y, cell.z + dz)))
             .collect::<Vec<_>>();
-        around.push(WaterCell::new(cell.x, top + 1, cell.z));
+        let over = WaterCell::new(cell.x, top + 1, cell.z);
+        around.push(over);
         for beside in around {
             // Running water beside it is no still water.
             if self.sheets.covering(beside).is_some() {
@@ -608,6 +640,14 @@ impl WaterWorld {
                     self.sheets.remove(cell);
                     return true;
                 }
+                continue;
+            }
+            // Seed-derived water takes in only what lies under it: water
+            // beside a lake at its level stays running water and trades with
+            // it through its faces. Joining whatever touches the lake would
+            // let the lake spread itself along its contour faster than any
+            // water flows.
+            if beside != over {
                 continue;
             }
             let seed = match self.joined.get(&beside) {
