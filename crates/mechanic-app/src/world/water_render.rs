@@ -196,8 +196,11 @@ pub(crate) struct WaterTiles {
     /// Cells joined to seed-derived water, which the tiles draw as that
     /// water.
     joined_cells: Arc<HashSet<WaterCell>>,
-    /// Columns whose joined cells changed since the tiles over them were
-    /// meshed.
+    /// Water-cell columns of running water at the lake's level, which the
+    /// tiles run on over.
+    meeting_columns: Arc<HashSet<(i32, i32)>>,
+    /// Columns whose joined cells or running water changed since the tiles
+    /// over them were meshed.
     stale: Vec<[f64; 2]>,
 }
 
@@ -315,9 +318,14 @@ pub(crate) fn stream_water(
     let mesh = |key: TileKey, tiles: &WaterTiles| {
         let field = runtime.field.clone();
         let edits = runtime.edits.snapshot();
-        let (shifts, joined) = (tiles.shifts.clone(), tiles.joined_cells.clone());
-        AsyncComputeTaskPool::get()
-            .spawn(async move { joined_water_sheet(&field, &edits, key.tile(), &shifts, &joined) })
+        let (shifts, joined, meeting) = (
+            tiles.shifts.clone(),
+            tiles.joined_cells.clone(),
+            tiles.meeting_columns.clone(),
+        );
+        AsyncComputeTaskPool::get().spawn(async move {
+            joined_water_sheet(&field, &edits, key.tile(), &shifts, &joined, &meeting)
+        })
     };
     refresh_stale(&mut tiles, mesh);
 
@@ -562,7 +570,7 @@ pub(crate) fn draw_stored_water(
         }
         keep
     });
-    note_joined(&mut tiles, &view.joined);
+    note_joined(&mut tiles, &view.joined, &view.meeting);
     // Falling water changes every step: it is drawn afresh each time.
     if let Some(entity) = tiles.falls.take() {
         commands.entity(entity).despawn();
@@ -720,9 +728,14 @@ pub(crate) fn draw_wet_ground(
     }
 }
 
-/// Keeps the cells joined to seed-derived water, and marks the lake tiles
-/// over any that joined or left it to be meshed again.
-fn note_joined(tiles: &mut WaterTiles, cells: &[(WaterCell, WaterSurface)]) {
+/// Keeps the cells joined to seed-derived water and the running water at
+/// its level, and marks the lake tiles over any that came or went to be
+/// meshed again.
+fn note_joined(
+    tiles: &mut WaterTiles,
+    cells: &[(WaterCell, WaterSurface)],
+    meeting: &[(i32, i32)],
+) {
     let set = cells.iter().map(|(cell, _)| *cell).collect::<HashSet<_>>();
     if set != *tiles.joined_cells {
         let stale = set
@@ -731,6 +744,18 @@ fn note_joined(tiles: &mut WaterTiles, cells: &[(WaterCell, WaterSurface)]) {
             .collect::<Vec<_>>();
         tiles.stale.extend(stale);
         tiles.joined_cells = Arc::new(set);
+    }
+    let meeting = meeting.iter().copied().collect::<HashSet<_>>();
+    if meeting != *tiles.meeting_columns {
+        let stale = meeting
+            .symmetric_difference(&tiles.meeting_columns)
+            .map(|&(x, z)| {
+                let centre = WaterCell::new(x, 0, z).centre();
+                [centre.x, centre.z]
+            })
+            .collect::<Vec<_>>();
+        tiles.stale.extend(stale);
+        tiles.meeting_columns = Arc::new(meeting);
     }
 }
 

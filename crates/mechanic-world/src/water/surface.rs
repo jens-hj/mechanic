@@ -46,6 +46,10 @@ struct Column {
 /// stored water meets a lake at the lake's level and colour.
 const ANCHOR_METRES: f64 = 1.0;
 
+/// Running water this near a lake's level, in metres, meets the lake's own
+/// sheet, which runs on over it.
+const MEETS_METRES: f64 = 0.1;
+
 /// One tile of the stored water's surface, placed at `origin`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SurfaceTile {
@@ -103,6 +107,23 @@ impl WaterWorld {
         }
         out.sort_unstable_by_key(|tile| tile.key);
         out
+    }
+
+    /// Columns of running water standing at the level of the lake or river
+    /// whose sheet reaches over them, as in a channel dug from a lake: the
+    /// sheet runs on over them to meet the running water's surface.
+    pub fn meeting_columns(&self, ground: &impl WaterGround) -> Vec<(i32, i32)> {
+        self.running_cells()
+            .into_iter()
+            .filter(|view| view.depth >= VISIBLE_METRES)
+            .filter(|view| {
+                let centre = view.cell.centre();
+                ground
+                    .surface(centre.x, centre.z)
+                    .is_some_and(|seed| view.level >= self.drawn(ground, seed).level - MEETS_METRES)
+            })
+            .map(|view| (view.cell.x, view.cell.z))
+            .collect()
     }
 
     /// Every column of visible stored water, at its top.
@@ -209,7 +230,13 @@ impl WaterWorld {
                         continue;
                     };
                     let level = self.drawn(ground, seed).level;
-                    if (level - column.level).abs() <= JOINS_METRES {
+                    // Only where the seed-derived water shows: its sheet runs
+                    // on under the bank, and an edge pulled down to its level
+                    // there sinks into the ground in teeth.
+                    let probe = DVec3::new(centre.x, level - 0.02, centre.z);
+                    let shows = ground.implicit(probe).is_some()
+                        || self.joined.contains_key(&WaterCell::containing(probe));
+                    if shows && (level - column.level).abs() <= JOINS_METRES {
                         anchors.insert(
                             key,
                             Column {

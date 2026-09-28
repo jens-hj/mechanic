@@ -252,7 +252,12 @@ the shader fades it from 3 mm to 12 mm deep, so water a centimetre or two over
 a lump still shows its surface. A lake, sea or river beside stored water
 weighs in on the corners they share as metre-deep water at its current level,
 so a flood or a dug channel meets it at the lake's level and colour, with no
-step between the two surfaces.
+step between the two surfaces. It does so only where that water shows, not
+where its sheet runs on under the bank, or the edge would sink into the
+ground in teeth. The lake's own sheet, a metre between vertices, runs on over
+running water standing within 10 cm of its level and fades out there, as it
+does under a bank, rather than stopping a square short and leaving the dug
+ground between the two surfaces bare.
 Normals follow the surface, and each corner carries the current, so ripples
 run with it. A stream in flight is two crossed ribbons along its arc, wider
 as more water pours. Lakes and rivers moved from their seed level mesh again

@@ -72,22 +72,26 @@ pub fn water_sheet(
     tile: WaterTile,
     shifts: &std::collections::BTreeMap<crate::WaterBody, crate::WaterShift>,
 ) -> Option<WaterSheet> {
-    joined_water_sheet(field, edits, tile, shifts, &HashSet::new())
+    joined_water_sheet(field, edits, tile, shifts, &HashSet::new(), &HashSet::new())
 }
 
 /// Meshes one tile of water surface as [`water_sheet`] does, with the cells
 /// dug out beside or under seed-derived water and `joined` to it counted as
 /// that water: one surface runs on over them, as deep as the dug ground.
+/// Over the water-cell columns in `meeting`, where running water stands at
+/// the lake's level, the sheet runs on and fades out, so it meets the
+/// running water's own surface rather than stopping a grid square short.
 ///
 /// # Panics
 ///
 /// Panics only if a tile exceeds the `u32` mesh-index contract.
-pub fn joined_water_sheet<S: std::hash::BuildHasher>(
+pub fn joined_water_sheet<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
     field: &TerrainField,
     edits: &impl TerrainSource,
     tile: WaterTile,
     shifts: &std::collections::BTreeMap<crate::WaterBody, crate::WaterShift>,
     joined: &HashSet<WaterCell, S>,
+    meeting: &HashSet<(i32, i32), T>,
 ) -> Option<WaterSheet> {
     let [x0, z0] = tile.minimum;
     field.water_level_range(
@@ -116,9 +120,12 @@ pub fn joined_water_sheet<S: std::hash::BuildHasher>(
                 .get(&seed.body)
                 .map_or(seed, |shift| shift.apply(seed));
             let probe = DVec3::new(x, surface.level - SURFACE_PROBE_METRES, z);
-            let buried = density(probe) > 0.0;
-            let open = !buried
-                && (field.is_water(probe) || joined.contains(&WaterCell::containing(probe)));
+            let cell = WaterCell::containing(probe);
+            let under_ground = density(probe) > 0.0;
+            let open = !under_ground && (field.is_water(probe) || joined.contains(&cell));
+            // Running water at the lake's level hides the sheet as ground
+            // over it would.
+            let buried = !open && (under_ground || meeting.contains(&(cell.x, cell.z)));
             let mut depth = 0.0;
             if open {
                 let mut y = surface.level;

@@ -67,6 +67,8 @@ pub(crate) struct WaterView {
     pub(crate) surface: Vec<SurfaceTile>,
     /// Cells joined to seed-derived water, with its surface as it stands.
     pub(crate) joined: Vec<(WaterCell, WaterSurface)>,
+    /// Columns of running water at the level of the lake over them.
+    pub(crate) meeting: Vec<(i32, i32)>,
     /// Wet ground.
     pub(crate) wet: Vec<WetGround>,
 }
@@ -140,6 +142,7 @@ fn view(
     WaterView {
         surface: world.surface_tiles(ground, drawn),
         joined: world.joined_cells(ground),
+        meeting: world.meeting_columns(ground),
         wet: world.wet_ground(),
     }
 }
