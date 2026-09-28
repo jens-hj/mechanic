@@ -120,7 +120,7 @@ fn fragment(
     // Shallow water shows the ground through it and fades out to nothing at
     // its edges; deep water is murky.
     let murk = 1.0 - exp(-depth / 3.0);
-    let edge = smoothstep(0.0, 0.03, depth);
+    let edge = smoothstep(0.003, 0.012, depth);
     // Fast water breaks white in streaks along its current.
     let speed = length(flow);
     let along = select(vec2<f32>(1.0, 0.0), flow / speed, speed > 1.0e-3);

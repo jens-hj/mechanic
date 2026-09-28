@@ -236,7 +236,12 @@ around it that lie within a metre of each other, so neighbouring columns
 share corners: water down a slope is one smooth ramp, a pool meets the stream
 feeding it on one edge, and no gaps open between columns at different
 heights. Water more than a metre apart is separate, with a fall between.
-Corners beside dry ground take no depth, so water fades out at its edges.
+Corners beside dry ground take no depth, so water fades out at its edges:
+the shader fades it from 3 mm to 12 mm deep, so water a centimetre or two over
+a lump still shows its surface. A lake, sea or river beside stored water
+weighs in on the corners they share as metre-deep water at its current level,
+so a flood or a dug channel meets it at the lake's level and colour, with no
+step between the two surfaces.
 Normals follow the surface, and each corner carries the current, so ripples
 run with it. A stream in flight is two crossed ribbons along its arc, wider
 as more water pours. Lakes and rivers moved from their seed level mesh again

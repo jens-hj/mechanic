@@ -37,7 +37,14 @@ struct Column {
     level: f64,
     depth: f64,
     flow: DVec2,
+    /// Seed-derived water beside stored water, which draws itself: it only
+    /// holds the corners it shares with stored water at its level.
+    anchor: bool,
 }
+
+/// Depth an anchor weighs in with on a corner, in metres: as deep water, so
+/// stored water meets a lake at the lake's level and colour.
+const ANCHOR_METRES: f64 = 1.0;
 
 /// One tile of the stored water's surface, placed at `origin`.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -71,7 +78,7 @@ impl WaterWorld {
     ) -> Vec<SurfaceTile> {
         let columns = self.visible_columns(ground);
         let mut tiles = CellMap::<(i32, i32), Vec<(i32, i32)>>::default();
-        for &(x, z) in columns.keys() {
+        for (&(x, z), _) in columns.iter().filter(|(_, column)| !column.anchor) {
             tiles
                 .entry((
                     x.div_euclid(SURFACE_TILE_COLUMNS),
@@ -119,6 +126,7 @@ impl WaterWorld {
                     level: view.level,
                     depth: view.depth,
                     flow: view.flow,
+                    anchor: false,
                 },
             );
         }
@@ -141,6 +149,7 @@ impl WaterWorld {
                         level,
                         depth,
                         flow: DVec2::ZERO,
+                        anchor: false,
                     },
                 );
             }
@@ -171,11 +180,50 @@ impl WaterWorld {
                         level,
                         depth: level - bottom,
                         flow: DVec2::ZERO,
+                        anchor: false,
                     },
                 );
             }
         }
+        self.anchor_to_seed_water(ground, &mut columns);
         columns
+    }
+
+    /// Adds seed-derived water beside the stored water as anchors, so the
+    /// stored water's edge meets it at its own level.
+    fn anchor_to_seed_water(
+        &self,
+        ground: &impl WaterGround,
+        columns: &mut CellMap<(i32, i32), Column>,
+    ) {
+        let mut anchors = CellMap::<(i32, i32), Column>::default();
+        for (&(x, z), column) in columns.iter() {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    let key = (x + dx, z + dz);
+                    if columns.contains_key(&key) || anchors.contains_key(&key) {
+                        continue;
+                    }
+                    let centre = WaterCell::new(key.0, 0, key.1).centre();
+                    let Some(seed) = ground.surface(centre.x, centre.z) else {
+                        continue;
+                    };
+                    let level = self.drawn(ground, seed).level;
+                    if (level - column.level).abs() <= JOINS_METRES {
+                        anchors.insert(
+                            key,
+                            Column {
+                                level,
+                                depth: ANCHOR_METRES,
+                                flow: DVec2::ZERO,
+                                anchor: true,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        columns.extend(anchors);
     }
 }
 
@@ -319,6 +367,7 @@ mod tests {
                         level: -f64::from(x) * 0.2 / 3.0 + 0.05,
                         depth: 0.05,
                         flow: DVec2::new(1.0, 0.0),
+                        anchor: false,
                     },
                 );
             }
@@ -362,6 +411,7 @@ mod tests {
                     level,
                     depth: 0.1,
                     flow: DVec2::ZERO,
+                    anchor: false,
                 },
             );
         }
@@ -378,5 +428,41 @@ mod tests {
                 .all(|&height| (height - 2.0).abs() < 1.0e-3 || height.abs() < 1.0e-3),
             "a ramp joined two separate waters: {heights:?}"
         );
+    }
+
+    #[test]
+    fn shallow_water_meets_a_lake_beside_it_at_the_lake_level() {
+        let mut columns = CellMap::default();
+        columns.insert(
+            (0, 0),
+            Column {
+                level: 0.7,
+                depth: 0.05,
+                flow: DVec2::ZERO,
+                anchor: false,
+            },
+        );
+        columns.insert(
+            (-1, 0),
+            Column {
+                level: 0.8,
+                depth: super::ANCHOR_METRES,
+                flow: DVec2::ZERO,
+                anchor: true,
+            },
+        );
+        let tile = mesh_tile(&columns, (0, 0), &[(0, 0)], 0);
+        // Only the stored water is drawn; its edge on the lake's side stands
+        // at nearly the lake's level, the far edge at its own.
+        assert_eq!(tile.positions.len(), 4);
+        for position in &tile.positions {
+            let level = f64::from(position[1]);
+            let expected = if position[0] == 0.0 { 0.8 } else { 0.7 };
+            assert!(
+                (level - expected).abs() < 0.01,
+                "a corner at x {} stands at {level:.3} m",
+                position[0]
+            );
+        }
     }
 }
