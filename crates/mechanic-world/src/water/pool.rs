@@ -146,6 +146,20 @@ impl Pool {
     }
 
     /// Whether its members hold all they can.
+    /// The lowest member of each column it covers, with the floor water
+    /// there rests on: the ground it can soak into.
+    pub(super) fn beds(&self) -> impl Iterator<Item = (WaterCell, f64)> + '_ {
+        let mut beds = CellMap::<(i32, i32), (WaterCell, f64)>::default();
+        for (&cell, &openings) in &self.members {
+            let floor = super::floor_of(cell, openings).unwrap_or_else(|| cell.bottom());
+            let bed = beds.entry((cell.x, cell.z)).or_insert((cell, floor));
+            if cell.y < bed.0.y {
+                *bed = (cell, floor);
+            }
+        }
+        beds.into_values()
+    }
+
     pub(super) fn full(&self) -> bool {
         self.volume >= self.held_below(self.top()) - 1.0e-12
     }

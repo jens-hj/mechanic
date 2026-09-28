@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
     BrickCoord, SurfaceTile, TerrainField, TerrainOctree, TerrainWater, WaterCell, WaterFall,
-    WaterLedger, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WorldStore,
+    WaterLedger, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -67,6 +67,8 @@ pub(crate) struct WaterView {
     pub(crate) surface: Vec<SurfaceTile>,
     /// Cells joined to seed-derived water, with its surface as it stands.
     pub(crate) joined: Vec<(WaterCell, WaterSurface)>,
+    /// Wet ground.
+    pub(crate) wet: Vec<WetGround>,
 }
 
 /// One batch of water steps done on the worker.
@@ -138,6 +140,7 @@ fn view(
     WaterView {
         surface: world.surface_tiles(ground, drawn),
         joined: world.joined_cells(ground),
+        wet: world.wet_ground(),
     }
 }
 

@@ -132,12 +132,17 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             &palette,
             &[0.5; mechanic_world::TextureSet::ALL.len()],
         ));
+    let wetness = crate::world::terrain_render::dry_ground(
+        &mut app.world_mut().resource_mut::<Assets<Image>>(),
+    );
     let material = TerrainRenderMaterial {
         base_color,
         normal,
         orm,
         tint_mask,
         surfaces,
+        wetness,
+        wet_window: Vec4::ZERO,
     };
     let material = app
         .world_mut()

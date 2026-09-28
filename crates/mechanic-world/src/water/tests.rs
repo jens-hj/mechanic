@@ -31,6 +31,9 @@ struct Ground {
     lake: Option<(Room, f64)>,
     /// Makes the lake a river reach carrying this.
     river: Option<RiverReach>,
+    /// Ground of bare rock, which takes in no water, rather than soil: most
+    /// tests keep their water out of the ground.
+    rock: bool,
 }
 
 impl Ground {
@@ -135,6 +138,14 @@ impl WaterGround for Ground {
     fn edited(&self, _brick: BrickCoord) -> bool {
         true
     }
+
+    fn material(&self, point: DVec3) -> Option<crate::TerrainMaterial> {
+        (!self.open(point)).then_some(if self.rock {
+            crate::TerrainMaterial::Rock
+        } else {
+            crate::TerrainMaterial::Soil
+        })
+    }
 }
 
 /// Runs the water for `seconds` in steps of a twentieth of a second.
@@ -165,6 +176,7 @@ fn u_tube() -> Ground {
         ],
         lake: None,
         river: None,
+        rock: true,
     }
 }
 
@@ -197,6 +209,7 @@ fn pit_and_basin() -> Ground {
         ],
         lake: None,
         river: None,
+        rock: true,
     }
 }
 
@@ -232,6 +245,7 @@ fn lake_and_trench(cave: bool) -> Ground {
         rooms,
         lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
         river: None,
+        rock: true,
     }
 }
 
@@ -296,6 +310,7 @@ fn lake_channel_and_pit() -> Ground {
         ],
         lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
         river: None,
+        rock: true,
     }
 }
 
@@ -331,6 +346,7 @@ fn lake_with_hole() -> Ground {
         rooms: vec![room([0.0, -3.0, 0.0], [1.0, -2.0, 1.0])],
         lake: Some((room([-10.0, -2.0, -10.0], [10.0, 3.0, 10.0]), 0.8)),
         river: None,
+        rock: true,
     }
 }
 
@@ -390,6 +406,7 @@ fn pit(filled: bool) -> Ground {
         rooms,
         lake: None,
         river: None,
+        rock: true,
     }
 }
 
@@ -504,6 +521,7 @@ fn stair() -> Ground {
         rooms,
         lake: None,
         river: None,
+        rock: true,
     }
 }
 
@@ -563,6 +581,7 @@ fn rough_slope() -> Ground {
         rooms,
         lake: None,
         river: None,
+        rock: true,
     }
 }
 
@@ -600,6 +619,70 @@ fn a_trickle_down_rough_ground_gathers_into_rills() {
         "{carrying} of {} wetted columns carry 80% of the flow",
         shares.len()
     );
+}
+
+/// A flat floor 2 m square, of soil or of rock.
+fn floor(rock: bool) -> Ground {
+    Ground {
+        rooms: vec![room([0.0, 0.0, 0.0], [2.0, 2.0, 2.0])],
+        lake: None,
+        river: None,
+        rock,
+    }
+}
+
+#[test]
+fn a_film_soaks_into_soil_but_stays_on_rock() {
+    for rock in [false, true] {
+        let ground = floor(rock);
+        let mut water = WaterWorld::new();
+        let spilled = 0.002;
+        water.deposit(&ground, DVec3::new(1.0, 0.5, 1.0), spilled);
+        for step in 0..2_400 {
+            water.step(&ground, 0.05);
+            assert!(
+                (water.ledger().total() - spilled).abs() < 1.0e-12,
+                "step {step} made or lost water"
+            );
+        }
+        let above = water.running_m3() + water.stored_m3();
+        if rock {
+            // Only the air takes a little.
+            assert!(
+                above > 0.95 * spilled,
+                "rock drank {:.2e} m³",
+                spilled - above
+            );
+            assert!(water.soil_m3() < 1.0e-12);
+        } else {
+            assert!(
+                above < 0.01 * spilled,
+                "{above:.2e} m³ still stands on soil"
+            );
+            assert!(water.soil_m3() > 0.9 * spilled);
+            assert!(!water.is_mud(5, 5), "two litres made mud");
+        }
+    }
+}
+
+#[test]
+fn a_flood_on_soil_turns_it_to_mud_and_the_rest_stands() {
+    let ground = pit(false);
+    let ground = Ground {
+        rock: false,
+        ..ground
+    };
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.5, -0.5, 0.5), 0.4);
+    // Soil under standing water fills at a few centimetres an hour.
+    run(&mut water, &ground, 3_600);
+    // A metre square of soil half a metre deep holds some 175 litres.
+    let soil = water.soil_m3();
+    assert!((0.14..0.18).contains(&soil), "the soil holds {soil:.3} m³");
+    assert!(water.is_mud(2, 2), "saturated soil is not mud");
+    // Saturated soil keeps draining deep and drinking a little more.
+    let standing = water.stored_m3();
+    assert!(standing > 0.15, "only {standing:.3} m³ stands on the mud");
 }
 
 /// Runs the water for `steps` twentieths of a second.
@@ -642,6 +725,7 @@ fn cliff() -> Ground {
         ],
         lake: None,
         river: None,
+        rock: true,
     }
 }
 

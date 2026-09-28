@@ -61,6 +61,21 @@ pub(crate) struct TerrainRenderMaterial {
     pub(super) tint_mask: Handle<Image>,
     #[storage(5, read_only)]
     pub(super) surfaces: Handle<ShaderBuffer>,
+    /// How wet the ground is around the camera: its fill, then the height of
+    /// the ground it was measured at over `wet_window.w`.
+    #[texture(6)]
+    #[sampler(7)]
+    pub(crate) wetness: Handle<Image>,
+    /// Where the wetness map lies: its lower x and z corner and edge in
+    /// metres, and the height its ground heights are measured from, all
+    /// against the floating origin.
+    #[uniform(8)]
+    pub(crate) wet_window: Vec4,
+}
+
+/// A wetness map of dry ground, for terrain drawn before water has run.
+pub(crate) fn dry_ground(images: &mut Assets<Image>) -> Handle<Image> {
+    images.add(super::water_render::wetness_image(1, vec![0.0; 2]))
 }
 
 /// One palette surface as the terrain shader reads it.
@@ -304,6 +319,8 @@ pub(crate) fn terrain_render_material(
         orm: targets[2].clone(),
         tint_mask: targets[3].clone(),
         surfaces: surfaces.clone(),
+        wetness: dry_ground(images),
+        wet_window: Vec4::ZERO,
     };
     (
         material,

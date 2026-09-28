@@ -185,6 +185,12 @@ pub(crate) struct WaterTiles {
     surface_origin: DVec3,
     /// The falling streams' entity.
     falls: Option<Entity>,
+    /// The wetness map's world corner and base height, once drawn.
+    wet_window: Option<DVec3>,
+    /// Floating origin the wetness map was placed against.
+    wet_origin: DVec3,
+    /// Water revision the wetness map was drawn at.
+    wet_revision: Option<u64>,
     /// Water revision the stored water was drawn at.
     drawn_revision: Option<u64>,
     /// Cells joined to seed-derived water, which the tiles draw as that
@@ -573,6 +579,147 @@ pub(crate) fn draw_stored_water(
     });
 }
 
+/// Texels along one edge of the wetness map: 20 cm each, 51.2 m in all.
+const WET_TEXELS: u32 = 256;
+
+/// How far the camera may stray from the wetness map's centre before the
+/// map moves with it, in metres.
+const WET_RECENTRE_METRES: f64 = 10.0;
+
+/// A wetness map: texels of fill, then ground height, `edge` along a side.
+pub(crate) fn wetness_image(edge: u32, texels: Vec<f32>) -> Image {
+    let data = texels
+        .chunks(2)
+        .flat_map(|texel| [texel[0], texel[1], 0.0, 1.0])
+        .flat_map(|value| half_bits(value).to_le_bytes())
+        .collect::<Vec<_>>();
+    let mut image = Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: edge,
+            height: edge,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = bevy::image::ImageSampler::linear();
+    image
+}
+
+/// A float's bits as a half float, rounded towards zero, for the wetness
+/// map: fills from 0 to 1 and heights of a few metres.
+fn half_bits(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = u16::try_from((bits >> 16) & 0x8000).expect("one bit");
+    let exponent = i32::try_from((bits >> 23) & 0xff).expect("eight bits") - 127 + 15;
+    if exponent <= 0 {
+        return sign;
+    }
+    if exponent >= 31 {
+        return sign | 0x7c00;
+    }
+    let exponent = u16::try_from(exponent).expect("under 31");
+    let mantissa = u16::try_from((bits >> 13) & 0x03ff).expect("ten bits");
+    sign | (exponent << 10) | mantissa
+}
+
+/// Draws how wet the ground is around the camera into the terrain's
+/// wetness map, after each water batch, moving the map with the camera.
+pub(crate) fn draw_wet_ground(
+    mut tiles: ResMut<WaterTiles>,
+    runtime: Res<WorldRuntime>,
+    camera: Query<&GlobalTransform, With<MainCamera>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<super::terrain_render::TerrainRenderMaterial>>,
+) {
+    let (Some(handle), Ok(camera)) = (runtime.terrain_material.as_ref(), camera.single()) else {
+        return;
+    };
+    let origin = runtime.floating_origin.0;
+    let camera = origin + camera.translation().as_dvec3();
+    let size = f64::from(WET_TEXELS) * WATER_CELL_METRES;
+    let moved = tiles.wet_window.is_none_or(|window| {
+        (window.x + 0.5 * size - camera.x).abs() > WET_RECENTRE_METRES
+            || (window.z + 0.5 * size - camera.z).abs() > WET_RECENTRE_METRES
+            || (window.y - camera.y).abs() > WET_RECENTRE_METRES
+    });
+    if !moved && tiles.wet_origin == origin && tiles.wet_revision == Some(runtime.water_revision) {
+        return;
+    }
+    tiles.wet_revision = Some(runtime.water_revision);
+    tiles.wet_origin = origin;
+    if moved {
+        let snap = |value: f64| (value / WATER_CELL_METRES).round() * WATER_CELL_METRES;
+        tiles.wet_window = Some(DVec3::new(
+            snap(camera.x - 0.5 * size),
+            camera.y,
+            snap(camera.z - 0.5 * size),
+        ));
+    }
+    let Some(window) = tiles.wet_window else {
+        return;
+    };
+    let edge = WET_TEXELS as usize;
+    let mut texels = vec![0.0_f32; edge * edge * 2];
+    #[expect(clippy::cast_possible_truncation, reason = "texels within the map")]
+    let first = (
+        (window.x / WATER_CELL_METRES).round() as i32,
+        (window.z / WATER_CELL_METRES).round() as i32,
+    );
+    for wet in &runtime.water.view().wet {
+        let (x, z) = (wet.column.0 - first.0, wet.column.1 - first.1);
+        let (Ok(x), Ok(z)) = (usize::try_from(x), usize::try_from(z)) else {
+            continue;
+        };
+        if x >= edge || z >= edge {
+            continue;
+        }
+        let texel = (x + z * edge) * 2;
+        // A few millimetres soaked in already darken the ground.
+        #[expect(clippy::cast_possible_truncation, reason = "shader data is f32")]
+        {
+            texels[texel] = (1.0 - (-wet.soaked / 0.003).exp()) as f32;
+            texels[texel + 1] = (wet.top - window.y) as f32;
+        }
+    }
+    let Some(material) = materials.get(handle) else {
+        return;
+    };
+    // The map keeps one image, written again in place, so the terrain's
+    // material only changes when the map moves.
+    let image = material.wetness.clone();
+    let fresh = wetness_image(WET_TEXELS, texels);
+    let sized = images
+        .get(&image)
+        .is_some_and(|current| current.texture_descriptor.size.width == WET_TEXELS);
+    if sized && let Some(mut current) = images.get_mut(&image) {
+        current.data = fresh.data;
+    } else {
+        let image = images.add(fresh);
+        if let Some(mut material) = materials.get_mut(handle) {
+            material.wetness = image;
+        }
+    }
+    // The map's texels are columns, centred half a texel in.
+    let corner = window - origin;
+    #[expect(clippy::cast_possible_truncation, reason = "shader data is f32")]
+    let placed = Vec4::new(
+        corner.x as f32,
+        corner.z as f32,
+        size as f32,
+        (window.y - origin.y) as f32,
+    );
+    if materials
+        .get(handle)
+        .is_some_and(|material| material.wet_window != placed)
+        && let Some(mut material) = materials.get_mut(handle)
+    {
+        material.wet_window = placed;
+    }
+}
+
 /// Keeps the cells joined to seed-derived water, and marks the lake tiles
 /// over any that joined or left it to be meshed again.
 fn note_joined(tiles: &mut WaterTiles, cells: &[(WaterCell, WaterSurface)]) {
@@ -606,7 +753,15 @@ fn visible_falls(runtime: &WorldRuntime) -> Vec<WaterFall> {
 mod tests {
     use bevy::math::DVec3;
 
-    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, wanted_tiles};
+    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, half_bits, wanted_tiles};
+
+    #[test]
+    fn wetness_values_become_half_floats() {
+        assert_eq!(half_bits(1.0), 0x3c00);
+        assert_eq!(half_bits(0.5), 0x3800);
+        assert_eq!(half_bits(-2.0), 0xc000);
+        assert_eq!(half_bits(0.0), 0);
+    }
 
     #[test]
     fn tiles_cover_the_reach_once_with_the_finest_nearest() {

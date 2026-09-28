@@ -45,7 +45,9 @@ pub(crate) use transfer::place_loaded_creation_in_garage;
 use transfer::static_parts_for_physics;
 use walking::{PlayerCollisionBuild, walk_world};
 pub(crate) use water_render::WaterRenderMaterial;
-use water_render::{WaterTiles, clear_water_tiles, draw_stored_water, stream_water};
+use water_render::{
+    WaterTiles, clear_water_tiles, draw_stored_water, draw_wet_ground, stream_water,
+};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -779,6 +781,7 @@ impl Plugin for WorldPrototypePlugin {
                         .after(integrate_terrain_remeshes)
                         .after(water::step_water),
                     draw_stored_water.after(water::step_water),
+                    draw_wet_ground.after(water::step_water),
                     sync_world_foundations
                         .after(integrate_terrain_remeshes)
                         .after(FrameSet::Build)

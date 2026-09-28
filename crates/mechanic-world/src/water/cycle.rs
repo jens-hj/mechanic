@@ -95,6 +95,8 @@ pub struct WaterLedger {
     pub lakes_m3: f64,
     /// Water rivers carry beyond their seed flow, in m³.
     pub rivers_m3: f64,
+    /// Water held in the ground, in m³.
+    pub soil_m3: f64,
     /// Water the sea holds beyond its seed level, in m³.
     pub sea_m3: f64,
     /// Water evaporated from stored water, not yet fallen back, in m³.
@@ -110,6 +112,7 @@ impl WaterLedger {
             + self.joined_m3
             + self.lakes_m3
             + self.rivers_m3
+            + self.soil_m3
             + self.sea_m3
             + self.air_m3
     }

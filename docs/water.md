@@ -77,6 +77,28 @@ buoyancy and drag see. Pipes step four times per water step.
 - **Films.** Water shallower than 2 mm clings to the ground and does not
   run; it evaporates.
 
+## Water in the ground
+
+Running water and pools soak into the ground under them
+(`water/soil.rs`). Each column of ground water reaches keeps how much it
+holds, how much it can hold and how fast it takes water in, from the
+material under it: ground cover and soil hold pores of 0.4 and 0.35 of half
+a metre of ground (7–8 L a column), sand 0.4, and rock and ores none. Dry
+ground drinks at three times its rate and wet ground at its rate until it is
+full (Green and Ampt, simplified); the rates, 0.05 mm/s for soil and
+0.2 mm/s for sand, are sped up for play so a film soaks in within seconds
+while a pond lasts for hours. Ground more than nine-tenths full is mud
+(`WaterWorld::is_mud`). Ground water drains deep towards the sea over some
+six hours and gives a millimetre an hour to the air, so it too stays in the
+cycle; the ledger counts it as `soil_m3`, and saves keep it.
+
+The terrain shader darkens and glosses wet ground: the worker publishes each
+wet column's ground height and the water soaked into it, and the app writes
+them into a 256 × 256 map around the camera, 20 cm a texel, that the
+terrain material samples. A few millimetres soaked in darken the ground by
+two thirds of its full wetness; a column only counts as wet within 40 cm of
+the height it was measured at, so a cave under a wet field stays dry.
+
 ## Waterfalls
 
 Water pouring over a lip, from a pool or a sheet, is launched in one parcel

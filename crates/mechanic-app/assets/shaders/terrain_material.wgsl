@@ -24,6 +24,13 @@ struct Surface {
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var tint_masks: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var terrain_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<storage, read> surfaces: array<Surface>;
+// How wet the ground is around the camera: fill, then the height of the
+// ground it was measured at over `wet_window.w`. Mirrors
+// `TerrainRenderMaterial::wetness` in world/terrain_render.rs.
+@group(#{MATERIAL_BIND_GROUP}) @binding(6) var wetness_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(7) var wetness_sampler: sampler;
+// Lower x and z corner and edge of the wetness map, and its base height.
+@group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> wet_window: vec4<f32>;
 
 // Every chunk names up to eight palette surfaces; each vertex is one-hot over
 // those slots. The slot table is the same for all of a chunk's vertices, so
@@ -368,10 +375,22 @@ fn fragment(
         surface += sampled.surface * weight;
         mapped_normal += sampled.normal * weight;
     }
+    // Wet ground is darker and glossier, where water has soaked in or runs
+    // over it, but only near the ground it was measured at: a cave under a
+    // wet field stays dry.
+    var roughness = surface.g;
+    let wet_uv = (varyings.world_position.xz - wet_window.xy) / max(wet_window.z, 1.0e-3);
+    if all(wet_uv > vec2<f32>(0.0)) && all(wet_uv < vec2<f32>(1.0)) {
+        let wet = textureSampleLevel(wetness_map, wetness_sampler, wet_uv, 0.0);
+        let near = 1.0 - smoothstep(0.15, 0.4, abs(varyings.world_position.y - (wet.g + wet_window.w)));
+        let wetness = clamp(wet.r, 0.0, 1.0) * near;
+        base_color = vec4<f32>(base_color.rgb * mix(1.0, 0.5, wetness), base_color.a);
+        roughness = mix(roughness, 0.25, wetness);
+    }
     pbr_input.material.base_color = base_color;
     pbr_input.diffuse_occlusion = vec3<f32>(surface.r);
     pbr_input.specular_occlusion = surface.r;
-    pbr_input.material.perceptual_roughness = surface.g;
+    pbr_input.material.perceptual_roughness = roughness;
     pbr_input.material.metallic = surface.b;
 
     pbr_input.N = normalize(mapped_normal);

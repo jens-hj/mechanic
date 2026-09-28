@@ -16,7 +16,7 @@ use super::{WATER_CELL_METRES, WaterCell};
 use crate::generation::Lattice;
 use crate::{
     BRICK_EDGE_CELLS, BrickCoord, LakeBasin, RiverReach, TerrainDensityClass, TerrainField,
-    TerrainSource, WaterSurface,
+    TerrainMaterial, TerrainSource, WaterSurface,
 };
 
 /// Terrain cells along one edge of a water cell.
@@ -74,6 +74,9 @@ pub trait WaterGround: WaterNetwork {
 
     /// Whether seed-derived water may reach into a brick at all.
     fn may_hold_water(&self, brick: BrickCoord) -> bool;
+
+    /// Material of the ground at a point, where it is ground.
+    fn material(&self, point: DVec3) -> Option<TerrainMaterial>;
 
     /// Whether a brick's ground was edited. Seed-derived water pours only
     /// into edited ground: untouched ground is wet or dry as the seed made it.
@@ -159,6 +162,13 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
 
     fn edited(&self, brick: BrickCoord) -> bool {
         self.edits.brick(brick).is_some()
+    }
+
+    fn material(&self, point: DVec3) -> Option<TerrainMaterial> {
+        let sample = self
+            .edits
+            .sample_position(self.field, crate::WorldPosition(point));
+        sample.is_solid().then_some(sample.material)
     }
 }
 

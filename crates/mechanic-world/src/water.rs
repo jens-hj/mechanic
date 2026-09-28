@@ -20,6 +20,7 @@ mod ground;
 mod jet;
 mod pool;
 mod sheet;
+mod soil;
 mod surface;
 
 use std::collections::{BTreeMap, HashMap};
@@ -38,6 +39,7 @@ use jet::{Jet, Launch};
 pub use jet::{JetDoc, Parcel};
 use pool::Pool;
 pub use sheet::{RunningView, SheetDoc};
+pub use soil::{SoilDoc, WetGround};
 pub use surface::{SURFACE_TILE_COLUMNS, SurfaceTile};
 
 use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
@@ -333,6 +335,8 @@ pub struct StoredWaterDoc {
     pub sheets: Vec<SheetDoc>,
     /// Water in flight.
     pub jets: Vec<JetDoc>,
+    /// Water held in the ground.
+    pub soil: Vec<SoilDoc>,
 }
 
 /// A cell that filled from seed-derived water and joined it, in a saved
@@ -474,6 +478,8 @@ pub struct WaterWorld {
     joined: CellMap<WaterCell, Joined>,
     /// Running water, by cell.
     sheets: SheetGrid,
+    /// Water held in the ground, by column.
+    soil: CellMap<(i32, i32), soil::Soil>,
     /// Water in flight, by the lip it poured over.
     jets: BTreeMap<WaterCell, Jet>,
     /// This step's launches over lips.
@@ -515,6 +521,7 @@ impl WaterWorld {
             water.add_sheet(ground, sheet.cell, sheet.volume_m3);
         }
         water.load_jets(&doc.jets);
+        water.load_soil(&doc.soil);
         let ids = water.pools.keys().copied().collect::<Vec<_>>();
         for id in ids {
             water.flood(ground, id, usize::MAX);
@@ -552,6 +559,7 @@ impl WaterWorld {
             },
             sheets: self.sheet_docs(),
             jets: self.jet_docs(),
+            soil: self.soil_docs(),
         }
     }
 
@@ -593,6 +601,7 @@ impl WaterWorld {
             joined_m3: self.joined_m3(),
             lakes_m3,
             rivers_m3,
+            soil_m3: self.soil_m3(),
             sea_m3: self.cycle.sea(),
             air_m3: self.cycle.air(),
         }
@@ -879,6 +888,7 @@ impl WaterWorld {
         self.settle_sheets(ground);
         self.evaporate(dt);
         self.evaporate_sheets(EVAPORATION_M_S, dt);
+        self.soak(ground, dt);
         self.cycle.step(ground, dt);
         self.dry_up(ground, &fed);
         for pool in self.pools.values_mut() {

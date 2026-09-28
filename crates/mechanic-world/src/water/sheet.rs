@@ -113,6 +113,11 @@ impl Sheet {
         }
     }
 
+    /// Height of the floor its water rests on.
+    pub(super) const fn floor(&self) -> f64 {
+        self.floor
+    }
+
     /// Height of its water's surface, however shallow.
     pub(super) fn surface_height(&self) -> f64 {
         self.floor + self.volume / CELL_AREA_M2
