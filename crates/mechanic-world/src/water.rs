@@ -74,6 +74,10 @@ const SPREAD_CELLS_PER_STEP: usize = 256;
 /// Deepest a falling stream is followed, in water cells.
 const FALL_CELLS: i32 = 2_000;
 
+/// Deepest ground water pressed out of filled ground rises through to open
+/// space, in water cells; beyond, it seeps away into the air.
+const ROOFED_CELLS: i32 = 64;
+
 /// Gravity, in m/s².
 const GRAVITY: f64 = 9.81;
 
@@ -1254,7 +1258,19 @@ impl WaterWorld {
         }
     }
 
-    fn deposit_at(&mut self, ground: &impl WaterGround, cell: WaterCell, volume: f64) {
+    fn deposit_at(&mut self, ground: &impl WaterGround, mut cell: WaterCell, volume: f64) {
+        // Water pressed out of ground that filled in rises to the first open
+        // space over it: it never stands inside solid ground, where a pool
+        // with no room would draw from the water it touches for ever.
+        let mut climbed = 0;
+        while floor_of(cell, self.openings(ground, cell)).is_none() {
+            if climbed == ROOFED_CELLS {
+                self.cycle.evaporate(volume);
+                return;
+            }
+            cell = cell.up();
+            climbed += 1;
+        }
         let to = self.landing(ground, cell);
         self.deposit_end(ground, to, volume);
     }
@@ -1343,6 +1359,13 @@ impl WaterWorld {
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.remove_member(cell);
                     pool.settle();
+                    // Filled in whole: its water rises out of the ground.
+                    if pool.members.is_empty() {
+                        let volume = pool.volume;
+                        self.pools.remove(&id);
+                        self.deposit_at(ground, cell.up(), volume);
+                        return;
+                    }
                 }
             } else if let Some(pool) = self.pools.get_mut(&id) {
                 pool.add_member(cell, openings);
@@ -1362,13 +1385,17 @@ impl WaterWorld {
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.queue(cell, floor);
                 }
-            } else if self
-                .implicit(ground, neighbour)
-                .is_some_and(|surface| surface.level > floor + FILM_METRES)
+            } else if ground.dug(cell)
+                && self
+                    .implicit(ground, neighbour)
+                    .is_some_and(|surface| surface.level > floor + FILM_METRES)
             {
                 // Seed-derived water pours in, and so do the cells joined to
                 // it, which only ever lie under it: a pit dug under a lake's
-                // edge is lake, and pours into the rest of the pit.
+                // edge is lake, and pours into the rest of the pit. It pours
+                // only into dug ground: a natural shore beside it, even in
+                // an edited brick, is as the seed left it, and pouring there
+                // would feed land all along the shoreline.
                 self.inlets.insert(cell);
             }
         }

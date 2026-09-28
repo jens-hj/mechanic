@@ -139,6 +139,11 @@ impl WaterGround for Ground {
         true
     }
 
+    fn dug(&self, _cell: WaterCell) -> bool {
+        // Every room is dug out of solid ground.
+        true
+    }
+
     fn material(&self, point: DVec3) -> Option<crate::TerrainMaterial> {
         (!self.open(point)).then_some(if self.rock {
             crate::TerrainMaterial::Rock

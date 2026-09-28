@@ -30,19 +30,26 @@ it.
   rim: the pool does not take it in but spills onto it as running water.
 - **Running water is a sheet.** See [Running water](#running-water).
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
-  river is an inlet: the water pours in and lands wherever it falls. Into
+  river is an inlet, if the player dug it: the water pours in and lands
+  wherever it falls. Natural shore stays as the seed left it, even in an
+  edited brick; pouring there would feed every patch of land along the
+  shoreline at once, a flood racing along the contour at the lake's level
+  and never stopping when the dig is filled in. Into
   running water it fills the column, however deep, half the way to the
   source's level each step, up to where seed-derived water over it begins,
   while the head over the lip is at least 2 mm. Cells joined to it pour in
   too: they only ever lie under it, so a pit dug under a lake's edge is lake
-  and fills the rest of the pit. A pool touching seed-derived water trades with it both ways, never past the point
-  where their levels meet, and once it stands at that water's level, or fills
-  its own cells under it, it joins it: its cells become part of the lake, sea
-  or river, and whatever it counted above its own cells returns to it. A hole
-  dug under a lake therefore ends up lake; a trench cut from it fills with
-  running water at the lake's level. The water
-  a joined cell holds is booked to the cell; filling the cell with ground
-  hands it back. Water taken from a lake lowers the whole lake by the volume
+  and fills the rest of the pit. A pool touching seed-derived water trades
+  with it both ways, never past the point where their levels meet, and once
+  it stands at that water's level, or fills its own cells under it, it joins
+  it: its cells become part of the lake, sea or river, and whatever it
+  counted above its own cells returns to it. A hole dug under a lake
+  therefore ends up lake; a trench cut from it fills with running water at
+  the lake's level. The water a joined cell holds is booked to the cell;
+  filling the cell with ground hands it back. Running water or a pool buried
+  by fill rises to the first open space above; it never stands inside the
+  ground, where a pool with no room would draw on the lake beside it for
+  ever. Water taken from a lake lowers the whole lake by the volume
   over its area; water returned to it raises it again. A lake covers at
   least a 32 m drainage cell, so a hole of a few cubic metres lowers it by
   millimetres.

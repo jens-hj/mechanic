@@ -78,9 +78,13 @@ pub trait WaterGround: WaterNetwork {
     /// Material of the ground at a point, where it is ground.
     fn material(&self, point: DVec3) -> Option<TerrainMaterial>;
 
-    /// Whether a brick's ground was edited. Seed-derived water pours only
-    /// into edited ground: untouched ground is wet or dry as the seed made it.
+    /// Whether a brick's ground was edited.
     fn edited(&self, brick: BrickCoord) -> bool;
+
+    /// Whether edits opened ground in a cell that the seed left solid.
+    /// Seed-derived water pours only into dug ground: untouched ground, even
+    /// in an edited brick, is wet or dry as the seed made it.
+    fn dug(&self, cell: WaterCell) -> bool;
 }
 
 /// Terrain, untouched and edited, as the ground water sits in.
@@ -102,23 +106,30 @@ impl<S> WaterNetwork for TerrainWater<'_, S> {
     }
 }
 
-impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
-    fn open_cells(&self, cell: WaterCell) -> [bool; CELL_TERRAIN_CELLS] {
+impl<S: TerrainSource> TerrainWater<'_, S> {
+    /// Open terrain cells of one water cell in its edited brick, if the brick
+    /// was edited.
+    fn edited_open(&self, cell: WaterCell) -> Option<[bool; CELL_TERRAIN_CELLS]> {
+        let edited = self.edits.brick(cell.brick())?;
+        let edge = WATER_CELL_EDGE_CELLS;
+        let origin = IVec3::new(cell.x * edge, cell.y * edge, cell.z * edge);
+        let local = origin - {
+            let minimum = cell.brick().minimum_cell();
+            IVec3::new(minimum.x, minimum.y, minimum.z)
+        };
+        let mut open = [false; CELL_TERRAIN_CELLS];
+        for (index, open) in open.iter_mut().enumerate() {
+            let sample = edited.sample(local + local_offset(index));
+            *open = sample.is_none_or(|sample| !sample.is_solid());
+        }
+        Some(open)
+    }
+
+    /// Open terrain cells of one water cell as the seed made them.
+    fn seeded_open(&self, cell: WaterCell) -> [bool; CELL_TERRAIN_CELLS] {
         let edge = WATER_CELL_EDGE_CELLS;
         let origin = IVec3::new(cell.x * edge, cell.y * edge, cell.z * edge);
         let mut open = [false; CELL_TERRAIN_CELLS];
-        if let Some(edited) = self.edits.brick(cell.brick()) {
-            let local = origin - {
-                let minimum = cell.brick().minimum_cell();
-                IVec3::new(minimum.x, minimum.y, minimum.z)
-            };
-            for (index, open) in open.iter_mut().enumerate() {
-                let offset = local_offset(index);
-                let sample = edited.sample(local + offset);
-                *open = sample.is_none_or(|sample| !sample.is_solid());
-            }
-            return open;
-        }
         // Most cells water looks at are wholly air or wholly ground, which
         // the field bounds far faster than it samples.
         let centre = |cell: IVec3| crate::WorldCell::new(cell.x, cell.y, cell.z).centre().0;
@@ -140,6 +151,21 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
             *open = density <= 0.0;
         }
         open
+    }
+}
+
+impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
+    fn open_cells(&self, cell: WaterCell) -> [bool; CELL_TERRAIN_CELLS] {
+        self.edited_open(cell)
+            .unwrap_or_else(|| self.seeded_open(cell))
+    }
+
+    fn dug(&self, cell: WaterCell) -> bool {
+        self.edited_open(cell).is_some_and(|open| {
+            open.iter()
+                .zip(self.seeded_open(cell))
+                .any(|(&now, seeded)| now && !seeded)
+        })
     }
 
     fn implicit(&self, point: DVec3) -> Option<WaterSurface> {

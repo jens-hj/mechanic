@@ -229,3 +229,291 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
     }
     assert!(beside > 0, "the running water touches no lake water");
 }
+
+/// A lake column near spawn whose bank, walked away from the lake, rises
+/// above the lake's level and then falls well below it: the lake point, the
+/// crest of the bank, a point down the far side, and the lake's level.
+fn lake_over_a_hill(field: &TerrainField) -> Option<(DVec3, DVec3, DVec3, f64)> {
+    let spawn = field.safe_spawn().0;
+    for ring in 1..80 {
+        let radius = f64::from(ring) * 4.0;
+        for step in 0..ring * 8 {
+            let angle = f64::from(step) / f64::from(ring * 8) * std::f64::consts::TAU;
+            let (x, z) = (
+                spawn.x + radius * angle.cos(),
+                spawn.z + radius * angle.sin(),
+            );
+            let Some(surface) = field.water_surface(x, z) else {
+                continue;
+            };
+            let level = surface.level;
+            let deep = field
+                .topmost_surface(x, z)
+                .is_some_and(|ground| ground < level - 0.6);
+            if !matches!(surface.body, WaterBody::Lake(_)) || !deep {
+                continue;
+            }
+            for direction in 0..16 {
+                let angle = f64::from(direction) * std::f64::consts::TAU / 16.0;
+                let along = DVec2::new(angle.cos(), angle.sin());
+                let mut crest = None;
+                for reach in 1..60 {
+                    let point = DVec2::new(x, z) + along * (f64::from(reach) * 0.5);
+                    let Some(ground) = field.topmost_surface(point.x, point.y) else {
+                        break;
+                    };
+                    match crest {
+                        None if ground > level + 0.3 => {
+                            // A bank at most a metre high, so a channel through
+                            // it stays small.
+                            if ground > level + 1.0 {
+                                break;
+                            }
+                            crest = Some(point);
+                        }
+                        Some(top) if ground < level - 1.0 => {
+                            return Some((
+                                DVec3::new(x, level, z),
+                                DVec3::new(top.x, level, top.y),
+                                DVec3::new(point.x, ground, point.y),
+                                level,
+                            ));
+                        }
+                        Some(_) if ground > level + 1.0 => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The lake over a hill, with a channel 30 cm deep dug from the lake's
+/// edge through the bank and a little way down its far side: the edits,
+/// the bricks they changed, the channel's two ends and the lake's level.
+fn channel_over_a_hill(
+    field: &TerrainField,
+) -> (TerrainOctree, Vec<crate::BrickCoord>, DVec3, DVec3, f64) {
+    let (lake, crest, below, level) = lake_over_a_hill(field).expect("a lake over a hill");
+    let along = (crest - lake).normalize();
+    let ground = |point: DVec3| field.topmost_surface(point.x, point.z).unwrap_or(level);
+    // From the last of the lake's water to where the far side falls under
+    // the channel's floor.
+    let mut start = crest;
+    while !field.is_water(DVec3::new(start.x, level - 0.05, start.z)) && start.distance(lake) > 0.5
+    {
+        start -= along * 0.2;
+    }
+    let mut end = crest;
+    while ground(end) > level - 0.3 && end.distance(below) > 0.5 {
+        end += along * 0.2;
+    }
+    let mut terrain = TerrainOctree::default();
+    let mut bricks = Vec::new();
+    let steps = steps(start.distance(end), 0.2);
+    for step in 0..=steps {
+        let point = start.lerp(end, f64::from(step) / f64::from(steps));
+        let centre = WorldPosition(DVec3::new(point.x, level - 0.3 + 0.5, point.z));
+        let outcome = terrain.excavate_sphere(field, centre, 0.5).unwrap();
+        bricks.extend_from_slice(outcome.changed_brick_coordinates());
+    }
+    (terrain, bricks, start, end, level)
+}
+
+/// Steps of at most `step` metres along `length` metres.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a walk of a few metres"
+)]
+fn steps(length: f64, step: f64) -> u32 {
+    (length / step).ceil() as u32
+}
+
+/// How far a point lies from the segment between two others, over the
+/// ground.
+fn off_segment(point: DVec3, from: DVec3, to: DVec3) -> f64 {
+    let flat = |point: DVec3| DVec2::new(point.x, point.z);
+    let (point, from, to) = (flat(point), flat(from), flat(to));
+    let along = ((point - from).dot(to - from) / from.distance_squared(to)).clamp(0.0, 1.0);
+    point.distance(from.lerp(to, along))
+}
+
+/// Whether the generator put water in a cell's column just under `level`.
+fn generated_water(field: &TerrainField, cell: crate::water::WaterCell, level: f64) -> bool {
+    let centre = cell.centre();
+    let half = 0.5 * super::super::WATER_CELL_METRES;
+    [
+        (0.0, 0.0),
+        (-0.8, -0.8),
+        (-0.8, 0.8),
+        (0.8, -0.8),
+        (0.8, 0.8),
+    ]
+    .into_iter()
+    .any(|(dx, dz)| {
+        field.is_water(DVec3::new(
+            centre.x + dx * half,
+            level - 0.02,
+            centre.z + dz * half,
+        ))
+    })
+}
+
+#[test]
+fn a_lake_holds_water_only_where_the_generator_put_it() {
+    let field = TerrainField::new(WorldSeed(42));
+    let (lake, crest, below, level) = lake_over_a_hill(&field).expect("a lake over a hill");
+    let terrain = TerrainOctree::default();
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let mut water = WaterWorld::new();
+    // Every cell near the lake's level from the lake over the bank and down
+    // its far side, where land lies a little under the lake's level with no
+    // water on it.
+    let steps = steps(lake.distance(below), 0.1);
+    let mut checked = 0;
+    for step in 0..=steps {
+        let point = lake.lerp(below, f64::from(step) / f64::from(steps));
+        for dy in -3..=1 {
+            let probe = DVec3::new(point.x, level + f64::from(dy) * 0.2, point.z);
+            let cell = crate::water::WaterCell::containing(probe);
+            if water.implicit(&ground, cell).is_some() {
+                checked += 1;
+                assert!(
+                    generated_water(&field, cell, level),
+                    "{cell:?}, {:.1} m past the crest, holds lake water the generator never put there",
+                    (probe - crest).dot((below - lake).normalize())
+                );
+            }
+        }
+    }
+    assert!(checked > 0, "the walk found no lake water at all");
+}
+
+#[test]
+fn a_breach_down_a_hill_runs_downhill_at_flowing_speed() {
+    let field = TerrainField::new(WorldSeed(42));
+    let (terrain, bricks, start, end, level) = channel_over_a_hill(&field);
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, bricks);
+    for second in 1..=30_u32 {
+        for _ in 0..20 {
+            let before = water.ledger().total();
+            water.step(&ground, 0.05);
+            assert!(
+                (water.ledger().total() - before).abs() < 1.0e-9,
+                "water was made or lost"
+            );
+        }
+        // Lake water pours in only at the dig.
+        for &cell in &water.inlets {
+            let off = off_segment(cell.centre(), start, end);
+            assert!(
+                off < 1.5,
+                "after {second} s {cell:?} pours lake water in {off:.1} m off the dig"
+            );
+        }
+        // Only what lies under the lake or in the dig joins it.
+        for (cell, _) in water.joined_cells(&ground) {
+            let off = off_segment(cell.centre(), start, end);
+            assert!(
+                off < 1.5 || generated_water(&field, cell, level),
+                "after {second} s {cell:?} joined the lake {off:.1} m off the dig"
+            );
+        }
+        // Water beyond the lake spreads from the dig no faster
+        // than water flows down a hill.
+        let front = water
+            .running_cells()
+            .into_iter()
+            .map(|running| running.cell)
+            .chain(water.pools().flat_map(|pool| pool.surface_cells))
+            .filter(|&cell| !generated_water(&field, cell, level))
+            .map(|cell| off_segment(cell.centre(), start, end))
+            .fold(0.0, f64::max);
+        let bound = 3.0f64.mul_add(f64::from(second), 1.0);
+        assert!(
+            front < bound,
+            "after {second} s water stands {front:.1} m from the dig"
+        );
+    }
+}
+
+#[test]
+fn plugging_a_breach_stops_the_flow_from_the_lake() {
+    let field = TerrainField::new(WorldSeed(42));
+    let (mut terrain, bricks, start, end, level) = channel_over_a_hill(&field);
+    let body = field
+        .water_surface(start.x, start.z)
+        .map(|surface| surface.body)
+        .expect("the dig starts in the lake");
+    let mut water = WaterWorld::new();
+    water.terrain_changed(
+        &TerrainWater {
+            field: &field,
+            edits: &terrain,
+        },
+        bricks,
+    );
+    for _ in 0..400 {
+        water.step(
+            &TerrainWater {
+                field: &field,
+                edits: &terrain,
+            },
+            0.05,
+        );
+    }
+    // Fill the channel back in where it crosses the bank.
+    let mut bricks = Vec::new();
+    let steps = steps(start.distance(end), 0.2);
+    for step in 0..=steps {
+        let point = start.lerp(end, f64::from(step) / f64::from(steps));
+        let centre = WorldPosition(DVec3::new(point.x, level + 0.2, point.z));
+        let outcome = terrain
+            .add_sphere(&field, centre, 0.7, crate::TerrainMaterial::Soil)
+            .unwrap();
+        bricks.extend_from_slice(outcome.changed_brick_coordinates());
+    }
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    water.terrain_changed(&ground, bricks);
+    water.step(&ground, 0.05);
+    let held = |water: &WaterWorld| {
+        let ledger = water.ledger();
+        ledger.running_m3 + ledger.pools_m3 + ledger.joined_m3 + ledger.falling_m3 + ledger.soil_m3
+    };
+    let (plugged_held, plugged_surplus) = (held(&water), water.surplus_m3(body));
+    for _ in 0..1_200 {
+        let before = water.ledger().total();
+        water.step(&ground, 0.05);
+        assert!(
+            (water.ledger().total() - before).abs() < 1.0e-9,
+            "water was made or lost"
+        );
+    }
+    assert!(
+        water.pools().all(|pool| !pool.surface_cells.is_empty()),
+        "water stands as a pool inside the fill"
+    );
+    assert!(
+        held(&water) < plugged_held + 1.0e-3,
+        "water beyond the plug grew from {plugged_held:.3} m³ to {:.3} m³",
+        held(&water)
+    );
+    assert!(
+        water.surplus_m3(body) > plugged_surplus - 1.0e-3,
+        "the lake gave {:.3} m³ more after it was plugged",
+        plugged_surplus - water.surplus_m3(body)
+    );
+}
