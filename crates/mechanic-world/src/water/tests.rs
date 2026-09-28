@@ -904,3 +904,39 @@ fn a_pool_spilling_over_a_cliff_holds_water_in_the_air_on_the_way_down() {
 }
 
 mod terrain;
+
+#[test]
+fn a_pit_dug_under_a_lakes_edge_fills_the_rest_of_the_pit() {
+    // A shallow lake whose bank is dug into a pit deeper than its bed:
+    // the part of the pit under the lake is lake, and pours into the rest.
+    let ground = Ground {
+        rooms: vec![
+            room([-20.0, 1.0, -20.0], [20.0, 3.0, 20.0]),
+            room([-1.0, -1.0, -2.0], [4.0, 3.0, 2.0]),
+        ],
+        lake: Some((room([-20.0, 0.4, -20.0], [0.0, 3.0, 20.0]), 0.8)),
+        river: None,
+        rock: true,
+    };
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    run(&mut water, &ground, 30);
+    // Only cells under the lake join it.
+    assert!(
+        water
+            .joined_cells(&ground)
+            .iter()
+            .all(|(cell, _)| cell.centre().x < 0.0),
+        "the lake spread beyond what lies under it"
+    );
+    let level = level_at(&water, &ground, DVec3::new(3.0, 0.0, 0.0));
+    assert!(
+        (level - 0.8).abs() < 0.02,
+        "the far end of the pit stands at {level:.3}"
+    );
+    let ledger = water.ledger();
+    assert!(
+        (drawn(&water) - held(&water) - ledger.air_m3 - ledger.sea_m3).abs() < 1.0e-6,
+        "water was made or lost"
+    );
+}

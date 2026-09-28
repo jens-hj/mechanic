@@ -658,29 +658,35 @@ impl WaterWorld {
                 continue;
             };
             let level = self.drawn(ground, seed).level;
-            if under(level) && top > cell.y {
-                // A pond deeper than its cell stands as a pool, which joins
-                // the water it meets over all its depth.
-                self.sheets.remove(cell);
-                self.start_pool(ground, cell, sheet.volume);
-                return true;
-            }
             if under(level) {
+                // Every cell the water fills under the seed-derived water
+                // joins it, and only those: water beside them stays free.
                 self.sheets.remove(cell);
-                let held = held_in(cell, self.openings(ground, cell), level);
-                self.joined.insert(
-                    cell,
-                    Joined {
-                        surface: seed,
-                        held,
-                    },
-                );
+                let mut held = 0.0;
+                for y in cell.y..=top {
+                    let filled = WaterCell::new(cell.x, y, cell.z);
+                    if self.joined.contains_key(&filled) || self.owner.contains_key(&filled) {
+                        continue;
+                    }
+                    let holds = held_in(filled, self.openings(ground, filled), level);
+                    held += holds;
+                    self.joined.insert(
+                        filled,
+                        Joined {
+                            surface: seed,
+                            held: holds,
+                        },
+                    );
+                }
                 self.cycle.add(seed.body, sheet.volume - held);
                 // Free cells around it now border the seed-derived water.
-                for neighbour in cell.neighbours() {
-                    if !self.owner.contains_key(&neighbour) && !self.joined.contains_key(&neighbour)
-                    {
-                        self.remeasure(ground, neighbour);
+                for y in cell.y..=top {
+                    for neighbour in WaterCell::new(cell.x, y, cell.z).neighbours() {
+                        if !self.owner.contains_key(&neighbour)
+                            && !self.joined.contains_key(&neighbour)
+                        {
+                            self.remeasure(ground, neighbour);
+                        }
                     }
                 }
                 return true;

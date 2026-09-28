@@ -1363,13 +1363,12 @@ impl WaterWorld {
                     pool.queue(cell, floor);
                 }
             } else if self
-                .ground
                 .implicit(ground, neighbour)
-                .map(|surface| self.drawn(ground, surface))
                 .is_some_and(|surface| surface.level > floor + FILM_METRES)
             {
-                // Only the seed's own water pours in: cells joined to it
-                // lie under it and feed nothing beside them.
+                // Seed-derived water pours in, and so do the cells joined to
+                // it, which only ever lie under it: a pit dug under a lake's
+                // edge is lake, and pours into the rest of the pit.
                 self.inlets.insert(cell);
             }
         }

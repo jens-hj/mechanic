@@ -33,10 +33,9 @@ it.
   river is an inlet: the water pours in and lands wherever it falls. Into
   running water it fills the column, however deep, half the way to the
   source's level each step, up to where seed-derived water over it begins,
-  while the head over the lip is at least 2 mm. Only the seed's own water
-  pours in: cells joined to it lie under it and feed nothing beside them. A
-  pool
-  touching seed-derived water trades with it both ways, never past the point
+  while the head over the lip is at least 2 mm. Cells joined to it pour in
+  too: they only ever lie under it, so a pit dug under a lake's edge is lake
+  and fills the rest of the pit. A pool touching seed-derived water trades with it both ways, never past the point
   where their levels meet, and once it stands at that water's level, or fills
   its own cells under it, it joins it: its cells become part of the lake, sea
   or river, and whatever it counted above its own cells returns to it. A hole
@@ -93,9 +92,9 @@ water step.
   it wakes for one step in every 200 to follow slow changes.
 - **Where it ends.** Running water pours into a pool or seed-derived water
   through its faces. A pool beside it or over it takes it in, and
-  seed-derived water only over it, as in a hole dug under a lake; a sheet
-  deeper than its cell goes in as a pool, which joins that water over its
-  whole depth. Running water beside a lake at the lake's level stays running
+  seed-derived water only over it, as in a hole dug under a lake; every
+  cell of a deep sheet joins, and nothing beside it: a pool there would
+  flood the whole pit to the lake's level in one step and join it. Running water beside a lake at the lake's level stays running
   water: letting the lake take in whatever touched it spread the lake along
   its contour a cell a step, faster than water flows. A lip whose drop is
   filled with running water up to it leads onto that water.
