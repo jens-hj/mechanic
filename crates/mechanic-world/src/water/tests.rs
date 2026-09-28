@@ -1002,3 +1002,104 @@ fn a_pit_dug_under_a_lakes_edge_fills_the_rest_of_the_pit() {
         "water was made or lost"
     );
 }
+
+/// A cave 60 cm tall whose floor lies a metre up the side of a narrow pit,
+/// which spills onto a field 40 cm above the cave's floor.
+fn cave_over_a_pit() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, 1.0, 0.0], [1.0, 1.6, 0.4]),
+            room([1.0, 0.0, 0.0], [1.4, 5.0, 0.4]),
+            natural([1.4, 1.4, 0.0], [20.0, 5.0, 0.4]),
+        ],
+        lake: None,
+        river: None,
+        rock: true,
+    }
+}
+
+#[test]
+fn water_fed_beside_a_pit_never_fills_it_above_its_own_level() {
+    // A spring in the cave: its water pours into the pit until the pit
+    // stands at its level, then rises against the cave's roof as a pool
+    // while both spill onto the field together.
+    let ground = cave_over_a_pit();
+    let mut water = WaterWorld::new();
+    let mut highest = f64::NEG_INFINITY;
+    for step in 0..20 * 30 {
+        water.deposit(&ground, DVec3::new(0.3, 1.2, 0.2), 0.001);
+        let falls = water.step(&ground, 0.05).falls.len();
+        let cave = level_at(&water, &ground, DVec3::new(0.3, 1.1, 0.2));
+        let pit = level_at(&water, &ground, DVec3::new(1.2, 0.5, 0.2));
+        if step > 20 * 20 {
+            highest = highest.max(pit - cave);
+            assert!(falls == 0, "water still falls into the full pit");
+        }
+    }
+    assert!(
+        water.pools().count() == 1,
+        "the cave's water never rose against its roof"
+    );
+    assert!(
+        highest < 0.01,
+        "the pit stood {highest:.3} m above the water pouring into it"
+    );
+    assert!((water.ledger().total() - 0.6).abs() < 1.0e-9);
+}
+
+/// A narrow channel dug from a lake, its floor 1.2 m under the lake, ending
+/// against a natural field 30 cm under the lake that it floods.
+fn lake_deep_channel_and_field() -> Ground {
+    Ground {
+        rooms: vec![
+            room([-20.0, 1.0, -20.0], [20.0, 3.0, 20.0]),
+            room([0.0, -0.4, -0.2], [6.0, 3.0, 0.2]),
+            natural([6.0, 0.5, -8.0], [20.0, 3.0, 8.0]),
+        ],
+        lake: Some((room([-20.0, -2.0, -20.0], [0.0, 3.0, 20.0]), 0.8)),
+        river: None,
+        rock: true,
+    }
+}
+
+#[test]
+fn a_deep_channel_running_full_into_a_field_keeps_a_steady_surface() {
+    let ground = lake_deep_channel_and_field();
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    run(&mut water, &ground, 20);
+    // Each channel column's level step by step, over five seconds.
+    let mut levels = std::collections::HashMap::<(i32, i32), Vec<f64>>::new();
+    let mut highest = f64::NEG_INFINITY;
+    for _ in 0..20 * 5 {
+        water.step(&ground, 0.05);
+        for view in water.running_cells() {
+            highest = highest.max(view.level);
+            if view.cell.centre().x < 6.0 {
+                levels
+                    .entry((view.cell.x, view.cell.z))
+                    .or_default()
+                    .push(view.level);
+            }
+        }
+    }
+    // The channel may still rise or fall as the field fills, but it does
+    // not rock: a column's level turns back by no more than a centimetre.
+    let rocking = levels
+        .values()
+        .map(|levels| {
+            let (mut peak, mut trough, mut turned) = (levels[0], levels[0], 0.0_f64);
+            for &level in levels {
+                peak = peak.max(level);
+                trough = trough.min(level);
+                turned = turned.max((peak - level).min(level - trough));
+            }
+            turned
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        rocking < 0.01,
+        "the channel's surface rocks by {rocking:.3} m"
+    );
+    assert!(highest < 0.85, "running water stands at {highest:.3} m");
+}

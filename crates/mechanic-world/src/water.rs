@@ -777,11 +777,17 @@ impl WaterWorld {
                     .get(&other)
                     .is_some_and(|other| other.level < cell.bottom());
         }
-        // Running water standing up to the cell is no drop either.
-        if self
-            .sheets
-            .get(below)
-            .is_some_and(|sheet| sheet.surface_height() >= cell.bottom())
+        // Running water standing up to the cell, or less than a cell under
+        // it, is no drop either, however far down its floor lies: a pool
+        // beside a deep channel pours into it over its surface, never as a
+        // fall into water higher than its own, and water a few centimetres
+        // under a lip catches what pours over it at once, rather than
+        // switching between a fall and a spill as it rises and falls.
+        if let Some(slot) = self.sheets.slot(cell.x, cell.z)
+            && let sheet = self.sheets.at(slot)
+            && sheet.present
+            && sheet.y <= below.y
+            && sheet.surface_height() >= below.bottom()
         {
             return false;
         }

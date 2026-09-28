@@ -363,13 +363,13 @@ impl WaterWorld {
         {
             return Route::Onto { slot, y, floor };
         }
-        // Running water filling the drop beyond a lip up to it takes the
-        // water as its own: a full pit is no fall.
+        // Running water filling the drop beyond a lip to within a cell of it
+        // takes the water as its own: a full pit is no fall.
         if let Face::Lip { y, .. } = face
             && let Some(slot) = self.sheets.slot(x, z)
             && let sheet = self.sheets.at(slot)
             && sheet.present
-            && sheet.surface_height() >= WaterCell::new(x, y, z).bottom()
+            && sheet.surface_height() >= WaterCell::new(x, y - 1, z).bottom()
         {
             return Route::Onto {
                 slot,
