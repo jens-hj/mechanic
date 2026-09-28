@@ -109,15 +109,27 @@ fn fragment(
     // Ripples fade with distance so far water reads as a calm mirror
     // instead of aliasing.
     let calm = 1.0 / (1.0 + fwidth(varyings.world_position.x) * 4.0);
-    var normal = normalize(vec3<f32>(-slope.x * calm, 1.0, -slope.y * calm));
+    // Ripples ride on the surface's own slope: water down a chute tilts.
+    var normal = normalize(
+        normalize(varyings.world_normal) + vec3<f32>(-slope.x * calm, 0.0, -slope.y * calm),
+    );
     if !is_front {
         normal = -normal;
     }
 
+    // Shallow water shows the ground through it and fades out to nothing at
+    // its edges; deep water is murky.
     let murk = 1.0 - exp(-depth / 3.0);
+    let edge = smoothstep(0.0, 0.03, depth);
+    // Fast water breaks white in streaks along its current.
+    let speed = length(flow);
+    let along = select(vec2<f32>(1.0, 0.0), flow / speed, speed > 1.0e-3);
+    let across = dot(varyings.world_position.xz, vec2<f32>(-along.y, along.x));
+    let streak = 0.5 + 0.5 * sin(across * 23.0 + sin(across * 7.0 + globals.time));
+    let foam = smoothstep(0.8, 2.5, speed) * mix(0.4, 1.0, streak) * calm;
     pbr_input.material.base_color = vec4<f32>(
-        mix(shallow.rgb, deep.rgb, murk),
-        mix(0.25, 0.9, 1.0 - exp(-depth / 1.2)),
+        mix(mix(shallow.rgb, deep.rgb, murk), vec3<f32>(0.85, 0.9, 0.9), foam * 0.7),
+        edge * max(mix(0.35, 0.9, 1.0 - exp(-depth / 1.2)), foam * 0.8),
     );
     pbr_input.material.perceptual_roughness = 0.06;
     pbr_input.material.metallic = 0.0;

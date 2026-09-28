@@ -25,6 +25,9 @@ pub const SURFACE_TILE_COLUMNS: i32 = 32;
 /// ramp, lies between them.
 const JOINS_METRES: f64 = 1.0;
 
+/// Shallowest running water drawn as water, in metres.
+const VISIBLE_METRES: f64 = 0.003;
+
 /// Shallowest water that weighs in on a corner's level, in metres.
 const LEAST_WEIGHT_METRES: f64 = 0.002;
 
@@ -105,6 +108,10 @@ impl WaterWorld {
             }
         };
         for view in self.running_cells() {
+            // A film shows as wet ground, not as water.
+            if view.depth < VISIBLE_METRES {
+                continue;
+            }
             offer(
                 view.cell.x,
                 view.cell.z,
