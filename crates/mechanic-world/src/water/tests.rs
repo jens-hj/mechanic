@@ -1035,6 +1035,15 @@ fn water_fed_beside_a_pit_never_fills_it_above_its_own_level() {
             highest = highest.max(pit - cave);
             assert!(falls == 0, "water still falls into the full pit");
         }
+        // The pit's water runs, and stays running water: the cave's pool
+        // spreading over it would stand still where the water moves.
+        assert!(
+            water
+                .pools()
+                .flat_map(|pool| pool.surface_cells)
+                .all(|cell| cell.centre().x < 1.0),
+            "the cave's pool spread over the pit"
+        );
     }
     assert!(
         water.pools().count() == 1,

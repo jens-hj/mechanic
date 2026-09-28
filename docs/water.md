@@ -89,8 +89,7 @@ water step.
 
 - **Slopes and lips.** A sheet climbs a step of one water cell and runs
   down a drop of up to five cells, a metre, as a steep chute. A taller drop
-  is a lip: the water pours over it at the speed it ran at, unless running
-  water beyond it stands within a cell of the lip, which takes it at once.
+  is a lip: the water pours over it at the speed it ran at.
 - **Storage.** Sheets live in dense tiles of 32 × 32 columns
   (`water/grid.rs`), one sheet per column. Where each face of a sheet leads
   is worked out once from the ground and kept until the ground under it
@@ -147,12 +146,12 @@ the height it was measured at, so a cave under a wet field stays dry.
 
 Water pouring over a lip, from a pool or a sheet, is launched in one parcel
 a step with its speed over the lip: the weir speed `√(g × head)` from a
-pool, the sheet's current from a sheet (`water/jet.rs`). There is no fall
-where running water below stands within a cell of the lip, however far down
-its floor lies: a pool beside a deep channel pours into it over its weir,
-so the channel never fills above the pool, and water a few centimetres
-under a lip does not switch between a fall and a spill as it rises and
-falls. Each parcel falls
+pool, the sheet's current from a sheet (`water/jet.rs`). A pool over a drop
+with running water already in it, however deep that water's floor, pours
+into it over its weir instead, by its head over that water, and stops at
+its own level: as falls landing a step later, streams poured into whichever
+column of a narrow channel stood low and rocked it in a standing wave metres
+high, and filled it above the pool. Each parcel falls
 along its arc, swept through the water cells 10 cm at a time, until it meets
 a pool, seed-derived water, running water or the ground, where it lands. It
 leaves from inside the lip's cell, no higher than its middle, since the lip
@@ -351,8 +350,8 @@ Spawns keep a metre above any water within ten metres.
 trench through a lake's bank above open land (seed 1 by default: a lake over
 a 17 m hillside) and steps the water for 120 s (`BREACH_SECONDS`), printing
 JSONL per simulated second and a summary with each phase's p95
-(`WaterPhases`). On an M1 Pro the flood peaks at about 49,000 running cells,
-with a step p95 of 23 ms. Most cells then are films a few millimetres deep
+(`WaterPhases`). On an M1 Pro the flood peaks at about 55,000 running cells,
+with a step p95 of 25 ms. Most cells then are films a few millimetres deep
 spread over the slope.
 
 The ground is read per water cell and cached: a cell the field bounds as

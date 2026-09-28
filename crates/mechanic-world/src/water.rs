@@ -777,22 +777,23 @@ impl WaterWorld {
                     .get(&other)
                     .is_some_and(|other| other.level < cell.bottom());
         }
-        // Running water standing up to the cell, or less than a cell under
-        // it, is no drop either, however far down its floor lies: a pool
-        // beside a deep channel pours into it over its surface, never as a
-        // fall into water higher than its own, and water a few centimetres
-        // under a lip catches what pours over it at once, rather than
-        // switching between a fall and a spill as it rises and falls.
-        if let Some(slot) = self.sheets.slot(cell.x, cell.z)
-            && let sheet = self.sheets.at(slot)
-            && sheet.present
-            && sheet.y <= below.y
-            && sheet.surface_height() >= below.bottom()
+        // Running water standing up to the cell is no drop either.
+        if self
+            .sheets
+            .get(below)
+            .is_some_and(|sheet| sheet.surface_height() >= cell.bottom())
         {
             return false;
         }
         self.implicit(ground, below)
             .is_none_or(|surface| surface.level < cell.bottom())
+    }
+
+    /// The surface of running water in a cell's column whose floor lies
+    /// below the cell, if any.
+    fn running_under(&self, cell: WaterCell) -> Option<f64> {
+        let sheet = self.sheets.at(self.sheets.slot(cell.x, cell.z)?);
+        (sheet.present && sheet.y < cell.y).then(|| sheet.surface_height())
     }
 
     /// Where water entering a cell ends up, following it down any drop.
@@ -1091,7 +1092,7 @@ impl WaterWorld {
                 };
                 level_between(from, to, weir(head), even);
             } else if self.falls(ground, cell, Some(id)) {
-                self.fall(id, cell, [level, floor, area], dt, out);
+                self.fall(id, cell, [level, floor, area, top], dt, out);
             } else if own_floor < rim {
                 // Beyond the rim the water runs off as a sheet, over any
                 // water already running there.
@@ -1120,16 +1121,34 @@ impl WaterWorld {
     }
 
     /// Water spilling from a pool over a drop at `cell`, with the pool's
-    /// level, the lip's floor and the pool's surface area.
+    /// level, the lip's floor, the pool's surface area and the top of its
+    /// cells.
     fn fall(
         &mut self,
         id: u32,
         cell: WaterCell,
-        [level, floor, area]: [f64; 3],
+        [level, floor, area, top]: [f64; 4],
         dt: f64,
         out: &mut Exchanges,
     ) {
         let weir = |head: f64| WEIR_COEFFICIENT * WATER_CELL_METRES * head.max(0.0).powf(1.5) * dt;
+        if let Some(below) = self.running_under(cell) {
+            // Running water already down the drop, however deep its floor,
+            // is the same water: the pool pours into it over its weir, by its
+            // head over that water, and stops at its own level. As falls,
+            // landing a step later, streams poured into whichever column of
+            // a channel stood low and rocked it in a standing wave metres
+            // high. A pool fuller than its cells presses nothing up.
+            let head = level.min(top) - below.max(floor);
+            if head > 0.0 {
+                out.transfers.push(Transfer {
+                    from: End::Pool(id),
+                    to: End::Sheet(cell),
+                    volume: weir(head).min(head * area),
+                });
+            }
+            return;
+        }
         let head = level - floor;
         // Water a millimetre over a lip clings to it.
         if head > CLING_METRES {
