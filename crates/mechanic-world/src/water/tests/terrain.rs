@@ -160,6 +160,29 @@ fn covers(sheet: &crate::WaterSheet, point: DVec2) -> bool {
     })
 }
 
+/// The columns the stored water's surface draws a quad over.
+fn drawn_columns(
+    water: &WaterWorld,
+    ground: &impl crate::water::WaterGround,
+) -> std::collections::HashSet<(i32, i32)> {
+    let mut drawn = std::collections::HashSet::new();
+    for tile in water.surface_tiles(ground, &std::collections::HashMap::new()) {
+        for quad in tile.indices.chunks(6) {
+            let centre = quad
+                .iter()
+                .map(|&index| DVec3::from(tile.positions[index as usize].map(f64::from)))
+                .sum::<DVec3>()
+                / 6.0
+                + tile.origin;
+            drawn.insert((
+                crate::water::WaterCell::containing(centre).x,
+                crate::water::WaterCell::containing(centre).z,
+            ));
+        }
+    }
+    drawn
+}
+
 #[test]
 fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
     let field = TerrainField::new(WorldSeed(42));
@@ -196,6 +219,16 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
     assert!(!meeting.is_empty(), "no running water meets the lake");
+    // Water fed by the lake never stands above it.
+    let highest = water
+        .running_cells()
+        .into_iter()
+        .map(|view| view.level)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        highest < level + 0.05,
+        "running water stands at {highest:.3} m over a lake at {level:.3} m"
+    );
     // The lake's finest tiles: 64 m with a vertex every metre.
     let middle = (beyond + lake) * 0.5;
     let tile = WaterTile {
@@ -206,8 +239,10 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
     let shifts = water.cycle.shifts(&ground);
     let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &meeting)
         .expect("the lake shows");
+    let drawn = drawn_columns(&water, &ground);
     // Every lake column beside the running water lies under the lake's
-    // sheet: none is left bare between the two surfaces.
+    // sheet or the running water's surface: none is left bare between the
+    // two.
     let centre = |x: i32, z: i32| {
         let centre = crate::water::WaterCell::new(x, 0, z).centre();
         DVec2::new(centre.x, centre.z)
@@ -224,7 +259,10 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
                 continue;
             }
             beside += 1;
-            assert!(covers(&sheet, point), "the lake leaves ({nx}, {nz}) bare");
+            assert!(
+                covers(&sheet, point) || drawn.contains(&(nx, nz)),
+                "the lake leaves ({nx}, {nz}) bare"
+            );
         }
     }
     assert!(beside > 0, "the running water touches no lake water");

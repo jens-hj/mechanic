@@ -542,11 +542,13 @@ impl WaterWorld {
                             let (dx, dz) = DIRECTIONS[face];
                             let away = DVec3::new(f64::from(dx), 0.0, f64::from(dz));
                             let speed = flow[face] / (WATER_CELL_METRES * depth);
+                            // It pours through the lip's cell, which may be
+                            // a hole in a bank lower than its surface.
                             let centre = over.centre();
                             pours.push((
                                 Launch {
                                     lip: over,
-                                    from: DVec3::new(centre.x, floor + depth, centre.z)
+                                    from: centre.with_y((floor + depth).min(centre.y))
                                         - away * 0.4 * WATER_CELL_METRES,
                                     velocity: away * speed,
                                 },

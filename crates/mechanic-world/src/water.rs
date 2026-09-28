@@ -23,7 +23,7 @@ mod sheet;
 mod soil;
 mod surface;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use bevy_math::{DVec2, DVec3, IVec3};
@@ -56,6 +56,16 @@ const FINE_VOLUME_M3: f64 = TERRAIN_CELL_METERS * TERRAIN_CELL_METERS * TERRAIN_
 /// Water spreads onto a cell only once it stands this deep over its floor,
 /// in metres: a film thinner than this stays where it is.
 const FILM_METRES: f64 = 0.01;
+
+/// A pool takes in dry ground at once only where its water would stand at
+/// least this deep over it, in metres: deep water levels out at once, while
+/// over shallower ground friction holds its front back.
+const DEEP_METRES: f64 = 0.3;
+
+/// How fast a pool's edge spreads over dry ground it stands shallow on, in
+/// metres a second: the pace of a flood a few centimetres deep over grass,
+/// rather than a whole flat filling at the pool's level in one step.
+const FRONT_M_S: f64 = 0.25;
 
 /// Water shallower than this clings to the ground and does not run, and
 /// water less than this over a lip does not pour over it, in metres.
@@ -528,6 +538,10 @@ impl WaterWorld {
         water.load_soil(&doc.soil);
         let ids = water.pools.keys().copied().collect::<Vec<_>>();
         for id in ids {
+            // A saved pool fills out to its level again at once.
+            if let Some(pool) = water.pools.get_mut(&id) {
+                pool.front = f64::INFINITY;
+            }
             water.flood(ground, id, usize::MAX);
         }
         water
@@ -715,6 +729,40 @@ impl WaterWorld {
         (floor_of(cell, self.openings(ground, cell))? < surface.level).then_some(surface)
     }
 
+    /// Whether a pool at `level` reaches a cell at once: running water is
+    /// there already, the pool would stand deep over the ground under it, or
+    /// the cell was dug. Trenches, pits and tunnels the player digs fill at
+    /// the level of the water let into them; the natural flats around them
+    /// flood only as fast as a front crosses them.
+    fn reaches(&mut self, ground: &impl WaterGround, cell: WaterCell, level: f64) -> bool {
+        ground.dug(cell)
+            || self
+                .sheet_surface(ground, cell)
+                .is_some_and(|(_, depth)| depth > FILM_METRES)
+            || self.deep(ground, cell, level)
+    }
+
+    /// Whether water at `level` would stand deep over the ground under a
+    /// cell: at least `DEEP_METRES` over the floor of the lowest cell open to
+    /// it straight below, whatever water already lies there.
+    fn deep(&mut self, ground: &impl WaterGround, mut cell: WaterCell, level: f64) -> bool {
+        let Some(mut floor) = floor_of(cell, self.openings(ground, cell)) else {
+            return false;
+        };
+        while floor > level - DEEP_METRES {
+            let below = cell.below();
+            let lower = floor_of(below, self.openings(ground, below));
+            if self.openings(ground, cell)[0] == 0
+                || self.openings(ground, below)[3] == 0
+                || lower.is_none()
+            {
+                return false;
+            }
+            (cell, floor) = (below, lower.unwrap_or(floor));
+        }
+        true
+    }
+
     /// Whether water in a cell falls out of its bottom: into open, free
     /// space, or onto water lower than the cell, other than `pool`'s own.
     fn falls(&mut self, ground: &impl WaterGround, cell: WaterCell, pool: Option<u32>) -> bool {
@@ -804,18 +852,22 @@ impl WaterWorld {
     }
 
     /// Takes in the neighbours a pool's water covers, lowest first, up to
-    /// `budget` cells.
+    /// `budget` cells. Dry ground the water would stand shallow on it takes
+    /// in a ring at a time, as fast as its front may spread.
     fn flood(&mut self, ground: &impl WaterGround, id: u32, mut budget: usize) {
-        loop {
+        let mut fresh = HashSet::new();
+        let mut waiting = Vec::new();
+        let mut spread = false;
+        let finished = loop {
             let Some(pool) = self.pools.get_mut(&id) else {
                 return;
             };
             pool.settle();
             if budget == 0 {
-                return;
+                break false;
             }
             let Some(cell) = pool.next_below(pool.level - FILM_METRES) else {
-                return;
+                break true;
             };
             let openings = self.openings(ground, cell);
             let Some(floor) = floor_of(cell, openings) else {
@@ -826,8 +878,10 @@ impl WaterWorld {
             }
             // Ground falling away below the highest floor the water crossed
             // lies beyond the pool's rim: it spills there.
-            let beyond_rim = self.pools.get(&id).is_some_and(|pool| floor < pool.rim);
-            if beyond_rim
+            let Some((rim, level)) = self.pools.get(&id).map(|pool| (pool.rim, pool.level)) else {
+                return;
+            };
+            if floor < rim
                 || self.owner.contains_key(&cell)
                 || self.implicit(ground, cell).is_some()
                 || self.falls(ground, cell, Some(id))
@@ -837,14 +891,51 @@ impl WaterWorld {
                 }
                 continue;
             }
-            if let Some(pool) = self.pools.get_mut(&id) {
-                pool.add_member(cell, openings);
-                pool.rim = pool.rim.max(floor);
+            // Over dry ground it would stand shallow on, the water spreads
+            // as a front: a ring of cells beside those it held before, once
+            // the front has had time to cross a cell.
+            if !self.reaches(ground, cell, level) {
+                let Some(pool) = self.pools.get(&id) else {
+                    return;
+                };
+                let ready = pool.front.is_infinite()
+                    || (pool.front >= WATER_CELL_METRES
+                        && cell.neighbours().into_iter().any(|neighbour| {
+                            pool.members.contains_key(&neighbour) && !fresh.contains(&neighbour)
+                        }));
+                if !ready {
+                    waiting.push((cell, floor));
+                    continue;
+                }
+                spread = true;
             }
+            if let Some(pool) = self.pools.get_mut(&id) {
+                // Only ground the water crossed makes a rim, not the bottom of
+                // a cell over its own water.
+                if !pool.over_own(cell) {
+                    pool.rim = pool.rim.max(floor);
+                }
+                pool.add_member(cell, openings);
+            }
+            fresh.insert(cell);
             self.owner.insert(cell, id);
             self.absorb_sheet(id, cell);
             self.border(ground, id, cell);
             budget -= 1;
+        };
+        let Some(pool) = self.pools.get_mut(&id) else {
+            return;
+        };
+        for (cell, floor) in waiting {
+            pool.queue(cell, floor);
+        }
+        if spread && pool.front.is_finite() {
+            pool.front -= WATER_CELL_METRES;
+        }
+        // A reloaded pool fills out to its level at once; from then on it
+        // spreads over dry flats at the pace of a front.
+        if finished && pool.front.is_infinite() {
+            pool.front = 0.0;
         }
     }
 
@@ -854,6 +945,11 @@ impl WaterWorld {
         let mut phases = WaterPhases::default();
         self.launches.clear();
         let ids = self.pools.keys().copied().collect::<Vec<_>>();
+        for pool in self.pools.values_mut() {
+            if pool.front.is_finite() {
+                pool.front = (pool.front + FRONT_M_S * dt).min(WATER_CELL_METRES);
+            }
+        }
         for &id in &ids {
             self.flood(ground, id, SPREAD_CELLS_PER_STEP);
         }
@@ -1045,7 +1141,7 @@ impl WaterWorld {
                     .normalize_or_zero()
             });
             let centre = cell.centre();
-            let top = level.min(cell.bottom() + WATER_CELL_METRES);
+            let top = level.min(centre.y);
             let launch = u32::try_from(self.launches.len()).expect("launches fit u32");
             self.launches.push(Launch {
                 lip: cell,
@@ -1227,6 +1323,10 @@ impl WaterWorld {
             End::Seed(cell) => {
                 if let Some(&id) = self.owner.get(&cell) {
                     self.deposit_end(ground, End::Pool(id), volume);
+                } else if floor_of(cell, self.openings(ground, cell)).is_none() {
+                    // Water set down in solid ground, as by a stream launched
+                    // from inside its lip, rises out of it.
+                    self.deposit_at(ground, cell, volume);
                 } else if self.stands(ground, cell, volume) {
                     self.start_pool(ground, cell, volume);
                 } else {

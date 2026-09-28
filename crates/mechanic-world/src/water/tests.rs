@@ -10,17 +10,28 @@ use crate::{
     WaterSurface,
 };
 
-/// An axis-aligned box of open space.
+/// An axis-aligned box of open space, dug out of solid ground or left open
+/// by the seed.
 #[derive(Clone, Copy)]
 struct Room {
     minimum: DVec3,
     maximum: DVec3,
+    dug: bool,
 }
 
 const fn room(minimum: [f64; 3], maximum: [f64; 3]) -> Room {
     Room {
         minimum: DVec3::from_array(minimum),
         maximum: DVec3::from_array(maximum),
+        dug: true,
+    }
+}
+
+/// A room the seed left open: natural ground, never dug.
+const fn natural(minimum: [f64; 3], maximum: [f64; 3]) -> Room {
+    Room {
+        dug: false,
+        ..room(minimum, maximum)
     }
 }
 
@@ -139,9 +150,11 @@ impl WaterGround for Ground {
         true
     }
 
-    fn dug(&self, _cell: WaterCell) -> bool {
-        // Every room is dug out of solid ground.
-        true
+    fn dug(&self, cell: WaterCell) -> bool {
+        let centre = cell.centre();
+        !self.rooms.iter().any(|room| {
+            !room.dug && centre.cmpge(room.minimum).all() && centre.cmplt(room.maximum).all()
+        })
     }
 
     fn material(&self, point: DVec3) -> Option<crate::TerrainMaterial> {
@@ -322,6 +335,12 @@ fn a_breached_lake_drains_into_a_cave_until_the_levels_meet() {
     );
     assert!(lake < 0.8, "the lake did not go down");
     assert!((drawn(&water) - held).abs() < 0.05);
+    // The stream over the trench's end falls into the cave through the
+    // hole in its roof, never into the rock over it.
+    assert!(
+        water.pools().all(|pool| !pool.surface_cells.is_empty()),
+        "a pool stands inside the ground"
+    );
 }
 
 /// A shallow channel dug from a lake, its floor 10 cm under the lake,
@@ -762,6 +781,44 @@ fn a_breach_floods_a_field_as_a_front_moving_at_shallow_water_speed() {
     );
     let ledger = water.ledger();
     assert!(ledger.total().abs() < 1.0e-9, "water was made or lost");
+}
+
+/// A cave 40 cm high opening east onto a natural flat field under the sky,
+/// 30 cm over the cave's floor.
+fn cave_and_field() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, 0.0, 0.0], [1.0, 0.4, 1.0]),
+            natural([1.0, 0.3, -4.0], [8.0, 10.0, 5.0]),
+        ],
+        lake: None,
+        river: None,
+        rock: true,
+    }
+}
+
+#[test]
+fn still_water_a_few_centimetres_over_a_field_runs_onto_it_at_flowing_speed() {
+    let ground = cave_and_field();
+    let mut water = WaterWorld::new();
+    // Fills the cave to 36 cm, 6 cm over the field.
+    water.deposit(&ground, DVec3::new(0.3, 0.2, 0.5), 0.36);
+    let mouth = DVec2::new(1.0, 0.5);
+    let mut fronts = Vec::new();
+    for _ in 0..5 {
+        run(&mut water, &ground, 1);
+        fronts.push(front(&water, &ground, mouth));
+    }
+    // A pool never floods the field at its level all at once: water a few
+    // centimetres deep runs out over it at a few tens of centimetres a
+    // second.
+    assert!(fronts[0] < 1.0, "a metre out after a second: {fronts:.2?}");
+    assert!(
+        fronts[4] < 3.0,
+        "three metres out after five seconds: {fronts:.2?}"
+    );
+    assert!(fronts[4] > 0.4, "no water ran out: {fronts:.2?}");
+    assert!((water.ledger().total() - 0.36).abs() < 1.0e-9);
 }
 
 /// A flat floor 2 m square, of soil or of rock.

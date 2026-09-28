@@ -49,6 +49,9 @@ pub(super) struct Pool {
     /// Neighbours it exchanges water with rather than takes in: other pools'
     /// cells, seed-derived water, and drops it spills over.
     pub(super) contacts: BTreeSet<WaterCell>,
+    /// How far its edge may spread over dry, shallow ground before its next
+    /// ring, in metres; infinite while a saved pool fills out again.
+    pub(super) front: f64,
 }
 
 impl Pool {
@@ -63,6 +66,7 @@ impl Pool {
             border: BinaryHeap::new(),
             queued: HashSet::new(),
             contacts: BTreeSet::new(),
+            front: 0.0,
         }
     }
 
@@ -95,6 +99,12 @@ impl Pool {
                 }
             }
         }
+    }
+
+    /// Whether a cell lies straight over one of its members: water rising
+    /// there stands on the pool's own water, not on the ground.
+    pub(super) fn over_own(&self, cell: WaterCell) -> bool {
+        self.members.contains_key(&cell.below())
     }
 
     /// Queues a neighbour for the flood.

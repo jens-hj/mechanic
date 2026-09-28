@@ -17,7 +17,15 @@ it.
   terrain cells. A pool grows by priority flood, the algorithm the drainage
   already uses: the lowest neighbour whose floor the water covers by a
   centimetre is taken in next. A U-tube is one pool, so it settles level in
-  both arms without pressure being simulated.
+  both arms without pressure being simulated. Natural, dry ground the pool
+  would stand less than 30 cm deep on it takes in a ring of cells at a
+  time, at 0.25 m/s, the pace of a flood a few centimetres deep over grass:
+  otherwise a pool a few centimetres over a flat floods the whole flat at
+  its level in one step, a sheet racing round the contour of every hill
+  beside it. Deep ground, ground running water already reached, and ground
+  the player dug it takes in at once, so a dug trench or pit fills at the
+  level of the water let into it. A saved pool fills out to its level at
+  once when the world loads.
 - **Water moves across contacts.** A neighbour a pool cannot take in is a
   contact: another pool's cell, seed-derived water, or a drop, where the cell's
   bottom opens onto free space or lower water. Across a contact the higher
@@ -25,8 +33,9 @@ it.
   where the head is measured over the lip the water must cross. Pools whose
   levels come within 5 mm merge. Water pouring over a drop is launched into
   the air (see [Waterfalls](#waterfalls)).
-- **Pools spill over their rims.** A pool records the highest floor its
-  water crossed from its seed. Ground beyond it that lies lower is past the
+- **Pools spill over their rims.** A pool records the highest ground its
+  water crossed from its seed; the bottom of a cell over its own water is
+  no rim. Ground beyond it that lies lower is past the
   rim: the pool does not take it in but spills onto it as running water.
 - **Running water is a sheet.** See [Running water](#running-water).
 - **Seed-derived water pours in.** A free cell beside the sea, a lake or a
@@ -139,7 +148,10 @@ Water pouring over a lip, from a pool or a sheet, is launched in one parcel
 a step with its speed over the lip: the weir speed `√(g × head)` from a
 pool, the sheet's current from a sheet (`water/jet.rs`). Each parcel falls
 along its arc, swept through the water cells 10 cm at a time, until it meets
-a pool, seed-derived water, running water or the ground, where it lands. The
+a pool, seed-derived water, running water or the ground, where it lands. It
+leaves from inside the lip's cell, no higher than its middle, since the lip
+may be a hole in a bank below the water's surface. Water set down inside
+solid ground rises to the first open space over it. The
 water in flight is in the ledger, so a tall fall holds water and a stream
 keeps falling for its flight time after its source stops. `WaterStep::falls`
 gives each stream's launch point and parcels, which the app draws as a
@@ -264,7 +276,9 @@ where its sheet runs on under the bank, or the edge would sink into the
 ground in teeth. The lake's own sheet, a metre between vertices, runs on over
 running water standing within 10 cm of its level and fades out there, as it
 does under a bank, rather than stopping a square short and leaving the dug
-ground between the two surfaces bare.
+ground between the two surfaces bare. That sheet cannot follow a seam between
+the two a column wide, so lake columns beside running water at the lake's
+level are drawn with the running water, as deep water at the lake's level.
 Normals follow the surface, and each corner carries the current, so ripples
 run with it. A stream in flight is two crossed ribbons along its arc, wider
 as more water pours. Lakes and rivers moved from their seed level mesh again
@@ -348,6 +362,9 @@ surface crosses sample the field's density.
   rest spills on within the hour.
 
 - A pool cut in two by new ground stays one pool, at one level.
+- A pool still floods a flat the player dug at its level at once: only
+  natural ground makes it spread as a front. Pacing dug trenches too left
+  pools there overfull, pressing water far above its source.
 - Water crosses between any two water cells that both have open terrain
   cells, so a wall thinner than 20 cm leaks.
 - Where a surface-breaking carve meets a buried part of the same layer below

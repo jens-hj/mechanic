@@ -40,6 +40,10 @@ struct Column {
     /// Seed-derived water beside stored water, which draws itself: it only
     /// holds the corners it shares with stored water at its level.
     anchor: bool,
+    /// An anchor beside running water at its level, drawn with it: the
+    /// seed-derived water's own sheet, a metre a vertex, fades out over the
+    /// running water and cannot follow a seam between them a column wide.
+    seam: bool,
 }
 
 /// Depth an anchor weighs in with on a corner, in metres: as deep water, so
@@ -82,7 +86,10 @@ impl WaterWorld {
     ) -> Vec<SurfaceTile> {
         let columns = self.visible_columns(ground);
         let mut tiles = CellMap::<(i32, i32), Vec<(i32, i32)>>::default();
-        for (&(x, z), _) in columns.iter().filter(|(_, column)| !column.anchor) {
+        for (&(x, z), _) in columns
+            .iter()
+            .filter(|(_, column)| !column.anchor || column.seam)
+        {
             tiles
                 .entry((
                     x.div_euclid(SURFACE_TILE_COLUMNS),
@@ -148,6 +155,7 @@ impl WaterWorld {
                     depth: view.depth,
                     flow: view.flow,
                     anchor: false,
+                    seam: false,
                 },
             );
         }
@@ -171,6 +179,7 @@ impl WaterWorld {
                         depth,
                         flow: DVec2::ZERO,
                         anchor: false,
+                        seam: false,
                     },
                 );
             }
@@ -202,6 +211,7 @@ impl WaterWorld {
                         depth: level - bottom,
                         flow: DVec2::ZERO,
                         anchor: false,
+                        seam: false,
                     },
                 );
             }
@@ -218,11 +228,17 @@ impl WaterWorld {
         columns: &mut CellMap<(i32, i32), Column>,
     ) {
         let mut anchors = CellMap::<(i32, i32), Column>::default();
+        let beside = |dx: i32, dz: i32| dx == 0 || dz == 0;
         for (&(x, z), column) in columns.iter() {
             for dz in -1..=1 {
                 for dx in -1..=1 {
                     let key = (x + dx, z + dz);
-                    if columns.contains_key(&key) || anchors.contains_key(&key) {
+                    if columns.contains_key(&key) {
+                        continue;
+                    }
+                    if let Some(anchor) = anchors.get_mut(&key) {
+                        anchor.seam |=
+                            beside(dx, dz) && column.level >= anchor.level - MEETS_METRES;
                         continue;
                     }
                     let centre = WaterCell::new(key.0, 0, key.1).centre();
@@ -244,6 +260,7 @@ impl WaterWorld {
                                 depth: ANCHOR_METRES,
                                 flow: DVec2::ZERO,
                                 anchor: true,
+                                seam: beside(dx, dz) && column.level >= level - MEETS_METRES,
                             },
                         );
                     }
@@ -395,6 +412,7 @@ mod tests {
                         depth: 0.05,
                         flow: DVec2::new(1.0, 0.0),
                         anchor: false,
+                        seam: false,
                     },
                 );
             }
@@ -439,6 +457,7 @@ mod tests {
                     depth: 0.1,
                     flow: DVec2::ZERO,
                     anchor: false,
+                    seam: false,
                 },
             );
         }
@@ -467,6 +486,7 @@ mod tests {
                 depth: 0.05,
                 flow: DVec2::ZERO,
                 anchor: false,
+                seam: false,
             },
         );
         columns.insert(
@@ -476,6 +496,7 @@ mod tests {
                 depth: super::ANCHOR_METRES,
                 flow: DVec2::ZERO,
                 anchor: true,
+                seam: false,
             },
         );
         let tile = mesh_tile(&columns, (0, 0), &[(0, 0)], 0);
