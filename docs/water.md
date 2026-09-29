@@ -80,9 +80,15 @@ barely creeps while a stream runs at a few metres a second. A pipe is as deep
 as the water over its face, up to a metre, so a film is pushed as a film:
 together with Manning's friction this gives Manning's law, and a flood 10 cm
 deep spreads over flat grass at a few tens of centimetres a second. Water
-reaches ground only by flowing there. A sheet rests on
-the mean height of the ground in its column rather than on the bottom of its
-lowest open 5 cm layer, so a sheet down a slope is a ramp, not a stair. The
+reaches ground only by flowing there. A sheet rests on the drawn ground at
+its column's centre, read from the terrain's density as the mesh draws it,
+within half a terrain cell of the ground its open 5 cm cells make. Counted
+from those cells alone, as the mean top of the ground over the column, a
+slope gentler than one terrain cell a water cell is a stair of flat terraces
+5 cm high: water spread across each terrace, along the ground's contour and
+round a hill, as readily as down it, and its depth rose and fell in stripes
+down every slope, which showed as bare teeth in thin water. The height is
+kept per cell until the ground there is edited. The
 flows give each sheet cell a current, which
 buoyancy and drag see. Pipes step in substeps of at most 12.5 ms, four per
 water step.
@@ -384,7 +390,8 @@ surface crosses sample the field's density.
 - A pool cut in two by new ground stays one pool, at one level.
 - A pool still floods a flat the player dug at its level at once: only
   natural ground makes it spread as a front. Pacing dug trenches too left
-  pools there overfull, pressing water far above its source.
+  pools there overfull, pressing water far above its source. An overfull
+  pool pours over a lip by no more head than its cells hold.
 - Water crosses between any two water cells that both have open terrain
   cells, so a wall thinner than 20 cm leaks.
 - Where a surface-breaking carve meets a buried part of the same layer below

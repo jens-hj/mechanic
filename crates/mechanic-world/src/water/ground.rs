@@ -87,16 +87,10 @@ pub trait WaterGround: WaterNetwork {
     fn dug(&self, cell: WaterCell) -> bool;
 
     /// Height of the drawn ground at a point: the first surface of the
-    /// finest terrain mesh met going down from a little over `near`, if any
-    /// within a metre and a half.
-    fn ground_top(&self, x: f64, z: f64, near: f64) -> Option<f64>;
+    /// finest terrain mesh met going down from `from`, if any within `reach`
+    /// metres.
+    fn ground_top(&self, x: f64, z: f64, from: f64, reach: f64) -> Option<f64>;
 }
-
-/// How far over `near` the search for the drawn ground starts, in metres.
-const TOP_ABOVE_METRES: f64 = 0.25;
-
-/// Terrain cells the search for the drawn ground looks down through.
-const TOP_CELLS: i32 = 30;
 
 /// Terrain, untouched and edited, as the ground water sits in.
 #[derive(Clone, Copy)]
@@ -143,12 +137,13 @@ impl<S: TerrainSource> TerrainWater<'_, S> {
     }
 
     /// Where the mesh's ground surface crosses one lattice column, going down
-    /// from `near`.
-    fn lattice_top(&self, x: i32, z: i32, near: f64) -> Option<f64> {
+    /// from `from` through `reach` metres.
+    fn lattice_top(&self, x: i32, z: i32, from: f64, reach: f64) -> Option<f64> {
         let edge = crate::TERRAIN_CELL_METERS;
-        let start = ((near + TOP_ABOVE_METRES) / edge).floor() as i32;
+        let start = (from / edge).ceil() as i32;
+        let end = ((from - reach) / edge).floor() as i32;
         let mut above = self.lattice_density(crate::WorldCell::new(x, start, z));
-        for y in (start - TOP_CELLS..start).rev() {
+        for y in (end..start).rev() {
             let density = self.lattice_density(crate::WorldCell::new(x, y, z));
             if above <= 0.0 && density > 0.0 {
                 let along = f64::from(density / (density - above));
@@ -202,7 +197,7 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
         })
     }
 
-    fn ground_top(&self, x: f64, z: f64, near: f64) -> Option<f64> {
+    fn ground_top(&self, x: f64, z: f64, from: f64, reach: f64) -> Option<f64> {
         // Bilinear between the four lattice columns around the point, as the
         // mesh's triangles run between them.
         let edge = crate::TERRAIN_CELL_METERS;
@@ -212,11 +207,11 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
         // Only the columns the point lies between are read: a point on the
         // lattice reads one.
         let row = |dz: i32| {
-            let first = self.lattice_top(ix, iz + dz, near)?;
+            let first = self.lattice_top(ix, iz + dz, from, reach)?;
             if tx == 0.0 {
                 return Some(first);
             }
-            let second = self.lattice_top(ix + 1, iz + dz, near)?;
+            let second = self.lattice_top(ix + 1, iz + dz, from, reach)?;
             Some((second - first).mul_add(tx, first))
         };
         let first = row(0)?;
@@ -260,6 +255,8 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
 #[derive(Clone, Debug, Default)]
 pub(super) struct OpeningsCache {
     bricks: CellMap<BrickCoord, Box<[Openings; BRICK_WATER_CELLS]>>,
+    /// Floor running water rests on in each cell, where worked out.
+    floors: CellMap<BrickCoord, Box<[f64; BRICK_WATER_CELLS]>>,
     /// Seed-derived water found in each cell.
     implicit: CellMap<WaterCell, Option<WaterSurface>>,
     /// Whether seed-derived water may reach into each brick.
@@ -284,6 +281,29 @@ impl OpeningsCache {
             *slot = openings;
         }
         *slot
+    }
+
+    /// Height of the ground in a cell as running water rests on it, where the
+    /// cell has any opening: the drawn ground at the column's centre, within
+    /// half a terrain cell of the ground its open cells make. Counted from
+    /// terrain cells alone, a gentle slope is a stair of flat terraces 5 cm
+    /// high, and water spreads along each terrace, round the hill, as
+    /// readily as down it.
+    pub(super) fn floor(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<f64> {
+        let counted = super::ground_height(cell, self.openings(ground, cell))?;
+        let known = self
+            .floors
+            .entry(cell.brick())
+            .or_insert_with(|| Box::new([f64::NAN; BRICK_WATER_CELLS]));
+        let slot = &mut known[cell.local_index_in_brick()];
+        if slot.is_nan() {
+            let half = 0.5 * crate::TERRAIN_CELL_METERS;
+            let centre = cell.centre();
+            *slot = ground
+                .ground_top(centre.x, centre.z, counted + 1.5 * half, 3.0 * half)
+                .map_or(counted, |top| top.clamp(counted - half, counted + half));
+        }
+        Some(*slot)
     }
 
     /// Seed-derived water in a cell, looked for at its lowest opening.
@@ -318,6 +338,15 @@ impl OpeningsCache {
     /// Forgets what the ground was in a brick.
     pub(super) fn forget(&mut self, brick: BrickCoord) {
         self.bricks.remove(&brick);
+        // The drawn ground at a brick's edge reads the cells beside it.
+        for x in -1..=1 {
+            for y in -1..=1 {
+                for z in -1..=1 {
+                    self.floors
+                        .remove(&BrickCoord::new(brick.x + x, brick.y + y, brick.z + z));
+                }
+            }
+        }
         self.implicit.retain(|cell, _| cell.brick() != brick);
     }
 }

@@ -32,7 +32,7 @@ use super::{
     CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, WATER_CELL_METRES, WaterCell,
     WaterGround, WaterWorld,
 };
-use super::{floor_of, ground_height, held_in};
+use super::{floor_of, held_in};
 use crate::WaterSurface;
 
 /// Horizontal area of one water cell, in square metres.
@@ -236,8 +236,9 @@ impl WaterWorld {
     pub(super) fn add_sheet(&mut self, ground: &impl WaterGround, cell: WaterCell, volume: f64) {
         let slot = self.sheets.slot_or_insert(cell.x, cell.z);
         if !self.sheets.at(slot).present {
-            let floor =
-                ground_height(cell, self.openings(ground, cell)).unwrap_or_else(|| cell.bottom());
+            let floor = self
+                .sheet_floor(ground, cell)
+                .unwrap_or_else(|| cell.bottom());
             self.sheets.place(slot, cell.y, floor);
         }
         self.sheets.at_mut(slot).volume += volume;
@@ -260,7 +261,7 @@ impl WaterWorld {
             let depth = sheet.volume / CELL_AREA_M2;
             return Some((sheet.floor + depth, depth));
         }
-        ground_height(cell, self.openings(ground, cell)).map(|floor| (floor, 0.0))
+        self.sheet_floor(ground, cell).map(|floor| (floor, 0.0))
     }
 
     /// Running water at a cell: its surface and current, if it runs there.
@@ -290,10 +291,10 @@ impl WaterWorld {
             // The highest opening beside the water, from its surface down to
             // its floor: a pond drains through a hole in its bank.
             let mut beside = level;
-            let mut open = ground_height(beside, self.openings(ground, beside));
+            let mut open = self.sheet_floor(ground, beside);
             while open.is_none() && beside.y > floor_y {
                 beside = beside.below();
-                open = ground_height(beside, self.openings(ground, beside));
+                open = self.sheet_floor(ground, beside);
             }
             if let Some(floor) = open {
                 if !self.drops(ground, beside) {
@@ -308,7 +309,7 @@ impl WaterWorld {
                 let mut below = beside;
                 for _ in 0..(cell.y - floor_y).max(0) + CHUTE_CELLS {
                     below = below.below();
-                    let Some(floor) = ground_height(below, self.openings(ground, below)) else {
+                    let Some(floor) = self.sheet_floor(ground, below) else {
                         break;
                     };
                     if !self.drops(ground, below) {
@@ -327,7 +328,7 @@ impl WaterWorld {
             // Solid beside: the water may climb a step of one cell.
             let above = level.up();
             let open_above = floor_of(cell.up(), self.openings(ground, cell.up())).is_some();
-            match ground_height(above, self.openings(ground, above)) {
+            match self.sheet_floor(ground, above) {
                 Some(floor) if open_above => Face::Onto {
                     y: above.y,
                     floor,
@@ -741,7 +742,7 @@ impl WaterWorld {
             return;
         };
         let openings = self.openings(ground, cell);
-        match ground_height(cell, openings) {
+        match self.sheet_floor(ground, cell) {
             Some(floor) if held_in(cell, openings, f64::INFINITY) > 0.0 => {
                 if let Some(sheet) = self.sheets.get_mut(cell) {
                     sheet.floor = floor;

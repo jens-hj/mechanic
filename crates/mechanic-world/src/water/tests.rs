@@ -157,12 +157,12 @@ impl WaterGround for Ground {
         })
     }
 
-    fn ground_top(&self, x: f64, z: f64, near: f64) -> Option<f64> {
+    fn ground_top(&self, x: f64, z: f64, from: f64, reach: f64) -> Option<f64> {
         // The top of the first solid ground under the point, to the
         // millimetre.
-        let mut y = near + 0.25;
+        let mut y = from;
         let mut open = self.open(DVec3::new(x, y, z));
-        while y > near - 1.25 {
+        while y > from - reach {
             y -= 0.001;
             let now = self.open(DVec3::new(x, y, z));
             if open && !now {
@@ -634,8 +634,9 @@ fn rough_slope() -> Ground {
     for i in 0..20 {
         for k in 0..12 {
             let (x, z) = (f64::from(i) * 0.2, f64::from(k) * 0.2);
-            // A fixed scatter standing in for the lumps of real ground.
-            let lump = f64::from((i * 7 + k * 13 + i * k * 5) % 9) / 8.0 * 0.04;
+            // A fixed scatter standing in for the lumps of real ground, up
+            // to 5 cm high.
+            let lump = f64::from((i * 7 + k * 13 + i * k * 5) % 9) / 8.0 * 0.05;
             let height = -x / 4.0 + lump;
             rooms.push(room([x, height, z], [x + 0.2, 2.0, z + 0.2]));
         }
@@ -647,6 +648,59 @@ fn rough_slope() -> Ground {
         river: None,
         rock: true,
     }
+}
+
+/// Even ground falling 1 cm every 20 cm along x, 6 m long and 4 m wide,
+/// over a drain: a slope gentler than one terrain cell a water cell.
+fn gentle_slope() -> Ground {
+    let mut rooms = (0..30)
+        .map(|i| {
+            let x = f64::from(i) * 0.2;
+            room([x, -0.01 * f64::from(i), 0.0], [x + 0.2, 2.0, 4.0])
+        })
+        .collect::<Vec<_>>();
+    rooms.push(room([6.0, -3.0, 0.0], [7.0, 2.0, 4.0]));
+    Ground {
+        rooms,
+        lake: None,
+        river: None,
+        rock: true,
+    }
+}
+
+#[test]
+fn a_trickle_down_a_gentle_slope_runs_down_it_not_along_it() {
+    let ground = gentle_slope();
+    let mut water = WaterWorld::new();
+    for _ in 0..400 {
+        water.deposit(&ground, DVec3::new(0.3, 0.5, 2.0), 0.00005);
+        water.step(&ground, 0.05);
+    }
+    let wet = water
+        .running_cells()
+        .into_iter()
+        .filter(|running| running.depth > 0.001)
+        .collect::<Vec<_>>();
+    let span = |along: fn(&super::RunningView) -> i32| {
+        let (low, high) = wet
+            .iter()
+            .map(along)
+            .fold((i32::MAX, i32::MIN), |(low, high), v| {
+                (low.min(v), high.max(v))
+            });
+        high - low + 1
+    };
+    let (down, across) = (
+        span(|running| running.cell.x),
+        span(|running| running.cell.z),
+    );
+    // Counted by whole terrain cells the slope is flat terraces 5 cm high,
+    // and the water spreads across each one before it runs on down: it ran
+    // 11 cells down and spread 15 across.
+    assert!(
+        across < down,
+        "a trickle runs {down} cells down the slope and spreads {across} across it"
+    );
 }
 
 #[test]

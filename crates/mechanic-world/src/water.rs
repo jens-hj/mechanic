@@ -230,10 +230,11 @@ fn floor_of(cell: WaterCell, openings: Openings) -> Option<f64> {
     })
 }
 
-/// Height of the ground in a cell as running water sees it, where the cell
-/// has any opening: the mean top of its ground over the column, up to its
-/// lowest wholly open layer. Unlike [`floor_of`] it rises smoothly as ground
-/// fills a layer, so running water down a slope is not a stair.
+/// Height of the ground in a cell counted from its terrain cells, where the
+/// cell has any opening: the mean top of its ground over the column, up to
+/// its lowest wholly open layer. Unlike [`floor_of`] it rises as ground fills
+/// a layer, but by whole terrain cells; running water rests on the drawn
+/// ground near it instead.
 fn ground_height(cell: WaterCell, openings: Openings) -> Option<f64> {
     floor_of(cell, openings)?;
     let full = u8::try_from(WATER_CELL_EDGE_CELLS * WATER_CELL_EDGE_CELLS).expect("16 cells");
@@ -723,6 +724,12 @@ impl WaterWorld {
         self.ground.openings(ground, cell)
     }
 
+    /// Height of the ground running water rests on in a cell, where the cell
+    /// has any opening.
+    fn sheet_floor(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<f64> {
+        self.ground.floor(ground, cell)
+    }
+
     fn implicit(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<WaterSurface> {
         let surface = match self.joined.get(&cell) {
             Some(joined) => joined.surface,
@@ -1152,7 +1159,10 @@ impl WaterWorld {
             }
             return;
         }
-        let head = level - floor;
+        // A pool fuller than its cells pours by no more head than its cells
+        // hold: its surplus presses water up out of the ground, not over a
+        // lip beside it metres at a time.
+        let head = level.min(top) - floor;
         // Water a millimetre over a lip clings to it.
         if head > CLING_METRES {
             let volume = weir(head).min(head * area);

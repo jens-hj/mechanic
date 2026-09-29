@@ -603,7 +603,7 @@ fn water_reads_the_ground_where_the_terrain_mesh_draws_it() {
                 continue;
             }
             let top = ground
-                .ground_top(at.x, at.z, at.y)
+                .ground_top(at.x, at.z, at.y + 0.25, 1.5)
                 .expect("ground under a vertex");
             assert!(
                 (top - at.y).abs() < 2.0e-3,

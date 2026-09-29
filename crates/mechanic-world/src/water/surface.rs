@@ -58,6 +58,13 @@ const MEETS_METRES: f64 = 0.1;
 /// each corner stands at the ground there plus the water's depth.
 const DRAPED_METRES: f64 = 0.02;
 
+/// How far over a corner's water the search for the ground under it starts,
+/// in metres: water sunk into the ground lies at most this deep in it.
+const TOP_ABOVE_METRES: f64 = 0.25;
+
+/// How far down the search for the ground under a corner looks, in metres.
+const TOP_REACH_METRES: f64 = 1.5;
+
 /// Water deeper than this, in metres, lies level: its corners stand at the
 /// mean level of the water around them. Between the two it blends.
 const LEVEL_METRES: f64 = 0.1;
@@ -128,7 +135,12 @@ impl WaterWorld {
                 let key = (x, y as i32, z);
                 *tops.entry(key).or_insert_with(|| {
                     let edge = WATER_CELL_METRES;
-                    ground.ground_top(f64::from(x) * edge, f64::from(z) * edge, near)
+                    ground.ground_top(
+                        f64::from(x) * edge,
+                        f64::from(z) * edge,
+                        near + TOP_ABOVE_METRES,
+                        TOP_REACH_METRES,
+                    )
                 })
             };
             out.push(mesh_tile(&columns, key, &members, fingerprint, &mut top));
