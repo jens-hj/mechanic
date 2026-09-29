@@ -276,7 +276,11 @@ column counts at a corner as the ground there plus its own depth, and from
 10 cm it counts at its own level, blending between, and the surface's
 normal follows the ground as far as the water lies on it. A mean level over
 a film and the deeper rills beside it sank the film's corners into the
-ground, and the ground showed through in sharp teeth down the slope. The
+ground, and the ground showed through in sharp teeth down the slope. Draping
+only lifts a corner, and the normal turns only where it lifted: the drawn
+ground lies a little under a column's counted floor, so draping a lake's
+shallow edge would sink it below the lake's level in a band along the
+shore's contour, lit as a slope. The
 ground's height is read where the finest terrain mesh draws it, whose
 samples sit at each cell's lowest corner, and kept per corner until the
 ground there is edited. Corners beside dry ground take no depth, so water

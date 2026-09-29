@@ -457,8 +457,14 @@ fn drape(
         lying += w * (1.0 - t);
         weight += w;
     }
-    corner.level = height / weight;
-    let lying = lying / weight;
+    // Draping only ever lifts water the averaging sank into the ground: water
+    // lying level over the ground, as at a lake's shallow edge, stays level.
+    let lift = height / weight - corner.level;
+    if lift <= 0.0 {
+        return;
+    }
+    corner.level += lift;
+    let lying = lying / weight * smoothstep(0.0, LIFTED_METRES, lift);
     let edge = WATER_CELL_METRES;
     let slope = |a: Option<f64>, b: Option<f64>| a.zip(b).map(|(a, b)| (b - a) / (2.0 * edge));
     let near = corner.level;
@@ -470,6 +476,10 @@ fn drape(
         corner.normal = corner.normal.lerp(ground, lying).normalize();
     }
 }
+
+/// Lift over which a draped corner's normal turns to follow the ground, in
+/// metres.
+const LIFTED_METRES: f64 = 0.005;
 
 /// 0 below `low`, 1 above `high`, and a smooth step between.
 fn smoothstep(low: f64, high: f64, value: f64) -> f64 {
@@ -660,6 +670,46 @@ mod tests {
         assert!(
             under < -super::VISIBLE_METRES + 1.0e-9,
             "the film dips {under:.4} m under the ground"
+        );
+    }
+
+    #[test]
+    fn a_lake_shelving_onto_its_shore_lies_level() {
+        // The drawn ground lies a little under each column's floor, as the
+        // terrain mesh does, and rises towards the shore at x = 8.
+        let ground = |x: f64| 0.8 + 0.15 * x / 8.0;
+        let mut columns = CellMap::default();
+        for x in 0..8 {
+            for z in 0..4 {
+                let floor = ground(f64::from(x) + 0.5) + 0.025;
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: 1.0,
+                        depth: 1.0 - floor,
+                        flow: DVec2::ZERO,
+                        anchor: false,
+                        seam: false,
+                    },
+                );
+            }
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |x, _, _| {
+            Some(ground(f64::from(x)))
+        });
+        assert!(
+            tile.positions
+                .iter()
+                .all(|position| (f64::from(position[1]) - 1.0).abs() < 1.0e-3),
+            "the lake's shallow edge sinks towards the ground"
+        );
+        assert!(
+            tile.normals
+                .iter()
+                .all(|normal| f64::from(normal[1]) > 0.999),
+            "the lake's shallow edge is lit as a slope"
         );
     }
 
