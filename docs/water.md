@@ -278,12 +278,15 @@ normal follows the ground as far as the water lies on it. A mean level over
 a film and the deeper rills beside it sank the film's corners into the
 ground, and the ground showed through in sharp teeth down the slope. Draping
 only lifts a corner, and the normal turns only where it lifted: the drawn
-ground lies a little under a column's counted floor, so draping a lake's
-shallow edge would sink it below the lake's level in a band along the
-shore's contour, lit as a slope. The
-ground's height is read where the finest terrain mesh draws it, whose
-samples sit at each cell's lowest corner, and kept per corner until the
-ground there is edited. Corners beside dry ground take no depth, so water
+ground and a column's counted floor differ by millimetres to centimetres, so
+draping a lake's shallow edge would move it off the lake's level in a band
+along the shore's contour, lit as a slope. The ground's height is read
+exactly where the terrain mesh draws it: from the density at each lattice
+corner, as the mesher samples it, or the blend of the eight cells around a
+corner where they were edited. Coarser terrain meshes share the finest
+mesh's samples at their own corners, which fall on water corners, so they
+agree there too. The height is kept per corner until the ground there is
+edited. Corners beside dry ground take no depth, so water
 fades out at its edges: the shader fades it from 3 mm to 12 mm deep, so
 water a centimetre or two over a lump still shows its surface. A lake, sea or river beside stored water
 weighs in on the corners they share as metre-deep water at its current level,

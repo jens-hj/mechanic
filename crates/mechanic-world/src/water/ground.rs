@@ -136,13 +136,10 @@ impl<S: TerrainSource> TerrainWater<'_, S> {
         Some(open)
     }
 
-    /// Density of the ground at a point of the terrain mesh's lattice: the
-    /// finest mesh places each cell's sample at the cell's lowest corner.
-    fn lattice_density(&self, cell: crate::WorldCell) -> f32 {
-        self.edits
-            .brick(cell.brick())
-            .and_then(|brick| brick.sample(cell.local_in_brick()))
-            .map_or_else(|| self.field.cell_density(cell), |sample| sample.density)
+    /// Density of the ground at a corner of the terrain mesh's lattice, as
+    /// the finest mesh samples it.
+    fn lattice_density(&self, corner: crate::WorldCell) -> f32 {
+        crate::mesh::corner_density(self.field, self.edits, corner)
     }
 
     /// Where the mesh's ground surface crosses one lattice column, going down

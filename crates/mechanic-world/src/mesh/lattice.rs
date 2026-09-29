@@ -5,7 +5,8 @@ use super::transition::{face_coordinate, transition_coarse_lattice_point};
 use crate::generation::{Lattice, LatticeColumns, corner_position};
 use crate::{
     BRICK_EDGE_CELLS, SurfaceId, TERRAIN_CELL_METERS, TerrainBrick, TerrainFace, TerrainField,
-    TerrainMaterial, TerrainOctreeSnapshot, TerrainSample, TerrainTransitionMask, WorldCell,
+    TerrainMaterial, TerrainOctreeSnapshot, TerrainSample, TerrainSource, TerrainTransitionMask,
+    WorldCell,
 };
 use bevy_math::{IVec3, Vec3};
 use std::collections::HashMap;
@@ -312,6 +313,45 @@ fn edited_lattice_sample(
         authored: blended.authored,
         procedural: false,
     }
+}
+
+/// Density the finest mesh places at one lattice corner: the untouched
+/// ground's own density there, or the blend of the eight cells around it
+/// where any of them was edited.
+#[expect(clippy::cast_possible_truncation, reason = "sample densities are f32")]
+pub(crate) fn corner_density(
+    field: &TerrainField,
+    edits: &impl TerrainSource,
+    corner: WorldCell,
+) -> f32 {
+    let mut cells = [corner; 8];
+    let mut index = 0;
+    for z in -1..=0 {
+        for y in -1..=0 {
+            for x in -1..=0 {
+                cells[index] = WorldCell::new(corner.x + x, corner.y + y, corner.z + z);
+                index += 1;
+            }
+        }
+    }
+    let untouched = || field.density(corner_position(corner)) as f32;
+    if cells.iter().all(|cell| edits.brick(cell.brick()).is_none()) {
+        return untouched();
+    }
+    let mut samples = [TerrainSample::plain(0.0, TerrainMaterial::Rock); 8];
+    let mut edited = [false; 8];
+    for ((cell, sample), edited) in cells.iter().zip(&mut samples).zip(&mut edited) {
+        let generated = field.cell_density(*cell);
+        *sample = edits
+            .brick(cell.brick())
+            .and_then(|brick| brick.sample(cell.local_in_brick()))
+            .unwrap_or(TerrainSample::plain(generated, TerrainMaterial::Rock));
+        *edited = sample.density.to_bits() != generated.to_bits();
+    }
+    if !edited.contains(&true) {
+        return untouched();
+    }
+    blend_lattice_samples(samples, edited).sample.density
 }
 
 /// A coarse lattice point: its eight surrounding cells as at full detail, but

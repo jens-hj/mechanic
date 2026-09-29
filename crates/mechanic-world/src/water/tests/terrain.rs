@@ -2,7 +2,7 @@
 
 use bevy_math::{DVec2, DVec3};
 
-use crate::water::{TerrainWater, WaterWorld};
+use crate::water::{TerrainWater, WaterGround, WaterWorld};
 use crate::{
     TerrainField, TerrainOctree, WaterBody, WaterTile, WorldPosition, WorldSeed, joined_water_sheet,
 };
@@ -554,4 +554,66 @@ fn plugging_a_breach_stops_the_flow_from_the_lake() {
         "the lake gave {:.3} m³ more after it was plugged",
         plugged_surplus - water.surplus_m3(body)
     );
+}
+
+#[test]
+fn water_reads_the_ground_where_the_terrain_mesh_draws_it() {
+    let field = TerrainField::new(WorldSeed(42));
+    let spawn = field.safe_spawn().0;
+    let mut terrain = TerrainOctree::default();
+    let dug = {
+        let y = field
+            .topmost_surface(spawn.x, spawn.z)
+            .expect("ground at spawn");
+        DVec3::new(spawn.x, y, spawn.z)
+    };
+    terrain
+        .excavate_sphere(&field, WorldPosition(dug), 0.6)
+        .unwrap();
+    let untouched = {
+        let (x, z) = (spawn.x + 20.0, spawn.z + 20.0);
+        let y = field.topmost_surface(x, z).expect("ground beside spawn");
+        DVec3::new(x, y, z)
+    };
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let snapshot = terrain.snapshot();
+    for point in [dug, untouched] {
+        let brick = WorldPosition(point).cell().unwrap().brick();
+        let chunk = crate::mesh_chunk(
+            &field,
+            &snapshot,
+            crate::TerrainMeshRequest {
+                node: crate::TerrainNodeId::leaf(brick),
+                generation: 0,
+                transition_mask: crate::TerrainTransitionMask::default(),
+            },
+        );
+        let mut checked = 0;
+        for (vertex, normal) in chunk.vertices.iter().zip(&chunk.normals) {
+            let at = chunk.origin.0 + DVec3::from(vertex.map(f64::from));
+            let on_column = |value: f64| {
+                let cells = value / crate::TERRAIN_CELL_METERS;
+                (cells - cells.round()).abs() < 1.0e-4
+            };
+            // Ground facing up, crossed on a lattice column.
+            if normal[1] < 0.7 || !on_column(at.x) || !on_column(at.z) {
+                continue;
+            }
+            let top = ground
+                .ground_top(at.x, at.z, at.y)
+                .expect("ground under a vertex");
+            assert!(
+                (top - at.y).abs() < 2.0e-3,
+                "the mesh draws the ground at {at:?}, water reads it at {top:.4}"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked > 10,
+            "only {checked} vertices near {point:?} checked"
+        );
+    }
 }
