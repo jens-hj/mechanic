@@ -5,7 +5,7 @@
 //! stands above the water, where the terrain hides it, so a shoreline is
 //! exactly where the terrain mesh crosses the surface at any level of detail.
 //! It is cut only where open ground at the surface is not water: a dry void
-//! under a lake.
+//! under a lake, though not ground dug away beside one.
 
 use std::collections::HashSet;
 
@@ -55,7 +55,8 @@ struct Vertex {
     flow: [f64; 2],
     /// Open water at the surface.
     open: bool,
-    /// Under ground at the surface, hidden by the terrain.
+    /// Under ground at the surface, hidden by the terrain, or at the edge
+    /// of the water where the sheet ends.
     buried: bool,
 }
 
@@ -100,14 +101,35 @@ pub fn joined_water_sheet<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
     )?;
     let side = tile.cells as usize + 1;
     let spacing = tile.edge / f64::from(tile.cells);
-    let density = |point: DVec3| {
-        WorldPosition(point).cell().map_or(-1.0, |cell| {
+    let edited = |point: DVec3| {
+        WorldPosition(point).cell().ok().and_then(|cell| {
             edits
                 .brick(cell.brick())
                 .and_then(|brick| brick.sample(cell.local_in_brick()))
-                .map_or_else(|| field.density(point), |sample| f64::from(sample.density))
+                .map(|sample| f64::from(sample.density))
         })
     };
+    let density = |point: DVec3| edited(point).unwrap_or_else(|| field.density(point));
+    // The corners of every grid square holding joined water: the sheet
+    // draws the joined cells, so it shows over all of each such square even
+    // where a corner stands in running water or dug ground.
+    let mut joining = HashSet::new();
+    for cell in joined {
+        let centre = cell.centre();
+        let (column, row) = ((centre.x - x0) / spacing, (centre.z - z0) / spacing);
+        if !(0.0..f64::from(tile.cells)).contains(&column)
+            || !(0.0..f64::from(tile.cells)).contains(&row)
+        {
+            continue;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "inside the tile"
+        )]
+        let corner = column as usize + row as usize * side;
+        joining.extend([corner, corner + 1, corner + side, corner + side + 1]);
+    }
     let grid = (0..side * side)
         .map(|index| {
             #[expect(clippy::cast_precision_loss, reason = "a tile is a few hundred cells")]
@@ -121,11 +143,16 @@ pub fn joined_water_sheet<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
                 .map_or(seed, |shift| shift.apply(seed));
             let probe = DVec3::new(x, surface.level - SURFACE_PROBE_METRES, z);
             let cell = WaterCell::containing(probe);
-            let under_ground = density(probe) > 0.0;
-            let open = !under_ground && (field.is_water(probe) || joined.contains(&cell));
+            let dug = edited(probe);
+            let under_ground = dug.unwrap_or_else(|| field.density(probe)) > 0.0;
+            let open = !under_ground
+                && (field.is_water(probe) || joined.contains(&cell) || joining.contains(&index));
             // Running water at the lake's level hides the sheet as ground
-            // over it would.
-            let buried = !open && (under_ground || meeting.contains(&(cell.x, cell.z)));
+            // over it would. Ground dug away beside the water, not yet joined
+            // to it, is where the sheet ends: cutting it there would leave
+            // the grid squares around, and the water in them, undrawn.
+            let buried =
+                !open && (under_ground || dug.is_some() || meeting.contains(&(cell.x, cell.z)));
             let mut depth = 0.0;
             if open {
                 let mut y = surface.level;

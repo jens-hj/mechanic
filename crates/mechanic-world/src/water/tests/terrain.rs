@@ -268,6 +268,92 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
     assert!(beside > 0, "the running water touches no lake water");
 }
 
+#[test]
+fn a_trench_filling_from_a_lake_shows_water_over_every_column_that_holds_it() {
+    let field = TerrainField::new(WorldSeed(42));
+    let (lake, bank, level) = lake_shore(&field);
+    let mut terrain = TerrainOctree::default();
+    let mut bricks = Vec::new();
+    let beyond = bank + (bank - lake).normalize() * 3.0;
+    let steps = 60;
+    for step in 0..=steps {
+        let point = beyond.lerp(lake, f64::from(step) / f64::from(steps));
+        for lift in [0.2, 1.0] {
+            let centre = WorldPosition(DVec3::new(point.x, level - lift, point.z));
+            let outcome = terrain.excavate_sphere(&field, centre, 1.2).unwrap();
+            bricks.extend_from_slice(outcome.changed_brick_coordinates());
+        }
+    }
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let solid = |point: DVec3| {
+        WorldPosition(point).cell().is_ok_and(|cell| {
+            terrain
+                .brick(cell.brick())
+                .and_then(|brick| brick.sample(cell.local_in_brick()))
+                .map_or_else(|| field.density(point), |sample| f64::from(sample.density))
+                > 0.0
+        })
+    };
+    // The lake's finest grid, a vertex every metre, over the trench.
+    let (low, high) = (beyond.min(lake), beyond.max(lake));
+    let cells = 24;
+    assert!((high - low).max_element() < f64::from(cells - 8));
+    let tile = WaterTile {
+        minimum: [(low.x - 4.0).floor(), (low.z - 4.0).floor()],
+        edge: f64::from(cells),
+        cells,
+    };
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, bricks);
+    let (mut checked, mut run) = (0, 0);
+    for seconds in [1, 2, 4, 8, 16, 32] {
+        while run < seconds * 20 {
+            water.step(&ground, 0.05);
+            run += 1;
+        }
+        let joined = water
+            .joined_cells(&ground)
+            .into_iter()
+            .map(|(cell, _)| cell)
+            .collect::<std::collections::HashSet<_>>();
+        let meeting = water
+            .meeting_columns(&ground)
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        let shifts = water.cycle.shifts(&ground);
+        let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &meeting)
+            .expect("the lake shows");
+        let drawn = drawn_columns(&mut water, &ground);
+        // Every column of the lake, or dug beside it and joined to it, lies
+        // under the lake's sheet or the stored water's surface.
+        #[expect(clippy::cast_possible_truncation, reason = "a whole number of columns")]
+        let columns = (tile.edge / crate::water::WATER_CELL_METRES).round() as i32;
+        let first =
+            crate::water::WaterCell::containing(DVec3::new(tile.minimum[0], 0.0, tile.minimum[1]));
+        for dx in 0..columns {
+            for dz in 0..columns {
+                let (x, z) = (first.x + dx, first.z + dz);
+                let centre = crate::water::WaterCell::new(x, 0, z).centre();
+                let probe = DVec3::new(centre.x, level - 0.02, centre.z);
+                let lake_water = field.is_water(probe)
+                    || joined.contains(&crate::water::WaterCell::containing(probe));
+                if !lake_water || solid(probe) {
+                    continue;
+                }
+                checked += 1;
+                assert!(
+                    covers(&sheet, DVec2::new(centre.x, centre.z)) || drawn.contains(&(x, z)),
+                    "after {seconds} s the water in ({x}, {z}) is not drawn"
+                );
+            }
+        }
+    }
+    assert!(checked > 100, "only {checked} columns checked");
+}
+
 /// A lake column near spawn whose bank, walked away from the lake, rises
 /// above the lake's level and then falls well below it: the lake point, the
 /// crest of the bank, a point down the far side, and the lake's level.
