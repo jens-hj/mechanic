@@ -31,8 +31,8 @@ it.
   bottom opens onto free space or lower water. Across a contact the higher
   water runs to the lower at a weir rate, `1.7 × 0.2 m × head^1.5` a second,
   where the head is measured over the lip the water must cross. Pools whose
-  levels come within 5 mm merge. Water pouring over a drop is launched into
-  the air (see [Waterfalls](#waterfalls)).
+  levels come within 5 mm merge. Water pouring over a drop lands at once
+  (see [Drops](#drops)).
 - **Pools spill over their rims.** A pool records the highest ground its
   water crossed from its seed; the bottom of a cell over its own water is
   no rim. Ground beyond it that lies lower is past the
@@ -63,7 +63,7 @@ it.
   least a 32 m drainage cell, so a hole of a few cubic metres lowers it by
   millimetres.
 - **Only what changed is kept.** A save holds each pool's seed cell and
-  volume, each sheet cell's volume, the parcels in flight, each lake's and river reach's surplus, the sea's and the air's,
+  volume, each sheet cell's volume, each lake's and river reach's surplus, the sea's and the air's,
   and the cells that joined seed-derived water with what they hold. Loading
   floods every pool out from its seed again.
 
@@ -95,7 +95,7 @@ water step.
 
 - **Slopes and lips.** A sheet climbs a step of one water cell and runs
   down a drop of up to five cells, a metre, as a steep chute. A taller drop
-  is a lip: the water pours over it at the speed it ran at.
+  is a lip: the water pours over it and lands at once (see [Drops](#drops)).
 - **Storage.** Sheets live in dense tiles of 32 × 32 columns
   (`water/grid.rs`), one sheet per column. Where each face of a sheet leads
   is worked out once from the ground and kept until the ground under it
@@ -148,26 +148,19 @@ terrain material samples. A few millimetres soaked in darken the ground by
 two thirds of its full wetness; a column only counts as wet within 40 cm of
 the height it was measured at, so a cave under a wet field stays dry.
 
-## Waterfalls
+## Drops
 
-Water pouring over a lip, from a pool or a sheet, is launched in one parcel
-a step with its speed over the lip: the weir speed `√(g × head)` from a
-pool, the sheet's current from a sheet (`water/jet.rs`). A pool over a drop
-with running water already in it, however deep that water's floor, pours
-into it over its weir instead, by its head over that water, and stops at
-its own level: as falls landing a step later, streams poured into whichever
-column of a narrow channel stood low and rocked it in a standing wave metres
-high, and filled it above the pool. Each parcel falls
-along its arc, swept through the water cells 10 cm at a time, until it meets
-a pool, seed-derived water, running water or the ground, where it lands. It
-leaves from inside the lip's cell, no higher than its middle, since the lip
-may be a hole in a bank below the water's surface. Water set down inside
-solid ground rises to the first open space over it. The
-water in flight is in the ledger, so a tall fall holds water and a stream
-keeps falling for its flight time after its source stops. `WaterStep::falls`
-gives each stream's launch point and parcels, which the app draws as a
-ribbon whose width follows the rate. Water less than 2 mm over a lip clings
-to it.
+Water pouring over a lip, from a pool at its weir rate or from a sheet at
+the rate its pipe carries, lands in the same step wherever the drop leads:
+followed straight down from the lip's cell to the first pool, seed-derived
+water, running water or floor it meets. Nothing is in flight and nothing is
+drawn between the lip and where the water lands. Streams in flight, drawn as
+crossed ribbons, were removed: they landed a step late and in parcels, rocked
+the water they fell into, and showed as shards over every small drop. A pool
+over a drop with running water already in it, however deep that water's
+floor, pours into it over its weir instead, by its head over that water, and
+stops at its own level. Water set down inside solid ground rises to the
+first open space over it. Water less than 2 mm over a lip clings to it.
 
 ## The cycle
 
@@ -306,8 +299,7 @@ ground between the two surfaces bare. That sheet cannot follow a seam between
 the two a column wide, so lake columns beside running water at the lake's
 level are drawn with the running water, as deep water at the lake's level.
 Normals follow the surface, and each corner carries the current, so ripples
-run with it. A stream in flight is two crossed ribbons along its arc, wider
-as more water pours. Lakes and rivers moved from their seed level mesh again
+run with it. Lakes and rivers moved from their seed level mesh again
 once they move 2 cm.
 
 `MECHANIC_WATER=off` hides it. Looking over a lake at 4112 × 2524 on an M1 Pro,
@@ -319,7 +311,7 @@ the frame rose from 41 ms without water to 45–47 ms with it.
 (`WaterRunner`). Each frame hands the worker the water time owed, at most
 three steps, whenever its last batch is done, and publishes what that batch
 left: a `WaterSurfaces` view for buoyancy, and the pools, joined cells,
-running water and falls to draw. A worker that falls behind slows the water
+running water to draw. A worker that falls behind slows the water
 down; the frame never waits for it, except to save. Every committed terrain
 edit (brush, spoil and soil alike) goes through `commit_terrain_edit_result`,
 which queues the bricks that changed for the worker's next batch: pools
@@ -333,9 +325,8 @@ one has no stored water.
 The worker meshes the surface tiles whose water changed, each tile
 fingerprinted to the 2 mm, and `world/water_render.rs` swaps just those
 entities in; unchanged tiles stay, and all of them follow the floating
-origin. Falling water is drawn again after each batch. Water under
-seed-derived water has no surface of its own: a pool filling under a lake
-and a stream falling under it are not drawn. A lake drawn down by more than
+origin. Water under seed-derived water has no surface of its own: a pool
+filling under a lake is not drawn. A lake drawn down by more than
 2 cm since its tiles were meshed has them meshed again at its new level, and
 lake tiles over cells that joined or left the lake mesh again.
 

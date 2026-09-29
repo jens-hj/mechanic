@@ -7,8 +7,8 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, SurfaceTile, TerrainField, TerrainOctree, TerrainWater, WaterCell, WaterFall,
-    WaterLedger, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldStore,
+    BrickCoord, SurfaceTile, TerrainField, TerrainOctree, TerrainWater, WaterCell, WaterLedger,
+    WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -78,7 +78,6 @@ struct WaterBatch {
     world: WaterWorld,
     view: WaterView,
     surfaces: WaterSurfaces,
-    falls: Vec<WaterFall>,
     steps: Vec<(f64, WaterStep)>,
     ledger: WaterLedger,
 }
@@ -205,11 +204,9 @@ pub(super) fn step_water(
         };
         world.terrain_changed(&ground, bricks);
         let mut done = Vec::with_capacity(steps as usize);
-        let mut falls = Vec::new();
         for _ in 0..steps {
             let started = std::time::Instant::now();
-            let mut step = world.step(&ground, WATER_STEP_SECONDS);
-            falls = std::mem::take(&mut step.falls);
+            let step = world.step(&ground, WATER_STEP_SECONDS);
             done.push((started.elapsed().as_secs_f64() * 1000.0, step));
         }
         WaterBatch {
@@ -217,7 +214,6 @@ pub(super) fn step_water(
             surfaces: world.surfaces(field.clone()),
             ledger: world.ledger(),
             world,
-            falls,
             steps: done,
         }
     }));
@@ -239,12 +235,9 @@ fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
                     "flood": step.phases.flood_ms,
                     "exchange": step.phases.exchange_ms,
                     "sheets": step.phases.sheets_ms,
-                    "jets": step.phases.jets_ms,
                     "joins": step.phases.joins_ms,
                     "settle": step.phases.settle_ms,
                 },
-                "falls": batch.falls.len(),
-                "falling_m3": batch.ledger.falling_m3,
                 "ledger_m3": batch.ledger.total(),
             })
         });
@@ -254,7 +247,6 @@ fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
     }
     runtime.water.drawn = fingerprints(&batch.view);
     runtime.water.view = batch.view;
-    runtime.water_falls = batch.falls;
     runtime.water_surfaces = Arc::new(batch.surfaces);
     runtime.water_revision = runtime.water_revision.wrapping_add(1);
 }

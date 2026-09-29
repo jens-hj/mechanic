@@ -262,7 +262,6 @@ pub(super) fn install_world(
     )?;
     runtime.water_surfaces = Arc::new(water.surfaces(runtime.field.clone()));
     runtime.water = super::water::WaterRunner::new(water, &runtime.field, &terrain);
-    runtime.water_falls.clear();
     runtime.water_seconds = 0.0;
     runtime.edits = terrain;
     runtime.clumps = clumps;

@@ -196,7 +196,7 @@ fn drawn(water: &WaterWorld) -> f64 {
 
 /// Water held in pools, joined cells, running water and falls, in m³.
 fn held(water: &WaterWorld) -> f64 {
-    water.stored_m3() + water.joined_m3() + water.running_m3() + water.ledger().falling_m3
+    water.stored_m3() + water.joined_m3() + water.running_m3()
 }
 
 /// Water standing or running with its surface below `height`, in m³.
@@ -383,7 +383,6 @@ fn a_channel_from_a_lake_into_a_pit_fills_and_comes_to_rest() {
     // quarter of a metre a second: it takes some seven minutes to fill.
     run(&mut water, &ground, 600);
     let step = water.step(&ground, 0.05);
-    assert!(step.falls.is_empty(), "water still falls into the pit");
     // Only a trickle from the lake, making up what rises into the air.
     assert!(
         step.moved_m3 < 5.0e-5,
@@ -533,8 +532,7 @@ fn a_trench_dug_from_a_river_draws_no_more_than_the_river_carries() {
     let mut water = WaterWorld::new();
     water.terrain_changed(&ground, ground.bricks());
     run(&mut water, &ground, 60);
-    let held =
-        water.stored_m3() + water.joined_m3() + water.running_m3() + water.ledger().falling_m3;
+    let held = water.stored_m3() + water.joined_m3() + water.running_m3();
     assert!(held > 0.5, "only {held:.2} m³ ran in");
     assert!(held < 1.2 + 1.0e-6, "the stream gave {held:.2} m³");
     let ledger = water.ledger();
@@ -997,36 +995,11 @@ fn cliff() -> Ground {
 }
 
 #[test]
-fn a_pool_spilling_over_a_cliff_holds_water_in_the_air_on_the_way_down() {
+fn a_pool_spilling_over_a_cliff_fills_the_pit_below() {
     let ground = cliff();
     let mut water = WaterWorld::new();
     water.deposit(&ground, DVec3::new(0.4, 1.0, 0.2), 0.2);
-    let mut most_in_air = 0.0_f64;
-    let mut arc = None;
-    for _ in 0..20 {
-        let step = water.step(&ground, 0.05);
-        most_in_air = most_in_air.max(water.ledger().falling_m3);
-        if let Some(fall) = step.falls.into_iter().find(|fall| fall.points.len() > 4) {
-            arc = Some(fall);
-        }
-    }
-    assert!(
-        most_in_air > 0.005,
-        "only {most_in_air:.4} m³ was ever in the air"
-    );
-    let arc = arc.expect("no stream poured over the cliff");
-    let (top, bottom) = (arc.points[0], arc.points[arc.points.len() - 1]);
-    assert!(
-        bottom.y < top.y - 0.5,
-        "the stream runs from {top} to {bottom}"
-    );
-    assert!(
-        bottom.x > top.x,
-        "the stream falls straight down, from {top} to {bottom}"
-    );
-    run(&mut water, &ground, 60);
-    // The basin still trickles over its rim, but the stream is spent.
-    assert!(water.ledger().falling_m3 < 1.0e-4, "the stream still runs");
+    run(&mut water, &ground, 61);
     let pit = held_below(&water, -4.0);
     assert!(pit > 0.1, "the pit got {pit:.3} m³");
     assert!(
@@ -1098,12 +1071,11 @@ fn water_fed_beside_a_pit_never_fills_it_above_its_own_level() {
     let mut highest = f64::NEG_INFINITY;
     for step in 0..20 * 30 {
         water.deposit(&ground, DVec3::new(0.3, 1.2, 0.2), 0.001);
-        let falls = water.step(&ground, 0.05).falls.len();
+        water.step(&ground, 0.05);
         let cave = level_at(&water, &ground, DVec3::new(0.3, 1.1, 0.2));
         let pit = level_at(&water, &ground, DVec3::new(1.2, 0.5, 0.2));
         if step > 20 * 20 {
             highest = highest.max(pit - cave);
-            assert!(falls == 0, "water still falls into the full pit");
         }
         // The pit's water runs, and stays running water: the cave's pool
         // spreading over it would stand still where the water moves.

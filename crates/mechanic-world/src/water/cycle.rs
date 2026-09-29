@@ -86,8 +86,6 @@ pub struct WaterLedger {
     pub pools_m3: f64,
     /// Water running over the ground, in m³.
     pub running_m3: f64,
-    /// Water in flight over drops, in m³.
-    pub falling_m3: f64,
     /// Water in cells dug beside or under seed-derived water that joined
     /// it, in m³.
     pub joined_m3: f64,
@@ -108,7 +106,6 @@ impl WaterLedger {
     pub fn total(&self) -> f64 {
         self.pools_m3
             + self.running_m3
-            + self.falling_m3
             + self.joined_m3
             + self.lakes_m3
             + self.rivers_m3

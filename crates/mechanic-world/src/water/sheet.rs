@@ -7,7 +7,8 @@
 //! surface height across it and loses it to friction, and no sheet sends
 //! more than it holds, so water is conserved exactly and a sheet has a
 //! current. A sheet climbs a step of one water cell and runs down a drop of
-//! up to a metre as a steep chute; a taller drop is a lip it pours over.
+//! up to a metre as a steep chute; a taller drop is a lip it pours over, and
+//! the water lands at once wherever the drop leads.
 //! Water reaching a pool or seed-derived water joins it. Under open sky a
 //! sheet may grow as deep as it likes: a pond is running water that has come
 //! to rest, flat because the pipes have no other resting state, so a flood
@@ -27,7 +28,6 @@ use bevy_math::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 
 use super::grid::Slot;
-use super::jet::Launch;
 use super::{
     CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, WATER_CELL_METRES, WaterCell,
     WaterGround, WaterWorld,
@@ -520,10 +520,7 @@ impl WaterWorld {
             }
             // Then the water moves.
             for ((slot, faces), flow) in routes.iter().zip(&flows) {
-                let sheet = self.sheets.at_mut(*slot);
-                sheet.flux = *flow;
-                let floor = sheet.floor;
-                let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
+                self.sheets.at_mut(*slot).flux = *flow;
                 for (face, route) in faces.iter().enumerate() {
                     let volume = flow[face] * sub;
                     if volume <= 0.0 {
@@ -538,24 +535,9 @@ impl WaterWorld {
                             self.sheets.stir(slot, volume / CELL_AREA_M2);
                         }
                         Route::Water(end, _) => into.push((end, volume)),
-                        Route::Lip(over) => {
-                            // It leaves the lip at the speed it ran at.
-                            let (dx, dz) = DIRECTIONS[face];
-                            let away = DVec3::new(f64::from(dx), 0.0, f64::from(dz));
-                            let speed = flow[face] / (WATER_CELL_METRES * depth);
-                            // It pours through the lip's cell, which may be
-                            // a hole in a bank lower than its surface.
-                            let centre = over.centre();
-                            pours.push((
-                                Launch {
-                                    lip: over,
-                                    from: centre.with_y((floor + depth).min(centre.y))
-                                        - away * 0.4 * WATER_CELL_METRES,
-                                    velocity: away * speed,
-                                },
-                                volume,
-                            ));
-                        }
+                        // It pours through the lip's cell, which may be a hole
+                        // in a bank lower than its surface.
+                        Route::Lip(over) => pours.push((over, volume)),
                         Route::Wall => {}
                     }
                 }
@@ -568,8 +550,13 @@ impl WaterWorld {
             }
             self.deposit_end(ground, end, volume);
         }
-        for (launch, volume) in pours {
-            self.pour(launch, volume);
+        // Water over a lip lands at once wherever the drop leads.
+        for (over, volume) in pours {
+            let end = self.landing(ground, over);
+            if let End::Pool(id) = end {
+                fed.insert(id);
+            }
+            self.deposit_end(ground, end, volume);
         }
         self.sheets.rest(STILL_METRES * sub / dt);
         (moved, fed)

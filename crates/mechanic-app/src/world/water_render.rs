@@ -17,8 +17,8 @@ use bevy::render::render_resource::{AsBindGroup, PrimitiveTopology, VertexFormat
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    WATER_CELL_METRES, WaterBody, WaterCell, WaterFall, WaterSheet, WaterShift, WaterSurface,
-    WaterTile, joined_water_sheet,
+    WATER_CELL_METRES, WaterBody, WaterCell, WaterSheet, WaterShift, WaterSurface, WaterTile,
+    joined_water_sheet,
 };
 
 use super::{WorldOwned, WorldRuntime};
@@ -183,8 +183,6 @@ pub(crate) struct WaterTiles {
     surface: HashMap<(i32, i32), (Entity, u64, DVec3)>,
     /// Floating origin the surface tiles are placed against.
     surface_origin: DVec3,
-    /// The falling streams' entity.
-    falls: Option<Entity>,
     /// The wetness map's world corner and base height, once drawn.
     wet_window: Option<DVec3>,
     /// Floating origin the wetness map was placed against.
@@ -428,39 +426,6 @@ fn refresh_stale(
     }
 }
 
-/// Two crossed ribbons along each stream's arc, placed against `origin`,
-/// wider as more water pours.
-fn falls_mesh(falls: &[WaterFall], origin: DVec3) -> Mesh {
-    let mut positions = Vec::new();
-    let mut attributes = Vec::new();
-    let mut indices = Vec::new();
-    for fall in falls {
-        // A stream of a litre a second is a finger wide; ten litres a hand.
-        let half = (fall.rate_m3_s * 400.0)
-            .sqrt()
-            .mul_add(0.02, 0.02)
-            .min(WATER_CELL_METRES);
-        for pair in fall.points.windows(2) {
-            let along = (pair[1] - pair[0]).normalize_or_zero();
-            let side = along.cross(DVec3::Y).normalize_or(DVec3::X);
-            for across in [side * half, along.cross(side).normalize_or_zero() * half] {
-                let base = u32::try_from(positions.len()).expect("a falls mesh fits u32 indices");
-                for point in [
-                    pair[0] - across,
-                    pair[0] + across,
-                    pair[1] - across,
-                    pair[1] + across,
-                ] {
-                    positions.push((point - origin).as_vec3().to_array());
-                    attributes.push([0.6, 0.0, 0.0]);
-                }
-                indices.extend([base, base + 2, base + 1, base + 1, base + 2, base + 3]);
-            }
-        }
-    }
-    surface_mesh(positions, None, attributes, indices)
-}
-
 fn surface_mesh(
     positions: Vec<[f32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
@@ -482,8 +447,7 @@ fn surface_mesh(
     mesh
 }
 
-/// Draws the stored water's surface and its falling streams after each
-/// water batch: a surface tile is meshed again only when what it shows
+/// Draws the stored water's surface after each water batch: a surface tile is meshed again only when what it shows
 /// changes, and follows the floating origin.
 pub(crate) fn draw_stored_water(
     mut commands: Commands,
@@ -571,20 +535,6 @@ pub(crate) fn draw_stored_water(
         keep
     });
     note_joined(&mut tiles, &view.joined, &view.meeting);
-    // Falling water changes every step: it is drawn afresh each time.
-    if let Some(entity) = tiles.falls.take() {
-        commands.entity(entity).despawn();
-    }
-    let falls = visible_falls(&runtime);
-    tiles.falls = (!falls.is_empty()).then(|| {
-        spawn(
-            &mut commands,
-            &mut meshes,
-            "Falling water".to_owned(),
-            falls_mesh(&falls, origin),
-            Vec3::ZERO,
-        )
-    });
 }
 
 /// Texels along one edge of the wetness map: 20 cm each, 51.2 m in all.
@@ -757,21 +707,6 @@ fn note_joined(
         tiles.stale.extend(stale);
         tiles.meeting_columns = Arc::new(meeting);
     }
-}
-
-/// The streams in flight to draw. A stream falling under a lake falls
-/// through lake water: it does not show.
-fn visible_falls(runtime: &WorldRuntime) -> Vec<WaterFall> {
-    runtime
-        .water_falls
-        .iter()
-        .filter(|fall| {
-            fall.points
-                .first()
-                .is_some_and(|&top| !runtime.field.is_water(top + DVec3::Y * 0.05))
-        })
-        .cloned()
-        .collect()
 }
 
 #[cfg(test)]

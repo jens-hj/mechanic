@@ -529,7 +529,7 @@ fn plugging_a_breach_stops_the_flow_from_the_lake() {
     water.step(&ground, 0.05);
     let held = |water: &WaterWorld| {
         let ledger = water.ledger();
-        ledger.running_m3 + ledger.pools_m3 + ledger.joined_m3 + ledger.falling_m3 + ledger.soil_m3
+        ledger.running_m3 + ledger.pools_m3 + ledger.joined_m3 + ledger.soil_m3
     };
     let (plugged_held, plugged_surplus) = (held(&water), water.surplus_m3(body));
     for _ in 0..1_200 {

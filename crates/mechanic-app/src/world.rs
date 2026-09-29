@@ -218,15 +218,13 @@ pub(crate) struct WorldRuntime {
     step_visual_offset: f32,
     pending_player_reactions: Vec<GpuExternalImpulse>,
     walking_suspended: bool,
-    /// Stored water: pools, falls, and what was drawn from lakes, stepped
-    /// on a worker.
+    /// Stored water: pools, running water, and what was drawn from lakes,
+    /// stepped on a worker.
     water: water::WaterRunner,
     /// Water time not yet stepped, in seconds.
     water_seconds: f64,
     /// View of the water after its last step, for physics and drawing.
     water_surfaces: Arc<mechanic_world::WaterSurfaces>,
-    /// Streams falling in the last water step.
-    water_falls: Vec<mechanic_world::WaterFall>,
     /// Advances every water step.
     water_revision: u64,
 }
@@ -665,7 +663,6 @@ impl FromWorld for WorldRuntime {
             water,
             water_seconds: 0.0,
             water_surfaces,
-            water_falls: Vec::new(),
             water_revision: 0,
             edits,
             capsule,

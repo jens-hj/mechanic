@@ -157,7 +157,7 @@ impl Samples {
             percentile(&samples, 95)
         };
         format!(
-            "{{\"type\":\"water_breach\",\"seed\":{seed},\"trench_m\":{length:.1},\"steps\":{},\"step_p50_ms\":{:.3},\"step_p95_ms\":{:.3},\"step_max_ms\":{:.3},\"flood_p95_ms\":{:.3},\"exchange_p95_ms\":{:.3},\"sheets_p95_ms\":{:.3},\"jets_p95_ms\":{:.3},\"joins_p95_ms\":{:.3},\"settle_p95_ms\":{:.3},\"view_p95_ms\":{:.3},\"peak_sheet_cells\":{},\"ledger_error_m3\":{:.3e}}}",
+            "{{\"type\":\"water_breach\",\"seed\":{seed},\"trench_m\":{length:.1},\"steps\":{},\"step_p50_ms\":{:.3},\"step_p95_ms\":{:.3},\"step_max_ms\":{:.3},\"flood_p95_ms\":{:.3},\"exchange_p95_ms\":{:.3},\"sheets_p95_ms\":{:.3},\"joins_p95_ms\":{:.3},\"settle_p95_ms\":{:.3},\"view_p95_ms\":{:.3},\"peak_sheet_cells\":{},\"ledger_error_m3\":{:.3e}}}",
             self.durations.len(),
             percentile(&self.durations, 50),
             percentile(&self.durations, 95),
@@ -165,7 +165,6 @@ impl Samples {
             phase(|phases| phases.flood_ms),
             phase(|phases| phases.exchange_ms),
             phase(|phases| phases.sheets_ms),
-            phase(|phases| phases.jets_ms),
             phase(|phases| phases.joins_ms),
             phase(|phases| phases.settle_ms),
             percentile(&self.view_ms, 95),
@@ -205,7 +204,7 @@ fn main() {
     for second in 1..=seconds {
         let mut second_ms = Vec::new();
         let mut sheets = 0;
-        let mut spent = [0.0; 6];
+        let mut spent = [0.0; 5];
         for _ in 0..STEPS_PER_SECOND {
             let started = Instant::now();
             let step = water.step(&ground, 1.0 / f64::from(STEPS_PER_SECOND));
@@ -215,7 +214,6 @@ fn main() {
                 phases.flood_ms,
                 phases.exchange_ms,
                 phases.sheets_ms,
-                phases.jets_ms,
                 phases.joins_ms,
                 phases.settle_ms,
             ]) {
@@ -240,7 +238,7 @@ fn main() {
         samples.peak_sheets = samples.peak_sheets.max(sheets);
         second_ms.sort_by(f64::total_cmp);
         println!(
-            "{{\"type\":\"water_second\",\"second\":{second},\"step_p50_ms\":{:.3},\"step_max_ms\":{:.3},\"sheet_cells\":{sheets},\"pools\":{},\"stored_m3\":{:.3},\"running_m3\":{:.3},\"joined_m3\":{:.3},\"spent_ms\":[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}]}}",
+            "{{\"type\":\"water_second\",\"second\":{second},\"step_p50_ms\":{:.3},\"step_max_ms\":{:.3},\"sheet_cells\":{sheets},\"pools\":{},\"stored_m3\":{:.3},\"running_m3\":{:.3},\"joined_m3\":{:.3},\"spent_ms\":[{:.0},{:.0},{:.0},{:.0},{:.0}]}}",
             percentile(&second_ms, 50),
             second_ms.last().copied().unwrap_or_default(),
             water.pools().count(),
@@ -252,7 +250,6 @@ fn main() {
             spent[2],
             spent[3],
             spent[4],
-            spent[5],
         );
         samples.durations.extend(second_ms);
     }
