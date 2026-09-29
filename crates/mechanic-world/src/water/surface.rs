@@ -281,8 +281,10 @@ impl WaterWorld {
                     let level = self.drawn(ground, seed).level;
                     // Only where the seed-derived water shows: its sheet runs
                     // on under the bank, and an edge pulled down to its level
-                    // there sinks into the ground in teeth.
-                    let probe = DVec3::new(centre.x, level - 0.02, centre.z);
+                    // there sinks into the ground in teeth. It is looked for
+                    // under its seed level too: a lake standing over that
+                    // level has no seed-derived water at its own.
+                    let probe = DVec3::new(centre.x, level.min(seed.level) - 0.02, centre.z);
                     let shows = ground.implicit(probe).is_some()
                         || self.joined.contains_key(&WaterCell::containing(probe));
                     if shows && (level - column.level).abs() <= JOINS_METRES {

@@ -254,7 +254,9 @@ open ground at the surface is not water, such as a dry void under a lake.
 Ground dug away beside a lake is not cut: a dry vertex there is where the
 sheet ends, and every corner of a grid square holding joined water counts as
 water, so a square of the lake's grid is never dropped while water it should
-draw lies in it. A dry vertex beside the water carries the surface on under a bank that stands
+draw lies in it. A lake standing over its seed level counts the bank under
+its new shallows as water too, where the seed's water stops at the old level.
+A dry vertex beside the water carries the surface on under a bank that stands
 above it, so a sheet ends inside the ground instead of at its grid. Each
 vertex carries the depth of water under it (to 16 m) and its current.
 

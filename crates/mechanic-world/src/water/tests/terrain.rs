@@ -703,3 +703,91 @@ fn water_reads_the_ground_where_the_terrain_mesh_draws_it() {
         );
     }
 }
+
+#[test]
+fn a_lake_standing_over_its_seed_level_shows_over_its_shallows() {
+    let field = TerrainField::new(WorldSeed(42));
+    let terrain = TerrainOctree::default();
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let (lake, _, level) = lake_shore(&field);
+    let body = field.water_surface(lake.x, lake.z).unwrap().body;
+    let rise = 0.05;
+    let shifts = std::collections::BTreeMap::from([(
+        body,
+        crate::WaterShift {
+            drop: -rise,
+            flow_scale: 1.0,
+        },
+    )]);
+    let tile = WaterTile {
+        minimum: [
+            (lake.x / 64.0).floor() * 64.0,
+            (lake.z / 64.0).floor() * 64.0,
+        ],
+        edge: 64.0,
+        cells: 64,
+    };
+    let sheet = crate::water_sheet(&field, &terrain, tile, &shifts).expect("the lake shows");
+    let at = |index: u32| {
+        let vertex = sheet.vertices[index as usize];
+        DVec2::new(
+            f64::from(vertex[0]) + tile.minimum[0],
+            f64::from(vertex[2]) + tile.minimum[1],
+        )
+    };
+    // The depth the sheet draws at a point, where it covers it.
+    let drawn = |point: DVec2| {
+        sheet
+            .indices
+            .chunks(3)
+            .filter_map(|triangle| {
+                let [a, b, c] = [at(triangle[0]), at(triangle[1]), at(triangle[2])];
+                let area = (b - a).perp_dot(c - a);
+                let weights = [
+                    (c - b).perp_dot(point - b) / area,
+                    (a - c).perp_dot(point - c) / area,
+                    (b - a).perp_dot(point - a) / area,
+                ];
+                weights.iter().all(|&weight| weight >= -1.0e-9).then(|| {
+                    (0..3)
+                        .map(|k| weights[k] * f64::from(sheet.depths[triangle[k] as usize]))
+                        .sum::<f64>()
+                })
+            })
+            .reduce(f64::max)
+    };
+    // Every point of the lake's shallows, old and new, shows water.
+    let (mut shallows, mut bare) = (0, 0);
+    for i in 0..128 {
+        for j in 0..128 {
+            let point = DVec2::new(
+                tile.minimum[0] + (f64::from(i) + 0.5) * 0.5,
+                tile.minimum[1] + (f64::from(j) + 0.5) * 0.5,
+            );
+            if field
+                .water_surface(point.x, point.y)
+                .is_none_or(|surface| surface.body != body)
+            {
+                continue;
+            }
+            let Some(top) = ground.ground_top(point.x, point.y, level + 0.5, 3.0) else {
+                continue;
+            };
+            if !(0.015..0.3).contains(&(level + rise - top)) {
+                continue;
+            }
+            shallows += 1;
+            if drawn(point).is_none_or(|depth| depth < 0.003) {
+                bare += 1;
+            }
+        }
+    }
+    assert!(shallows > 50, "only {shallows} shallow points");
+    assert!(
+        bare * 50 < shallows,
+        "{bare} of {shallows} points of a lake's shallows show no water"
+    );
+}

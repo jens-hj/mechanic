@@ -145,8 +145,13 @@ pub fn joined_water_sheet<S: std::hash::BuildHasher, T: std::hash::BuildHasher>(
             let cell = WaterCell::containing(probe);
             let dug = edited(probe);
             let under_ground = dug.unwrap_or_else(|| field.density(probe)) > 0.0;
-            let open = !under_ground
-                && (field.is_water(probe) || joined.contains(&cell) || joining.contains(&index));
+            // The seed's water under the surface: a lake standing over its
+            // seed level also covers the bank that stood above that level.
+            let seeded = DVec3::new(x, seed.level.min(surface.level) - SURFACE_PROBE_METRES, z);
+            let seed_water =
+                field.is_water(seeded) || (surface.level > seed.level && density(seeded) > 0.0);
+            let open =
+                !under_ground && (seed_water || joined.contains(&cell) || joining.contains(&index));
             // Running water at the lake's level hides the sheet as ground
             // over it would. Ground dug away beside the water, not yet joined
             // to it, is where the sheet ends: cutting it there would leave
