@@ -67,8 +67,9 @@ pub(crate) struct WaterView {
     pub(crate) surface: Vec<SurfaceTile>,
     /// Cells joined to seed-derived water, with its surface as it stands.
     pub(crate) joined: Vec<(WaterCell, WaterSurface)>,
-    /// Columns of running water at the level of the lake over them.
-    pub(crate) meeting: Vec<(i32, i32)>,
+    /// Columns the stored water's surface draws within a lake's reach,
+    /// which the lake's own sheet leaves out.
+    pub(crate) owned: Vec<(i32, i32)>,
     /// Wet ground.
     pub(crate) wet: Vec<WetGround>,
 }
@@ -138,10 +139,11 @@ fn view(
     ground: &impl mechanic_world::WaterGround,
     drawn: &HashMap<(i32, i32), u64>,
 ) -> WaterView {
+    let surface = world.surface_tiles(ground, drawn);
     WaterView {
-        surface: world.surface_tiles(ground, drawn),
+        surface: surface.tiles,
         joined: world.joined_cells(ground),
-        meeting: world.meeting_columns(ground),
+        owned: surface.owned,
         wet: world.wet_ground(),
     }
 }

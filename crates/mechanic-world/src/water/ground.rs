@@ -72,6 +72,13 @@ pub trait WaterGround: WaterNetwork {
     /// Seed-derived water over a column, whatever the ground below.
     fn surface(&self, x: f64, z: f64) -> Option<WaterSurface>;
 
+    /// Whether seed-derived water may lie over any column of a box, from
+    /// its lower x and z corner to its upper. Conservative: it may name a
+    /// box no water lies over, never the reverse.
+    fn may_reach(&self, _minimum: [f64; 2], _maximum: [f64; 2]) -> bool {
+        true
+    }
+
     /// Whether seed-derived water may reach into a brick at all.
     fn may_hold_water(&self, brick: BrickCoord) -> bool;
 
@@ -228,6 +235,12 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
 
     fn surface(&self, x: f64, z: f64) -> Option<WaterSurface> {
         self.field.water_surface(x, z)
+    }
+
+    fn may_reach(&self, [x0, z0]: [f64; 2], [x1, z1]: [f64; 2]) -> bool {
+        self.field
+            .water_level_range(DVec3::new(x0, 0.0, z0), DVec3::new(x1, 0.0, z1))
+            .is_some()
     }
 
     fn may_hold_water(&self, brick: BrickCoord) -> bool {

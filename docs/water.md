@@ -306,17 +306,31 @@ outline was its columns' outline, a staircase of 20 cm steps seen as
 sawteeth along a diagonal edge. An outer corner stands at the water's level
 where a bank rises through it, so the terrain draws the shore, and on the
 ground where the ground falls away. Edge columns weigh in on no corner with
-water around it. A lake, sea or river beside stored water
-weighs in on the corners they share as metre-deep water at its current level,
-so a flood or a dug channel meets it at the lake's level and colour, with no
-step between the two surfaces. It does so only where that water shows, not
-where its sheet runs on under the bank, or the edge would sink into the
-ground in teeth. The lake's own sheet, a metre between vertices, runs on over
-running water standing within 10 cm of its level and fades out there, as it
-does under a bank, rather than stopping a square short and leaving the dug
-ground between the two surfaces bare. That sheet cannot follow a seam between
-the two a column wide, so lake columns beside running water at the lake's
-level are drawn with the running water, as deep water at the lake's level.
+water around it.
+
+Where stored water meets a lake, sea or river, each 20 cm column is drawn by
+exactly one surface. The stored surface draws its own columns and one column
+of the seed-derived water around them, the anchors: at that water's level,
+its current, and its depth, sounded from the drawn ground under each column's
+centre. Anchors weigh in on the corners they share as at least metre-deep
+water, so a flood or a dug channel meets the lake at its level; a corner with
+an anchor around it takes the mean depth of the columns there rather than
+counting the lake beyond as dry ground, so both surfaces show one colour where
+they meet. Anchors lie only where that water shows, not where its sheet runs
+on under the bank, or the edge would sink into the ground in teeth. The lake's
+sheet, a metre between vertices near the camera, leaves out every column the
+stored surface draws within its reach (`owned_columns`, any column touching
+the reach): it stays open beside them, cuts each grid square holding one into
+columns, and draws the rest, so the two surfaces meet column to column with
+no gap and no overlap. It also cuts a square with a corner beyond its reach, as
+where the reach ends along a straight line through a channel dug from the
+lake, or over open ground that is not water, and keeps the columns holding
+its water or lying under ground, so it no longer drops the whole square and
+leaves the water in it bare in metre-wide sawteeth. A cut column's corners
+interpolate the square's surface and sound the depth under them, save on an
+edge between two kept corners, where they follow the square beside it.
+Squares are cut on grids up to 2 m, within 160 m of the camera. Whether a
+column touches a reach is kept per column, as the seed alone decides it.
 Normals follow the surface, and each corner carries the current, so ripples
 run with it. Lakes and rivers moved from their seed level mesh again
 once they move 2 cm.

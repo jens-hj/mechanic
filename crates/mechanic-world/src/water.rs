@@ -37,7 +37,7 @@ pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
 pub use sheet::{RunningView, SheetDoc};
 pub use soil::{SoilDoc, WetGround};
-pub use surface::{SURFACE_TILE_COLUMNS, SurfaceTile};
+pub use surface::{SURFACE_TILE_COLUMNS, StoredSurface, SurfaceTile};
 
 use crate::{BrickCoord, TERRAIN_CELL_METERS, TerrainField, WaterBody, WaterSurface};
 
@@ -477,6 +477,12 @@ pub struct WaterWorld {
     /// Height of the drawn ground at each surface corner met, by corner and
     /// the water cell height it was sought from.
     tops: CellMap<(i32, i32, i32), Option<f64>>,
+    /// Floor under seed-derived water beside stored water, by column and the
+    /// water cell height its surface stands at.
+    floors: CellMap<(i32, i32, i32), Option<f64>>,
+    /// Whether any of each water-cell column met lies in a lake's or river's
+    /// reach, which the seed alone decides.
+    reaches: CellMap<(i32, i32), bool>,
 }
 
 impl WaterWorld {
@@ -1414,13 +1420,15 @@ impl WaterWorld {
             .map(|brick| (brick.x, brick.z))
             .collect::<std::collections::HashSet<_>>();
         if !changed.is_empty() {
-            self.tops.retain(|&(x, _, z), _| {
+            let kept = |&(x, _, z): &(i32, i32, i32), _: &mut Option<f64>| {
                 let (bx, bz) = (
                     x.div_euclid(BRICK_EDGE_WATER_CELLS),
                     z.div_euclid(BRICK_EDGE_WATER_CELLS),
                 );
                 !(-1..=1).any(|dx| (-1..=1).any(|dz| changed.contains(&(bx + dx, bz + dz))))
-            });
+            };
+            self.tops.retain(kept);
+            self.floors.retain(kept);
         }
         for &brick in &bricks {
             for cell in WaterCell::in_brick(brick) {

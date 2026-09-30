@@ -166,7 +166,10 @@ fn drawn_columns(
     ground: &impl crate::water::WaterGround,
 ) -> std::collections::HashSet<(i32, i32)> {
     let mut drawn = std::collections::HashSet::new();
-    for tile in water.surface_tiles(ground, &std::collections::HashMap::new()) {
+    for tile in water
+        .surface_tiles(ground, &std::collections::HashMap::new())
+        .tiles
+    {
         for quad in tile.indices.chunks(6) {
             let centre = quad
                 .iter()
@@ -214,11 +217,15 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
         .into_iter()
         .map(|(cell, _)| cell)
         .collect::<std::collections::HashSet<_>>();
-    let meeting = water
-        .meeting_columns(&ground)
+    let owned = water
+        .surface_tiles(&ground, &std::collections::HashMap::new())
+        .owned
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
-    assert!(!meeting.is_empty(), "no running water meets the lake");
+    assert!(
+        !owned.is_empty(),
+        "the running water draws none of the lake"
+    );
     // Water fed by the lake never stands above it.
     let highest = water
         .running_cells()
@@ -237,7 +244,7 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
         cells: 64,
     };
     let shifts = water.cycle.shifts(&ground);
-    let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &meeting)
+    let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &owned)
         .expect("the lake shows");
     let drawn = drawn_columns(&mut water, &ground);
     // Every lake column beside the running water lies under the lake's
@@ -248,14 +255,14 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
         DVec2::new(centre.x, centre.z)
     };
     let mut beside = 0;
-    for &(x, z) in &meeting {
+    for &(x, z) in &owned {
         for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
             let (nx, nz) = (x + dx, z + dz);
             let point = centre(nx, nz);
             let probe = DVec3::new(point.x, level - 0.02, point.y);
             let lake_water = field.is_water(probe)
                 || joined.contains(&crate::water::WaterCell::containing(probe));
-            if meeting.contains(&(nx, nz)) || !lake_water {
+            if owned.contains(&(nx, nz)) || !lake_water {
                 continue;
             }
             beside += 1;
@@ -266,6 +273,345 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
         }
     }
     assert!(beside > 0, "the running water touches no lake water");
+}
+
+/// How opaque water drawn by triangles is over a square of points `step`
+/// apart from `minimum`, `side` along each edge, seen from above, as the
+/// shader fades it by the depth under it.
+fn opacity(
+    triangles: &[([DVec2; 3], [f64; 3])],
+    minimum: DVec2,
+    step: f64,
+    side: usize,
+) -> Vec<f64> {
+    let mut alpha = vec![0.0_f64; side * side];
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "indices of a small square of points"
+    )]
+    for &([first, second, third], depth) in triangles {
+        let area = (second - first).perp_dot(third - first);
+        if area.abs() < 1.0e-12 {
+            continue;
+        }
+        let low = (first.min(second).min(third) - minimum) / step;
+        let high = (first.max(second).max(third) - minimum) / step;
+        let range = |low: f64, high: f64| {
+            (low.floor().max(0.0) as usize)..((high.ceil() + 1.0).clamp(0.0, side as f64) as usize)
+        };
+        for row in range(low.y, high.y) {
+            for column in range(low.x, high.x) {
+                let point = minimum + DVec2::new(column as f64, row as f64) * step;
+                let (along_second, along_third) = (
+                    (point - first).perp_dot(third - first) / area,
+                    (second - first).perp_dot(point - first) / area,
+                );
+                if along_second < -1.0e-9
+                    || along_third < -1.0e-9
+                    || along_second + along_third > 1.0 + 1.0e-9
+                {
+                    continue;
+                }
+                let depth = depth[2].mul_add(
+                    along_third,
+                    depth[1].mul_add(along_second, (1.0 - along_second - along_third) * depth[0]),
+                );
+                let t = ((depth - 0.003) / 0.009).clamp(0.0, 1.0);
+                let slot = &mut alpha[column + row * side];
+                *slot = slot.max(t * t * 2.0_f64.mul_add(-t, 3.0));
+            }
+        }
+    }
+    alpha
+}
+
+/// Triangles seen from above, with the depth of water at each corner.
+type Drawn = Vec<([DVec2; 3], [f64; 3])>;
+
+/// The lake's sheet over the square `reach` metres around `middle`, meshed
+/// in tiles of 64 vertices `spacing` apart, as the app streams them.
+fn lake_triangles(
+    field: &TerrainField,
+    terrain: &TerrainOctree,
+    [middle, reach]: [DVec2; 2],
+    spacing: f64,
+    joined: &std::collections::HashSet<crate::water::WaterCell>,
+    owned: &std::collections::HashSet<(i32, i32)>,
+) -> Drawn {
+    let edge = 64.0 * spacing;
+    #[expect(clippy::cast_possible_truncation, reason = "a few tiles")]
+    let tiles = |middle: f64, reach: f64| {
+        ((middle - reach) / edge).floor() as i32..=((middle + reach) / edge).floor() as i32
+    };
+    let mut drawn = Vec::new();
+    for z in tiles(middle.y, reach.y) {
+        for x in tiles(middle.x, reach.x) {
+            let tile = WaterTile {
+                minimum: [f64::from(x) * edge, f64::from(z) * edge],
+                edge,
+                cells: 64,
+            };
+            let shifts = std::collections::BTreeMap::new();
+            let Some(sheet) = joined_water_sheet(field, terrain, tile, &shifts, joined, owned)
+            else {
+                continue;
+            };
+            for triangle in sheet.indices.chunks(3) {
+                let corner = |index: u32| {
+                    let [x, _, z] = sheet.vertices[index as usize].map(f64::from);
+                    DVec2::new(x + sheet.origin.0.x, z + sheet.origin.0.z)
+                };
+                drawn.push((
+                    [triangle[0], triangle[1], triangle[2]].map(corner),
+                    [0, 1, 2].map(|k| f64::from(sheet.depths[triangle[k] as usize])),
+                ));
+            }
+        }
+    }
+    drawn
+}
+
+/// The stored water's surface seen from above.
+fn stored_triangles(tiles: &[crate::SurfaceTile]) -> Drawn {
+    tiles
+        .iter()
+        .flat_map(|tile| {
+            tile.indices.chunks(3).map(|triangle| {
+                let corner = |index: u32| {
+                    let [x, _, z] = tile.positions[index as usize].map(f64::from);
+                    DVec2::new(x + tile.origin.x, z + tile.origin.z)
+                };
+                (
+                    [triangle[0], triangle[1], triangle[2]].map(corner),
+                    [0, 1, 2].map(|k| f64::from(tile.attributes[triangle[k] as usize][0])),
+                )
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn a_channel_from_a_lake_is_drawn_once_where_it_meets_the_lake() {
+    let field = TerrainField::new(WorldSeed(42));
+    let (lake, bank, level) = lake_shore(&field);
+    let mut terrain = TerrainOctree::default();
+    let mut bricks = Vec::new();
+    // A channel from beyond the bank out into the lake.
+    let beyond = bank + (bank - lake).normalize() * 3.0;
+    for step in 0..=60 {
+        let point = beyond.lerp(lake, f64::from(step) / 60.0);
+        for lift in [0.2, 1.0] {
+            let centre = WorldPosition(DVec3::new(point.x, level - lift, point.z));
+            let outcome = terrain.excavate_sphere(&field, centre, 1.2).unwrap();
+            bricks.extend_from_slice(outcome.changed_brick_coordinates());
+        }
+    }
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, bricks);
+    for _ in 0..300 {
+        water.step(&ground, 0.05);
+    }
+    let surface = water.surface_tiles(&ground, &std::collections::HashMap::new());
+    let owned = surface.owned.iter().copied().collect();
+    let joined = water
+        .joined_cells(&ground)
+        .into_iter()
+        .map(|(cell, _)| cell)
+        .collect::<std::collections::HashSet<_>>();
+    let running = water
+        .running_cells()
+        .into_iter()
+        .map(|view| ((view.cell.x, view.cell.z), view.depth))
+        .collect::<std::collections::HashMap<_, _>>();
+    // Points of the lake's water, or of running water a few centimetres
+    // deep among other water, at least 3 cm deep.
+    let middle = bank.lerp(lake, 0.3);
+    let (step, side) = (0.05, 161);
+    // Points lie off the columns' edges, which two surfaces meeting there
+    // both reach.
+    let minimum = DVec2::new(middle.x, middle.z) - DVec2::splat(4.0) + DVec2::splat(0.0123);
+    let (mut water_points, mut visible) = (Vec::new(), Vec::new());
+    for row in 0..side {
+        for along in 0..side {
+            #[expect(clippy::cast_precision_loss, reason = "a small square of points")]
+            let point = minimum + DVec2::new(along as f64, row as f64) * step;
+            let deep = ground
+                .ground_top(point.x, point.y, level + 0.25, 1.0)
+                .is_none_or(|top| top < level - 0.03);
+            if !deep {
+                continue;
+            }
+            visible.push(along + row * side);
+            let cell =
+                crate::water::WaterCell::containing(DVec3::new(point.x, level - 0.02, point.y));
+            let lake_water = field.water_surface(point.x, point.y).is_some()
+                && (field.is_water(DVec3::new(point.x, level - 0.02, point.y))
+                    || joined.contains(&cell));
+            let among = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                .iter()
+                .all(|(dx, dz)| running.contains_key(&(cell.x + dx, cell.z + dz)));
+            let running_water = among
+                && running
+                    .get(&(cell.x, cell.z))
+                    .is_some_and(|&depth| depth > 0.02);
+            if lake_water || running_water {
+                water_points.push(along + row * side);
+            }
+        }
+    }
+    assert!(water_points.len() > 1_000, "the mouth holds little water");
+    let on_stored = opacity(&stored_triangles(&surface.tiles), minimum, step, side);
+    // At the lake's finest grids, a vertex every metre and every two, every
+    // point of water shows water drawn by one surface, and where the ground
+    // lies under the water no point is drawn by both.
+    for spacing in [1.0, 2.0] {
+        let lake = lake_triangles(
+            &field,
+            &terrain,
+            [DVec2::new(middle.x, middle.z), DVec2::splat(4.0)],
+            spacing,
+            &joined,
+            &owned,
+        );
+        let on_lake = opacity(&lake, minimum, step, side);
+        let bare = water_points
+            .iter()
+            .filter(|&&point| on_lake[point].max(on_stored[point]) < 0.5)
+            .count();
+        assert!(
+            bare * 500 <= water_points.len(),
+            "{bare} of {} points of water are bare at {spacing} m",
+            water_points.len()
+        );
+        let twice = visible
+            .iter()
+            .filter(|&&point| on_lake[point] > 0.05 && on_stored[point] > 0.05)
+            .count();
+        assert_eq!(twice, 0, "water is drawn twice at {spacing} m");
+    }
+}
+
+/// Where a lake's own water runs to the end of its reach near spawn: a
+/// point of its water, one beyond its reach, and the lake's level.
+fn lake_reach_edge(field: &TerrainField) -> (DVec3, DVec3, f64) {
+    let spawn = field.safe_spawn().0;
+    for ring in 1..120 {
+        let radius = f64::from(ring) * 2.0;
+        for step in 0..ring * 8 {
+            let angle = f64::from(step) / f64::from(ring * 8) * std::f64::consts::TAU;
+            let (x, z) = (
+                spawn.x + radius * angle.cos(),
+                spawn.z + radius * angle.sin(),
+            );
+            let Some(surface) = field.water_surface(x, z) else {
+                continue;
+            };
+            let level = surface.level;
+            if !matches!(surface.body, WaterBody::Lake(_)) {
+                continue;
+            }
+            for direction in 0..8 {
+                let angle = f64::from(direction) * std::f64::consts::FRAC_PI_4;
+                let along = DVec3::new(angle.cos(), 0.0, angle.sin());
+                let (point, beyond) = (
+                    DVec3::new(x, level, z),
+                    DVec3::new(x, level, z) + along * 2.0,
+                );
+                // Open water well inside, and a bank over the water beyond.
+                let inside = (1..=4).all(|metres| {
+                    let inner = point - along * f64::from(metres);
+                    [0.02, 0.3]
+                        .iter()
+                        .all(|&down| field.is_water(DVec3::new(inner.x, level - down, inner.z)))
+                });
+                let bank = field.water_surface(beyond.x, beyond.z).is_none()
+                    && field
+                        .topmost_surface(beyond.x, beyond.z)
+                        .is_some_and(|ground| ground > level + 0.2);
+                if inside && bank {
+                    return (point, beyond, level);
+                }
+            }
+        }
+    }
+    panic!("no lake water at the end of its reach near spawn");
+}
+
+#[test]
+fn a_lake_shows_all_its_water_where_its_reach_ends_in_a_dug_channel() {
+    let field = TerrainField::new(WorldSeed(42));
+    let (lake, outside, level) = lake_reach_edge(&field);
+    let mut terrain = TerrainOctree::default();
+    // A channel from well beyond the lake's reach into its water, below the
+    // lake's level all the way, so the reach ends in the open channel.
+    let beyond = outside + (outside - lake).normalize() * 6.0;
+    let steps = 80;
+    for step in 0..=steps {
+        let point = beyond.lerp(lake, f64::from(step) / f64::from(steps));
+        let centre = WorldPosition(DVec3::new(point.x, level - 0.6, point.z));
+        terrain.excavate_sphere(&field, centre, 1.2).unwrap();
+    }
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let middle = outside.lerp(lake, 0.5);
+    let (step, side) = (0.1, 161);
+    // Points lie off the columns' edges, where cut squares meet.
+    let minimum = DVec2::new(middle.x, middle.z) - DVec2::splat(8.0) + DVec2::splat(0.0123);
+    // Points of the lake's water at least 3 cm deep, and of the open channel
+    // beyond its reach.
+    let (mut water, mut reach_ends) = (Vec::new(), 0);
+    for row in 0..side {
+        for along in 0..side {
+            #[expect(clippy::cast_precision_loss, reason = "a small square of points")]
+            let point = minimum + DVec2::new(along as f64, row as f64) * step;
+            let deep = ground
+                .ground_top(point.x, point.y, level + 0.25, 1.0)
+                .is_none_or(|top| top < level - 0.03);
+            if field.water_surface(point.x, point.y).is_none() {
+                reach_ends += usize::from(deep);
+            } else if deep && field.is_water(DVec3::new(point.x, level - 0.02, point.y)) {
+                water.push(along + row * side);
+            }
+        }
+    }
+    assert!(
+        reach_ends > 100,
+        "the lake's reach does not end in the channel"
+    );
+    assert!(
+        water.len() > 1_000,
+        "the channel holds little of the lake's water"
+    );
+    for spacing in [1.0, 2.0] {
+        let triangles = lake_triangles(
+            &field,
+            &terrain,
+            [DVec2::new(middle.x, middle.z), DVec2::splat(8.0)],
+            spacing,
+            &std::collections::HashSet::new(),
+            &std::collections::HashSet::new(),
+        );
+        let drawn = opacity(&triangles, minimum, step, side);
+        // Every point of the lake's water at least 3 cm deep shows it, save
+        // half columns where the water's own edge crosses one: the sheet
+        // cuts a square whose corner lies beyond the reach, or over open
+        // ground that is not water, into columns, and keeps those holding
+        // water.
+        let bare = water.iter().filter(|&&point| drawn[point] < 0.5).count();
+        assert!(
+            bare * 50 <= water.len(),
+            "{bare} of {} points of the lake's water are bare at {spacing} m",
+            water.len()
+        );
+    }
 }
 
 #[test]
@@ -319,12 +665,13 @@ fn a_trench_filling_from_a_lake_shows_water_over_every_column_that_holds_it() {
             .into_iter()
             .map(|(cell, _)| cell)
             .collect::<std::collections::HashSet<_>>();
-        let meeting = water
-            .meeting_columns(&ground)
+        let owned = water
+            .surface_tiles(&ground, &std::collections::HashMap::new())
+            .owned
             .into_iter()
             .collect::<std::collections::HashSet<_>>();
         let shifts = water.cycle.shifts(&ground);
-        let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &meeting)
+        let sheet = joined_water_sheet(&field, &terrain, tile, &shifts, &joined, &owned)
             .expect("the lake shows");
         let drawn = drawn_columns(&mut water, &ground);
         // Every column of the lake, or dug beside it and joined to it, lies
