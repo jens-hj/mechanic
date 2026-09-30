@@ -801,7 +801,7 @@ fn lake_bank_and_field() -> Ground {
 }
 
 /// How far the farthest stored water lies from a point, in metres.
-fn front(water: &WaterWorld, ground: &Ground, from: DVec2) -> f64 {
+fn front(water: &WaterWorld, from: DVec2) -> f64 {
     let distance = |cell: WaterCell| {
         let centre = cell.centre();
         (DVec2::new(centre.x, centre.z) - from).length()
@@ -811,7 +811,7 @@ fn front(water: &WaterWorld, ground: &Ground, from: DVec2) -> f64 {
         .into_iter()
         .map(|running| running.cell);
     let pools = water.pools().flat_map(|pool| pool.surface_cells);
-    let joined = water.joined_cells(ground).into_iter().map(|(cell, _)| cell);
+    let joined = water.joined_cells().into_iter().map(|(cell, _)| cell);
     running
         .chain(pools)
         .chain(joined)
@@ -828,7 +828,7 @@ fn a_breach_floods_a_field_as_a_front_moving_at_shallow_water_speed() {
     let mut fronts = Vec::new();
     for _ in 0..30 {
         run(&mut water, &ground, 1);
-        fronts.push(front(&water, &ground, breach));
+        fronts.push(front(&water, breach));
     }
     // Water 10 cm deep over grass spreads at a few tens of centimetres a
     // second, slowing as it thins: it never races along the ground at the
@@ -842,11 +842,7 @@ fn a_breach_floods_a_field_as_a_front_moving_at_shallow_water_speed() {
         fronts[29] > fronts[9] + 0.5,
         "the flood stopped: {fronts:.2?}"
     );
-    assert_eq!(
-        water.joined_cells(&ground).len(),
-        0,
-        "the field joined the lake"
-    );
+    assert_eq!(water.joined_cells().len(), 0, "the field joined the lake");
     let ledger = water.ledger();
     assert!(ledger.total().abs() < 1.0e-9, "water was made or lost");
 }
@@ -875,7 +871,7 @@ fn still_water_a_few_centimetres_over_a_field_runs_onto_it_at_flowing_speed() {
     let mut fronts = Vec::new();
     for _ in 0..5 {
         run(&mut water, &ground, 1);
-        fronts.push(front(&water, &ground, mouth));
+        fronts.push(front(&water, mouth));
     }
     // A pool never floods the field at its level all at once: water a few
     // centimetres deep runs out over it at a few tens of centimetres a
@@ -1029,7 +1025,7 @@ fn a_pit_dug_under_a_lakes_edge_fills_the_rest_of_the_pit() {
     // Only cells under the lake join it.
     assert!(
         water
-            .joined_cells(&ground)
+            .joined_cells()
             .iter()
             .all(|(cell, _)| cell.centre().x < 0.0),
         "the lake spread beyond what lies under it"

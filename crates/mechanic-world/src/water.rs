@@ -483,7 +483,16 @@ pub struct WaterWorld {
     /// Whether any of each water-cell column met lies in a lake's or river's
     /// reach, which the seed alone decides.
     reaches: CellMap<(i32, i32), bool>,
+    /// Where each moved lake and river is drawn: where it stands, as of the
+    /// last time it moved further than [`SHOWN_DROP_METRES`] from here. The
+    /// lake's own sheet and the stored water meeting it are drawn at this
+    /// one level, so neither shows a step against the other.
+    shown: BTreeMap<WaterBody, WaterShift>,
 }
+
+/// How far a lake or river moves from where it is drawn before it is drawn
+/// again where it stands, in metres: its sheet is meshed again each time.
+const SHOWN_DROP_METRES: f64 = 0.02;
 
 impl WaterWorld {
     /// A world without stored water.
@@ -570,12 +579,12 @@ impl WaterWorld {
     }
 
     /// Cells that filled from seed-derived water and joined it, with the
-    /// water's surface at its current level.
-    pub fn joined_cells(&self, ground: &impl WaterGround) -> Vec<(WaterCell, WaterSurface)> {
+    /// water's surface where it is drawn.
+    pub fn joined_cells(&self) -> Vec<(WaterCell, WaterSurface)> {
         let mut joined = self
             .joined
             .iter()
-            .map(|(&cell, joined)| (cell, self.drawn(ground, joined.surface)))
+            .map(|(&cell, joined)| (cell, cycle::shifted(&self.shown, joined.surface)))
             .collect::<Vec<_>>();
         joined.sort_by_key(|(cell, _)| *cell);
         joined
@@ -696,6 +705,29 @@ impl WaterWorld {
     /// Seed-derived water at its current level and current.
     fn drawn(&self, ground: &impl WaterGround, surface: WaterSurface) -> WaterSurface {
         self.cycle.shift(ground, surface.body).apply(surface)
+    }
+
+    /// Where each moved lake and river is drawn.
+    pub const fn shown_shifts(&self) -> &BTreeMap<WaterBody, WaterShift> {
+        &self.shown
+    }
+
+    /// Draws each lake and river that moved further than
+    /// [`SHOWN_DROP_METRES`] from where it is drawn where it now stands.
+    fn show_shifts(&mut self, ground: &impl WaterNetwork) {
+        let live = self.cycle.shifts(ground);
+        let drop = |shifts: &BTreeMap<WaterBody, WaterShift>, body| {
+            shifts
+                .get(body)
+                .map_or(0.0, |shift: &WaterShift| shift.drop)
+        };
+        let moved = live
+            .keys()
+            .chain(self.shown.keys())
+            .any(|body| (drop(&live, body) - drop(&self.shown, body)).abs() > SHOWN_DROP_METRES);
+        if moved {
+            self.shown = live;
+        }
     }
 
     fn openings(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Openings {

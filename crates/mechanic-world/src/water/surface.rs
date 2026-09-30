@@ -12,13 +12,14 @@
 //! the water fades out across it along its depth rather than stopping at its
 //! columns' edges in steps.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 
 use bevy_math::{DVec2, DVec3};
 
 use super::cells::{CellHasher, CellMap};
-use super::{WATER_CELL_METRES, WaterCell, WaterGround, WaterWorld};
+use super::{WATER_CELL_METRES, WaterCell, WaterGround, WaterShift, WaterWorld};
+use crate::WaterBody;
 
 /// Columns along one edge of a surface tile: 32 water cells, 6.4 m.
 pub const SURFACE_TILE_COLUMNS: i32 = 32;
@@ -77,6 +78,8 @@ pub struct StoredSurface {
     pub tiles: Vec<SurfaceTile>,
     /// Columns drawn here that lie in a lake's or river's reach.
     pub owned: Vec<(i32, i32)>,
+    /// Where each moved lake and river is drawn, here and by its own sheet.
+    pub shifts: BTreeMap<WaterBody, WaterShift>,
 }
 
 /// One tile of the stored water's surface, placed at `origin`.
@@ -109,6 +112,7 @@ impl WaterWorld {
         ground: &impl WaterGround,
         drawn: &HashMap<(i32, i32), u64>,
     ) -> StoredSurface {
+        self.show_shifts(ground);
         let mut columns = self.visible_columns(ground);
         self.sound_anchors(ground, &mut columns);
         let reaches = &mut self.reaches;
@@ -191,7 +195,11 @@ impl WaterWorld {
             out.push(mesh_tile(&columns, key, &members, fingerprint, &mut top));
         }
         out.sort_unstable_by_key(|tile| tile.key);
-        StoredSurface { tiles: out, owned }
+        StoredSurface {
+            tiles: out,
+            owned,
+            shifts: self.shown_shifts().clone(),
+        }
     }
 
     /// Gives each anchor the depth of the seed-derived water there, as that
@@ -280,7 +288,7 @@ impl WaterWorld {
         // Cells joined to seed-derived water where its own sheet, which
         // draws the joined cells within its reach, does not run.
         let mut joined = CellMap::<(i32, i32), (WaterCell, f64, f64)>::default();
-        for (cell, surface) in self.joined_cells(ground) {
+        for (cell, surface) in self.joined_cells() {
             if cell.bottom() >= surface.level {
                 continue;
             }
@@ -333,7 +341,7 @@ impl WaterWorld {
                     let Some(seed) = ground.surface(centre.x, centre.z) else {
                         continue;
                     };
-                    let drawn = self.drawn(ground, seed);
+                    let drawn = super::cycle::shifted(self.shown_shifts(), seed);
                     let level = drawn.level;
                     // Only where the seed-derived water shows: its sheet runs
                     // on under the bank, and an edge pulled down to its level

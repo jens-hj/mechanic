@@ -1,14 +1,15 @@
 //! Stored water in the world: stepping it, keeping it in step with the
 //! ground, loading and saving it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, SurfaceTile, TerrainField, TerrainOctree, TerrainWater, WaterCell, WaterLedger,
-    WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldStore,
+    BrickCoord, SurfaceTile, TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterCell,
+    WaterLedger, WaterShift, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround,
+    WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -72,6 +73,8 @@ pub(crate) struct WaterView {
     pub(crate) owned: Vec<(i32, i32)>,
     /// Wet ground.
     pub(crate) wet: Vec<WetGround>,
+    /// Where each moved lake and river is drawn.
+    pub(crate) shifts: BTreeMap<WaterBody, WaterShift>,
 }
 
 /// One batch of water steps done on the worker.
@@ -142,9 +145,10 @@ fn view(
     let surface = world.surface_tiles(ground, drawn);
     WaterView {
         surface: surface.tiles,
-        joined: world.joined_cells(ground),
+        joined: world.joined_cells(),
         owned: surface.owned,
         wet: world.wet_ground(),
+        shifts: surface.shifts,
     }
 }
 

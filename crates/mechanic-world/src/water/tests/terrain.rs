@@ -95,7 +95,7 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     assert!(held > 0.5, "only {held:.2} m³ ran in");
     // The lake's own sheet runs on over the trench, as deep as it was dug.
     let joined = water
-        .joined_cells(&ground)
+        .joined_cells()
         .into_iter()
         .map(|(cell, _)| cell)
         .collect::<std::collections::HashSet<_>>();
@@ -131,7 +131,7 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     // Water fills the dug trench and does not creep off along the shore.
     let flat = |point: DVec3| DVec2::new(point.x, point.z);
     let (from, to) = (flat(beyond), flat(lake));
-    for (cell, _) in water.joined_cells(&ground) {
+    for (cell, _) in water.joined_cells() {
         let point = flat(cell.centre());
         let along = ((point - from).dot(to - from) / from.distance_squared(to)).clamp(0.0, 1.0);
         let off = point.distance(from.lerp(to, along));
@@ -213,7 +213,7 @@ fn a_lakes_sheet_meets_the_running_water_in_a_channel_dug_from_it() {
         water.step(&ground, 0.05);
     }
     let joined = water
-        .joined_cells(&ground)
+        .joined_cells()
         .into_iter()
         .map(|(cell, _)| cell)
         .collect::<std::collections::HashSet<_>>();
@@ -330,22 +330,23 @@ fn opacity(
 /// Triangles seen from above, with the depth of water at each corner.
 type Drawn = Vec<([DVec2; 3], [f64; 3])>;
 
-/// The lake's sheet over the square `reach` metres around `middle`, meshed
+/// The lake's sheets over the square `reach` metres around `middle`, meshed
 /// in tiles of 64 vertices `spacing` apart, as the app streams them.
-fn lake_triangles(
+fn lake_sheets(
     field: &TerrainField,
     terrain: &TerrainOctree,
     [middle, reach]: [DVec2; 2],
     spacing: f64,
+    shifts: &std::collections::BTreeMap<WaterBody, crate::WaterShift>,
     joined: &std::collections::HashSet<crate::water::WaterCell>,
     owned: &std::collections::HashSet<(i32, i32)>,
-) -> Drawn {
+) -> Vec<crate::WaterSheet> {
     let edge = 64.0 * spacing;
     #[expect(clippy::cast_possible_truncation, reason = "a few tiles")]
     let tiles = |middle: f64, reach: f64| {
         ((middle - reach) / edge).floor() as i32..=((middle + reach) / edge).floor() as i32
     };
-    let mut drawn = Vec::new();
+    let mut sheets = Vec::new();
     for z in tiles(middle.y, reach.y) {
         for x in tiles(middle.x, reach.x) {
             let tile = WaterTile {
@@ -353,21 +354,27 @@ fn lake_triangles(
                 edge,
                 cells: 64,
             };
-            let shifts = std::collections::BTreeMap::new();
-            let Some(sheet) = joined_water_sheet(field, terrain, tile, &shifts, joined, owned)
-            else {
-                continue;
+            sheets.extend(joined_water_sheet(
+                field, terrain, tile, shifts, joined, owned,
+            ));
+        }
+    }
+    sheets
+}
+
+/// Sheets seen from above.
+fn sheet_triangles(sheets: &[crate::WaterSheet]) -> Drawn {
+    let mut drawn = Vec::new();
+    for sheet in sheets {
+        for triangle in sheet.indices.chunks(3) {
+            let corner = |index: u32| {
+                let [x, _, z] = sheet.vertices[index as usize].map(f64::from);
+                DVec2::new(x + sheet.origin.0.x, z + sheet.origin.0.z)
             };
-            for triangle in sheet.indices.chunks(3) {
-                let corner = |index: u32| {
-                    let [x, _, z] = sheet.vertices[index as usize].map(f64::from);
-                    DVec2::new(x + sheet.origin.0.x, z + sheet.origin.0.z)
-                };
-                drawn.push((
-                    [triangle[0], triangle[1], triangle[2]].map(corner),
-                    [0, 1, 2].map(|k| f64::from(sheet.depths[triangle[k] as usize])),
-                ));
-            }
+            drawn.push((
+                [triangle[0], triangle[1], triangle[2]].map(corner),
+                [0, 1, 2].map(|k| f64::from(sheet.depths[triangle[k] as usize])),
+            ));
         }
     }
     drawn
@@ -390,6 +397,47 @@ fn stored_triangles(tiles: &[crate::SurfaceTile]) -> Drawn {
             })
         })
         .collect()
+}
+
+/// How far apart a lake's sheets and the stored water's surface stand at
+/// the column corners they share over the ground, not under a bank that
+/// hides both, in metres.
+fn highest_step(
+    sheets: &[crate::WaterSheet],
+    tiles: &[crate::SurfaceTile],
+    ground: &impl WaterGround,
+    level: f64,
+) -> f64 {
+    let corner = |x: f64, z: f64| {
+        #[expect(clippy::cast_possible_truncation, reason = "far inside i64")]
+        let key = ((x * 1_000.0).round() as i64, (z * 1_000.0).round() as i64);
+        key
+    };
+    let stored = tiles
+        .iter()
+        .flat_map(|tile| {
+            tile.positions.iter().map(|&[x, y, z]| {
+                (
+                    corner(f64::from(x) + tile.origin.x, f64::from(z) + tile.origin.z),
+                    f64::from(y) + tile.origin.y,
+                )
+            })
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    sheets
+        .iter()
+        .flat_map(|sheet| {
+            sheet.vertices.iter().filter_map(|vertex| {
+                let [x, y, z] = vertex.map(f64::from);
+                let (x, z) = (x + sheet.origin.0.x, z + sheet.origin.0.z);
+                let height = *stored.get(&corner(x, z))?;
+                let shows = ground
+                    .ground_top(x, z, level + 0.25, 1.0)
+                    .is_none_or(|top| top < y.min(height) - 1.0e-3);
+                shows.then(|| (height - y).abs())
+            })
+        })
+        .fold(0.0, f64::max)
 }
 
 #[test]
@@ -420,7 +468,7 @@ fn a_channel_from_a_lake_is_drawn_once_where_it_meets_the_lake() {
     let surface = water.surface_tiles(&ground, &std::collections::HashMap::new());
     let owned = surface.owned.iter().copied().collect();
     let joined = water
-        .joined_cells(&ground)
+        .joined_cells()
         .into_iter()
         .map(|(cell, _)| cell)
         .collect::<std::collections::HashSet<_>>();
@@ -471,13 +519,22 @@ fn a_channel_from_a_lake_is_drawn_once_where_it_meets_the_lake() {
     // point of water shows water drawn by one surface, and where the ground
     // lies under the water no point is drawn by both.
     for spacing in [1.0, 2.0] {
-        let lake = lake_triangles(
+        let sheets = lake_sheets(
             &field,
             &terrain,
             [DVec2::new(middle.x, middle.z), DVec2::splat(4.0)],
             spacing,
+            &surface.shifts,
             &joined,
             &owned,
+        );
+        let lake = sheet_triangles(&sheets);
+        // The two surfaces stand at one level wherever they meet over the
+        // ground, not under a bank that hides both.
+        let step_height = highest_step(&sheets, &surface.tiles, &ground, level);
+        assert!(
+            step_height < 1.0e-3,
+            "the surfaces meet {step_height:.4} m apart at {spacing} m"
         );
         let on_lake = opacity(&lake, minimum, step, side);
         let bare = water_points
@@ -591,14 +648,15 @@ fn a_lake_shows_all_its_water_where_its_reach_ends_in_a_dug_channel() {
         "the channel holds little of the lake's water"
     );
     for spacing in [1.0, 2.0] {
-        let triangles = lake_triangles(
+        let triangles = sheet_triangles(&lake_sheets(
             &field,
             &terrain,
             [DVec2::new(middle.x, middle.z), DVec2::splat(8.0)],
             spacing,
+            &std::collections::BTreeMap::new(),
             &std::collections::HashSet::new(),
             &std::collections::HashSet::new(),
-        );
+        ));
         let drawn = opacity(&triangles, minimum, step, side);
         // Every point of the lake's water at least 3 cm deep shows it, save
         // half columns where the water's own edge crosses one: the sheet
@@ -661,7 +719,7 @@ fn a_trench_filling_from_a_lake_shows_water_over_every_column_that_holds_it() {
             run += 1;
         }
         let joined = water
-            .joined_cells(&ground)
+            .joined_cells()
             .into_iter()
             .map(|(cell, _)| cell)
             .collect::<std::collections::HashSet<_>>();
@@ -893,7 +951,7 @@ fn a_breach_down_a_hill_runs_downhill_at_flowing_speed() {
             );
         }
         // Only what lies under the lake or in the dig joins it.
-        for (cell, _) in water.joined_cells(&ground) {
+        for (cell, _) in water.joined_cells() {
             let off = off_segment(cell.centre(), start, end);
             assert!(
                 off < 1.5 || generated_water(&field, cell, level),

@@ -202,10 +202,6 @@ pub(crate) struct WaterTiles {
     stale: Vec<[f64; 2]>,
 }
 
-/// A lake that has dropped this much further than its tiles show is meshed
-/// again, in metres.
-const REMESH_DROP_METRES: f64 = 0.02;
-
 /// Forgets every tile; the entities go with the world.
 pub(crate) fn clear_water_tiles(mut tiles: ResMut<WaterTiles>) {
     *tiles = WaterTiles::default();
@@ -284,17 +280,10 @@ pub(crate) fn stream_water(
         return;
     };
     let origin = runtime.floating_origin.0;
-    let shifts = runtime.water_surfaces.shifts();
-    let drop = |shifts: &std::collections::BTreeMap<WaterBody, WaterShift>, body| {
-        shifts
-            .get(body)
-            .map_or(0.0, |shift: &WaterShift| shift.drop)
-    };
-    let moved = shifts
-        .keys()
-        .chain(tiles.shifts.keys())
-        .any(|body| (drop(shifts, body) - drop(&tiles.shifts, body)).abs() > REMESH_DROP_METRES);
-    if moved {
+    // Lakes and rivers are drawn where the stored water meeting them is,
+    // which moves them only once they move 2 cm.
+    let shifts = &runtime.water.view().shifts;
+    if *shifts != tiles.shifts {
         tiles.shifts = shifts.clone();
         tiles.origin = None;
     }

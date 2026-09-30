@@ -332,8 +332,13 @@ edge between two kept corners, where they follow the square beside it.
 Squares are cut on grids up to 2 m, within 160 m of the camera. Whether a
 column touches a reach is kept per column, as the seed alone decides it.
 Normals follow the surface, and each corner carries the current, so ripples
-run with it. Lakes and rivers moved from their seed level mesh again
-once they move 2 cm.
+run with it. A moved lake or river is drawn at one shown level
+(`WaterWorld::shown_shifts`), by its own sheet and by the stored water's
+anchors alike, which follows where it stands only once it strays 2 cm from
+it; its sheet is meshed again each time. With the anchors at the level the
+lake stood at and the sheet at the one it was meshed at, a lake drawn down a
+few millimetres stood that far over the anchors, and the step between them
+showed as dark lines along the columns where they meet.
 
 `MECHANIC_WATER=off` hides it. Looking over a lake at 4112 × 2524 on an M1 Pro,
 the frame rose from 41 ms without water to 45–47 ms with it.
@@ -359,9 +364,9 @@ The worker meshes the surface tiles whose water changed, each tile
 fingerprinted to the 2 mm, and `world/water_render.rs` swaps just those
 entities in; unchanged tiles stay, and all of them follow the floating
 origin. Water under seed-derived water has no surface of its own: a pool
-filling under a lake is not drawn. A lake drawn down by more than
-2 cm since its tiles were meshed has them meshed again at its new level, and
-lake tiles over cells that joined or left the lake mesh again.
+filling under a lake is not drawn. Lake tiles are meshed again when a
+lake's shown level moves, and over cells that joined or left the lake or
+columns the stored water came to draw or stopped drawing.
 
 ## Floating
 

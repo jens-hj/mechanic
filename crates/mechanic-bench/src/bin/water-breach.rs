@@ -224,10 +224,11 @@ fn main() {
             let started = Instant::now();
             let tiles = water.surface_tiles(&ground, &drawn);
             drawn = tiles
+                .tiles
                 .iter()
                 .map(|tile| (tile.key, tile.fingerprint))
                 .collect();
-            std::hint::black_box(water.joined_cells(&ground));
+            std::hint::black_box(water.joined_cells());
             samples
                 .view_ms
                 .push(started.elapsed().as_secs_f64() * 1000.0);
