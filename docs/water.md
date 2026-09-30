@@ -292,7 +292,15 @@ mesh's samples at their own corners, which fall on water corners, so they
 agree there too. The height is kept per corner until the ground there is
 edited. Corners beside dry ground take no depth, so water
 fades out at its edges: the shader fades it from 3 mm to 12 mm deep, so
-water a centimetre or two over a lump still shows its surface. A lake, sea or river beside stored water
+water a centimetre or two over a lump still shows its surface. A ring of
+empty edge columns around the water carries the surface one column on, at
+the highest level beside each and at no depth at its outer corners, so the
+water fades out across it along its depth. Without the ring the water's
+outline was its columns' outline, a staircase of 20 cm steps seen as
+sawteeth along a diagonal edge. An outer corner stands at the water's level
+where a bank rises through it, so the terrain draws the shore, and on the
+ground where the ground falls away. Edge columns weigh in on no corner with
+water around it. A lake, sea or river beside stored water
 weighs in on the corners they share as metre-deep water at its current level,
 so a flood or a dug channel meets it at the lake's level and colour, with no
 step between the two surfaces. It does so only where that water shows, not

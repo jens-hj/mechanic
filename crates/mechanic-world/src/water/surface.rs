@@ -8,7 +8,9 @@
 //! share their corners, so running water down a slope is one smooth ramp,
 //! a pool meets the stream feeding it on one edge, and no gaps open between
 //! columns at different heights. A corner beside dry ground takes no depth,
-//! so the water fades out at its edges.
+//! and a ring of empty edge columns carries the surface one column on, so
+//! the water fades out across it along its depth rather than stopping at its
+//! columns' edges in steps.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -44,6 +46,10 @@ struct Column {
     /// seed-derived water's own sheet, a metre a vertex, fades out over the
     /// running water and cannot follow a seam between them a column wide.
     seam: bool,
+    /// Past the water's edge: an empty column around visible water, drawn
+    /// so the water fades out across it along its depth rather than
+    /// stopping at a column's edge.
+    edge: bool,
 }
 
 /// Depth an anchor weighs in with on a corner, in metres: as deep water, so
@@ -189,6 +195,7 @@ impl WaterWorld {
                     flow: view.flow,
                     anchor: false,
                     seam: false,
+                    edge: false,
                 },
             );
         }
@@ -213,6 +220,7 @@ impl WaterWorld {
                         flow: DVec2::ZERO,
                         anchor: false,
                         seam: false,
+                        edge: false,
                     },
                 );
             }
@@ -245,11 +253,13 @@ impl WaterWorld {
                         flow: DVec2::ZERO,
                         anchor: false,
                         seam: false,
+                        edge: false,
                     },
                 );
             }
         }
         self.anchor_to_seed_water(ground, &mut columns);
+        add_edges(&mut columns);
         columns
     }
 
@@ -296,6 +306,7 @@ impl WaterWorld {
                                 flow: DVec2::ZERO,
                                 anchor: true,
                                 seam: beside(dx, dz) && column.level >= level - MEETS_METRES,
+                                edge: false,
                             },
                         );
                     }
@@ -304,6 +315,33 @@ impl WaterWorld {
         }
         columns.extend(anchors);
     }
+}
+
+/// Adds a ring of empty edge columns around the visible stored water, each
+/// at the level of the highest water beside it. Without it the water's
+/// outline is its columns' outline, a staircase of 20 cm steps.
+fn add_edges(columns: &mut CellMap<(i32, i32), Column>) {
+    let mut edges = CellMap::<(i32, i32), Column>::default();
+    for (&(x, z), column) in columns.iter().filter(|(_, column)| !column.anchor) {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                let key = (x + dx, z + dz);
+                if columns.contains_key(&key) {
+                    continue;
+                }
+                let edge = edges.entry(key).or_insert(Column {
+                    depth: 0.0,
+                    edge: true,
+                    ..*column
+                });
+                if column.level > edge.level {
+                    edge.level = column.level;
+                    edge.flow = column.flow;
+                }
+            }
+        }
+    }
+    columns.extend(edges);
 }
 
 /// What a tile shows, to the millimetre.
@@ -410,7 +448,9 @@ fn corner(
 ) -> Corner {
     let around = [(-1, -1), (-1, 0), (0, -1), (0, 0)]
         .map(|(dx, dz)| columns.get(&(x + dx, z + dz)).copied());
-    let same = |column: &Column| (column.level - own.level).abs() <= JOINS_METRES;
+    // Edge columns hold no water: they weigh in on no corner that has water
+    // of its own around it.
+    let same = |column: &Column| !column.edge && (column.level - own.level).abs() <= JOINS_METRES;
     let (mut level, mut weight, mut depth, mut flow) = (0.0, 0.0, 0.0, DVec2::ZERO);
     for column in around.iter().flatten().filter(|column| same(column)) {
         let w = column.depth.max(LEAST_WEIGHT_METRES);
@@ -418,6 +458,9 @@ fn corner(
         weight += w;
         depth += column.depth;
         flow += column.flow * w;
+    }
+    if weight == 0.0 {
+        return beyond(x, z, own, top);
     }
     // Dry ground beside the corner shows no depth: the water fades out.
     let level_at = |column: Option<Column>| column.filter(same).map(|column| column.level);
@@ -443,6 +486,23 @@ fn corner(
         top,
     );
     corner
+}
+
+/// The outer corner of an edge column, with no water around it: no depth, at
+/// the water's level where the ground rises through it, so the terrain draws
+/// the shore, and down on the ground where it falls away.
+fn beyond(
+    x: i32,
+    z: i32,
+    own: Column,
+    top: &mut impl FnMut(i32, i32, f64) -> Option<f64>,
+) -> Corner {
+    Corner {
+        level: top(x, z, own.level).map_or(own.level, |ground| ground.min(own.level)),
+        depth: 0.0,
+        flow: own.flow,
+        normal: DVec3::Y,
+    }
 }
 
 /// Lays a corner of shallow water over the drawn ground: each column around
@@ -523,6 +583,7 @@ mod tests {
                         flow: DVec2::new(1.0, 0.0),
                         anchor: false,
                         seam: false,
+                        edge: false,
                     },
                 );
             }
@@ -568,6 +629,7 @@ mod tests {
                     flow: DVec2::ZERO,
                     anchor: false,
                     seam: false,
+                    edge: false,
                 },
             );
         }
@@ -597,6 +659,7 @@ mod tests {
                 flow: DVec2::ZERO,
                 anchor: false,
                 seam: false,
+                edge: false,
             },
         );
         columns.insert(
@@ -607,6 +670,7 @@ mod tests {
                 flow: DVec2::ZERO,
                 anchor: true,
                 seam: false,
+                edge: false,
             },
         );
         let tile = mesh_tile(&columns, (0, 0), &[(0, 0)], 0, &mut |_, _, _| None);
@@ -645,6 +709,7 @@ mod tests {
                         flow: DVec2::new(0.5, 0.0),
                         anchor: false,
                         seam: false,
+                        edge: false,
                     },
                 );
             }
@@ -704,6 +769,7 @@ mod tests {
                         flow: DVec2::ZERO,
                         anchor: false,
                         seam: false,
+                        edge: false,
                     },
                 );
             }
@@ -727,6 +793,146 @@ mod tests {
         );
     }
 
+    /// Water 5 cm deep over flat ground in the columns on one side of a
+    /// diagonal, with its ring of edge columns.
+    fn diagonal() -> CellMap<(i32, i32), Column> {
+        let mut columns = CellMap::default();
+        for x in 0..16 {
+            for z in 0..16 - x {
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: 1.0,
+                        depth: 0.05,
+                        flow: DVec2::ZERO,
+                        anchor: false,
+                        seam: false,
+                        edge: false,
+                    },
+                );
+            }
+        }
+        super::add_edges(&mut columns);
+        columns
+    }
+
+    /// How opaque the drawn water is at a point, as the shader fades it out
+    /// by the depth under it.
+    fn drawn(tile: &super::SurfaceTile, point: DVec2) -> f64 {
+        let mut alpha: f64 = 0.0;
+        for triangle in tile.indices.chunks(3) {
+            let [first, second, third] = [0, 1, 2].map(|corner| {
+                let [x, _, z] = tile.positions[triangle[corner] as usize].map(f64::from);
+                DVec2::new(x, z)
+            });
+            let area = (second - first).perp_dot(third - first);
+            let (along_second, along_third) = (
+                (point - first).perp_dot(third - first) / area,
+                (second - first).perp_dot(point - first) / area,
+            );
+            if along_second < -1.0e-9
+                || along_third < -1.0e-9
+                || along_second + along_third > 1.0 + 1.0e-9
+            {
+                continue;
+            }
+            let depth =
+                [0, 1, 2].map(|corner| f64::from(tile.attributes[triangle[corner] as usize][0]));
+            let depth = depth[2].mul_add(
+                along_third,
+                depth[1].mul_add(along_second, (1.0 - along_second - along_third) * depth[0]),
+            );
+            alpha = alpha.max(super::smoothstep(0.003, 0.012, depth));
+        }
+        alpha
+    }
+
+    #[test]
+    fn a_diagonal_edge_of_water_is_a_straight_line_not_steps() {
+        let columns = diagonal();
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| Some(0.95));
+        // Where the water ends along lines across the edge, a centimetre
+        // apart along it.
+        let edge = super::WATER_CELL_METRES;
+        let across = DVec2::new(1.0, 1.0).normalize();
+        let ends = (0..80)
+            .map(|step| {
+                let along = DVec2::new(8.0 * edge, 8.0 * edge)
+                    + DVec2::new(1.0, -1.0).normalize() * (f64::from(step) * 0.01 - 0.4);
+                let mut reach = -0.5;
+                while drawn(&tile, along + across * reach) >= 0.5 {
+                    reach += 0.002;
+                }
+                reach
+            })
+            .collect::<Vec<_>>();
+        let spread = ends.iter().fold(f64::NEG_INFINITY, |a, &b| a.max(b))
+            - ends.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+        assert!(spread < 0.02, "the edge steps by {spread:.3} m");
+    }
+
+    #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the water's own corners are exactly as they were"
+    )]
+    fn edge_columns_leave_the_water_and_meet_a_bank() {
+        let mut columns = CellMap::default();
+        for x in 2..6 {
+            for z in 2..6 {
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: 1.0,
+                        depth: 0.3,
+                        flow: DVec2::ZERO,
+                        anchor: false,
+                        seam: false,
+                        edge: false,
+                    },
+                );
+            }
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        // A bank over the water on the low x side, a floor under it on the
+        // high x side.
+        let ground = |x: i32| if x <= 2 { 1.2 } else { 0.9 };
+        let mut top = |x: i32, _: i32, _: f64| Some(ground(x));
+        let without = mesh_tile(&columns, (0, 0), &members, 0, &mut top);
+        super::add_edges(&mut columns);
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let with = mesh_tile(&columns, (0, 0), &members, 0, &mut top);
+        // The water's own corners are as they were.
+        for (position, attributes) in without.positions.iter().zip(&without.attributes) {
+            assert!(
+                with.positions
+                    .iter()
+                    .zip(&with.attributes)
+                    .any(|(other, others)| other == position && others == attributes),
+                "the corner at {position:?} moved"
+            );
+        }
+        // Past them the surface runs on into the bank, and down onto the floor.
+        let edge = super::WATER_CELL_METRES;
+        for (position, attributes) in with.positions.iter().zip(&with.attributes) {
+            if attributes[0] > 0.0 {
+                continue;
+            }
+            #[expect(clippy::cast_possible_truncation, reason = "a corner of the grid")]
+            let x = (f64::from(position[0]) / edge).round() as i32;
+            let expected = ground(x).min(1.0);
+            assert!(
+                (f64::from(position[1]) - expected).abs() < 1.0e-6,
+                "an outer corner at {position:?} stands at {} m, not {expected} m",
+                position[1]
+            );
+        }
+    }
+
     #[test]
     fn a_pond_over_lumpy_ground_lies_level() {
         let mut columns = CellMap::default();
@@ -740,6 +946,7 @@ mod tests {
                         flow: DVec2::ZERO,
                         anchor: false,
                         seam: false,
+                        edge: false,
                     },
                 );
             }
