@@ -508,7 +508,11 @@ fn beyond(
 /// Lays a corner of shallow water over the drawn ground: each column around
 /// it counts as the ground at the corner plus its own depth while shallow,
 /// and at its own level once deep, and the surface's normal follows the
-/// ground as far as the water lies on it.
+/// ground as far as the water lies on it. Water tilts along its current,
+/// never across it: it lies on the ground only as far as the ground is gentle
+/// across the current, or all round where it rests, so water beside a bank
+/// stays level and the terrain draws its shore rather than the water
+/// climbing the bank.
 fn drape(
     around: &[Option<Column>; 4],
     x: i32,
@@ -520,9 +524,28 @@ fn drape(
     if around.iter().flatten().all(|column| level(column) >= 1.0) {
         return;
     }
-    let Some(ground) = top(x, z, corner.level) else {
+    let near = corner.level;
+    let Some(ground) = top(x, z, near) else {
         return;
     };
+    let edge = WATER_CELL_METRES;
+    let slope = |a: Option<f64>, b: Option<f64>| a.zip(b).map(|(a, b)| (b - a) / (2.0 * edge));
+    let gradient = slope(top(x - 1, z, near), top(x + 1, z, near))
+        .zip(slope(top(x, z - 1, near), top(x, z + 1, near)))
+        .map(|(dx, dz)| DVec2::new(dx, dz));
+    let follows = gradient.map_or(1.0, |gradient| {
+        let speed = corner.flow.length();
+        let across = if speed > 0.0 {
+            gradient.perp_dot(corner.flow / speed).abs()
+        } else {
+            0.0
+        };
+        let steep = (across - gradient.length()).mul_add(
+            smoothstep(0.0, CURRENT_METRES_PER_SECOND, speed),
+            gradient.length(),
+        );
+        1.0 - smoothstep(GENTLE_SLOPE, STEEP_SLOPE, steep)
+    });
     let (mut height, mut lying, mut weight) = (0.0, 0.0, 0.0);
     for column in around.iter().flatten() {
         let w = column.depth.max(LEAST_WEIGHT_METRES);
@@ -533,23 +556,30 @@ fn drape(
     }
     // Draping only ever lifts water the averaging sank into the ground: water
     // lying level over the ground, as at a lake's shallow edge, stays level.
-    let lift = height / weight - corner.level;
+    let lift = (height / weight - corner.level) * follows;
     if lift <= 0.0 {
         return;
     }
     corner.level += lift;
     let lying = lying / weight * smoothstep(0.0, LIFTED_METRES, lift);
-    let edge = WATER_CELL_METRES;
-    let slope = |a: Option<f64>, b: Option<f64>| a.zip(b).map(|(a, b)| (b - a) / (2.0 * edge));
-    let near = corner.level;
-    if let (Some(dx), Some(dz)) = (
-        slope(top(x - 1, z, near), top(x + 1, z, near)),
-        slope(top(x, z - 1, near), top(x, z + 1, near)),
-    ) {
-        let ground = DVec3::new(-dx, 1.0, -dz).normalize();
+    if let Some(gradient) = gradient {
+        let ground = DVec3::new(-gradient.x, 1.0, -gradient.y).normalize();
         corner.normal = corner.normal.lerp(ground, lying).normalize();
     }
 }
+
+/// Ground slope across the current, rise over run, up to which shallow
+/// water lies on it. Films run down gentler ground than this; water resting
+/// against a bank or running along one meets steeper.
+const GENTLE_SLOPE: f64 = 0.3;
+
+/// Ground slope across the current, rise over run, from which shallow water
+/// lies level over it rather than on it.
+const STEEP_SLOPE: f64 = 0.45;
+
+/// Current, in m/s, from which water tilts along it: slower water lies level
+/// across ground steep in any direction.
+const CURRENT_METRES_PER_SECOND: f64 = 0.05;
 
 /// Lift over which a draped corner's normal turns to follow the ground, in
 /// metres.
@@ -929,6 +959,89 @@ mod tests {
                 (f64::from(position[1]) - expected).abs() < 1.0e-6,
                 "an outer corner at {position:?} stands at {} m, not {expected} m",
                 position[1]
+            );
+        }
+    }
+
+    /// Water 1 cm deep over flat ground, 4 columns by 4, with `flow`, beside
+    /// a bank rising 1 in 1 from inside its last column along x, meshed over
+    /// the ground under it.
+    fn beside_a_bank(flow: DVec2) -> super::SurfaceTile {
+        let mut columns = CellMap::default();
+        for x in 0..4 {
+            for z in 0..4 {
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: 1.0,
+                        depth: 0.01,
+                        flow,
+                        anchor: false,
+                        seam: false,
+                        edge: false,
+                    },
+                );
+            }
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let edge = super::WATER_CELL_METRES;
+        mesh_tile(&columns, (0, 0), &members, 0, &mut |x, _, _| {
+            Some(0.99 + (f64::from(x) * edge - 0.7).max(0.0))
+        })
+    }
+
+    #[test]
+    fn shallow_water_against_a_steep_bank_stays_level() {
+        // At rest, and running along the bank.
+        for flow in [DVec2::ZERO, DVec2::new(0.0, 0.5)] {
+            let tile = beside_a_bank(flow);
+            for position in &tile.positions {
+                assert!(
+                    (f64::from(position[1]) - 1.0).abs() < 0.005,
+                    "water running at {flow} climbs the bank to {} m at x {}",
+                    position[1],
+                    position[0]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_film_down_a_steep_hill_lies_on_it() {
+        // A film 5 mm deep running down ground falling 1 in 2, with a groove
+        // across the current; the ground rises across the film's upper edge.
+        let edge = super::WATER_CELL_METRES;
+        let ground = |x: f64, z: f64| -0.5 * x - 0.03 * (-(z - 0.5).powi(2) / 0.01).exp();
+        let mut columns = CellMap::default();
+        for x in 0..8 {
+            for z in 0..5 {
+                let (cx, cz) = ((f64::from(x) + 0.5) * edge, (f64::from(z) + 0.5) * edge);
+                let depth = if z == 2 { 0.05 } else { 0.005 };
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: ground(cx, cz) + depth,
+                        depth,
+                        flow: DVec2::new(1.0, 0.0),
+                        anchor: false,
+                        seam: false,
+                        edge: false,
+                    },
+                );
+            }
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |x, z, _| {
+            Some(ground(f64::from(x) * edge, f64::from(z) * edge))
+        });
+        for position in &tile.positions {
+            let [x, y, z] = position.map(f64::from);
+            assert!(
+                y - ground(x, z) > super::VISIBLE_METRES - 1.0e-9,
+                "the film at ({x:.1}, {z:.1}) sinks {:.4} m into the hill",
+                ground(x, z) - y
             );
         }
     }

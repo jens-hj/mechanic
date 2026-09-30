@@ -284,7 +284,13 @@ ground, and the ground showed through in sharp teeth down the slope. Draping
 only lifts a corner, and the normal turns only where it lifted: the drawn
 ground and a column's counted floor differ by millimetres to centimetres, so
 draping a lake's shallow edge would move it off the lake's level in a band
-along the shore's contour, lit as a slope. The ground's height is read
+along the shore's contour, lit as a slope. Water tilts along its current,
+never across it: a corner is draped fully where the ground across the
+current slopes under 1 in 3.3, not at all over 1 in 2.2, blending between,
+and resting water counts the ground's slope in every direction. A film
+running down a steep hill lies on it, but shallow water resting against a
+bank, or running along one, stays level and the terrain draws its shore;
+draped regardless, it climbed up to 18 cm up the bank in bumps. The ground's height is read
 exactly where the terrain mesh draws it: from the density at each lattice
 corner, as the mesher samples it, or the blend of the eight cells around a
 corner where they were edited. Coarser terrain meshes share the finest
