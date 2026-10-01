@@ -22,6 +22,11 @@ struct WaterVertex {
     // How cloudy with sediment the water is, from 0 to 1.
     @location(9) murk: f32,
 #endif
+#ifdef WATER_CHURN
+    // How white the water churns where it collides, tumbles or takes a
+    // fall, from 0 to 1.
+    @location(10) churn: f32,
+#endif
 }
 
 struct WaterVaryings {
@@ -33,6 +38,7 @@ struct WaterVaryings {
 #endif
     @location(8) water: vec3<f32>,
     @location(9) mud: f32,
+    @location(10) churn: f32,
 }
 
 @vertex
@@ -57,6 +63,11 @@ fn vertex(vertex: WaterVertex) -> WaterVaryings {
 #else
     out.mud = 0.0;
 #endif
+#ifdef WATER_CHURN
+    out.churn = vertex.churn;
+#else
+    out.churn = 0.0;
+#endif
     return out;
 }
 
@@ -80,25 +91,107 @@ fn wave_slope(point: vec2<f32>, time: f32) -> vec2<f32> {
     return slope;
 }
 
-// Linear colour of water thick with silt.
-const SILT: vec3<f32> = vec3<f32>(0.16, 0.1, 0.045);
-
-// Seconds the ripples ride the current before they start afresh.
-const FLOW_PERIOD: f32 = 2.0;
-
-// Ripples carried along by the current: two copies, each drifting for a
-// period and starting afresh, crossfaded so neither restart shows. The
-// drift never outgrows a period, so a current that changes from step to
-// step moves the ripples a little, not by all the distance since launch.
+// Wind ripples carried along by the current, crossfaded between two
+// copies as the current's other passengers are.
 fn flowing_slope(point: vec2<f32>, flow: vec2<f32>, time: f32) -> vec2<f32> {
     let speed = length(flow);
-    let current = select(vec2<f32>(0.0), flow * min(1.0, 2.0 / speed), speed > 0.0);
+    let current = select(vec2<f32>(0.0), flow * min(1.0, FASTEST_DRIFT / speed), speed > 0.0);
     let first = fract(time / FLOW_PERIOD);
     let second = fract(time / FLOW_PERIOD + 0.5);
     let weight = 1.0 - abs(1.0 - 2.0 * first);
     return weight * wave_slope(point - current * first * FLOW_PERIOD, time)
         + (1.0 - weight) * wave_slope(point - current * second * FLOW_PERIOD + vec2<f32>(0.37, 0.61), time);
 }
+
+#ifdef WATER_NOISE
+// Gradient noise and its slope, `water_noise` in world/water_render.rs.
+@group(#{MATERIAL_BIND_GROUP}) @binding(2) var noise_texture: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(3) var noise_sampler: sampler;
+
+// Lattice cells along each edge of the noise texture.
+const NOISE_CELLS: f32 = 64.0;
+
+// Gradient noise at a point in lattice cells, about -0.7 to 0.7, then its
+// slope along x and y.
+fn noise(point: vec2<f32>) -> vec3<f32> {
+    return textureSampleLevel(noise_texture, noise_sampler, point / NOISE_CELLS, 0.0).xyz;
+}
+#endif
+
+// How much of a pattern of this many cycles a metre survives at a pixel's
+// size: finer patterns fade out rather than alias.
+fn resolved(texel: f32, cycles_per_metre: f32) -> f32 {
+    return 1.0 - smoothstep(0.2, 0.5, texel * cycles_per_metre);
+}
+
+// Linear colour of water thick with silt.
+const SILT: vec3<f32> = vec3<f32>(0.16, 0.1, 0.045);
+
+// Linear colour of foam, and of water white with air.
+const FOAM: vec3<f32> = vec3<f32>(0.85, 0.9, 0.9);
+const AERATED: vec3<f32> = vec3<f32>(0.45, 0.6, 0.58);
+
+const GRAVITY: f32 = 9.81;
+
+// Seconds the surface rides the current before it starts afresh.
+const FLOW_PERIOD: f32 = 1.5;
+
+// Fastest current the surface drifts with, in m/s.
+const FASTEST_DRIFT: f32 = 2.0;
+
+#ifdef WATER_NOISE
+// What the current carries along at a point: wrinkles stretched along it,
+// their height's slope in metres per metre, fine chop, and foam.
+struct Carried {
+    slope: vec2<f32>,
+    foam: f32,
+    wrinkle: f32,
+}
+
+// The surface the current carries, sampled where `point` was `age` seconds
+// ago. `along` and `across` are the current's frame, `cover` the share of
+// the surface foam covers.
+fn carried(
+    point: vec2<f32>,
+    drift: vec2<f32>,
+    age: f32,
+    along: vec2<f32>,
+    moving: f32,
+    white: f32,
+    cover: f32,
+    texel: f32,
+) -> Carried {
+    var out: Carried;
+    let at = point - drift * age;
+    // Wrinkles 60 cm long and 25 cm across, in two octaves.
+    let frame = vec2<f32>(dot(at, along), dot(at, vec2<f32>(-along.y, along.x)));
+    let scale = vec2<f32>(1.6, 4.0);
+    let first = noise(frame * scale);
+    let second = noise(frame * scale * 2.1 + vec2<f32>(17.3, 5.1));
+    let height = 0.03 * moving;
+    let local = height * (first.yz * scale + 0.5 * second.yz * scale * 2.1);
+    let across = vec2<f32>(-along.y, along.x);
+    out.slope = (along * local.x + across * local.y) * resolved(texel, 8.0);
+    out.wrinkle = first.x;
+    // Chop: whitewater roughened all over.
+    if white > 0.01 {
+        let chop = noise(at * 9.0 + vec2<f32>(3.7, 11.2));
+        out.slope += 0.012 * white * 9.0 * chop.yz * resolved(texel, 9.0);
+    }
+    // Foam: the brightest of a noise, as much of it as `cover` says, in
+    // flecks drawn out along the current. Flecks on running water gather
+    // into lines that drift with it; whitewater foams soft-edged.
+    if cover > 0.005 {
+        let lines = smoothstep(-0.1, 0.35, noise(frame * vec2<f32>(0.35, 1.3) + vec2<f32>(4.1, 9.3)).x);
+        let share = max(cover * lines * 2.0 * (1.0 - white), cover * white);
+        let fleck = noise(frame * vec2<f32>(7.0, 13.0) + vec2<f32>(7.1, 2.9)).x + 0.3 * second.x;
+        let threshold = mix(0.5, -0.75, min(share, 1.0));
+        let near = smoothstep(threshold, threshold + 0.05 + 0.3 * white, fleck);
+        out.foam = mix(share, near, resolved(texel, 13.0));
+    }
+    return out;
+}
+#endif
 
 @fragment
 fn fragment(
@@ -116,15 +209,80 @@ fn fragment(
     pbr_input.material.flags |= STANDARD_MATERIAL_FLAGS_FOG_ENABLED_BIT
         | STANDARD_MATERIAL_FLAGS_ALPHA_MODE_BLEND;
 
+    let point = varyings.world_position.xz;
+    let time = globals.time;
     let depth = max(varyings.water.x, 0.0);
     let flow = varyings.water.yz;
-    let slope = flowing_slope(varyings.world_position.xz, flow, globals.time);
-    // Ripples fade with distance so far water reads as a calm mirror
-    // instead of aliasing.
-    let calm = 1.0 / (1.0 + fwidth(varyings.world_position.x) * 4.0);
+    // Water a few millimetres deep never runs faster than half again its
+    // own wave speed, however fast its current is reckoned.
+    let reckoned = length(flow);
+    let speed = min(reckoned, 1.5 * sqrt(GRAVITY * depth));
+    let along = select(vec2<f32>(1.0, 0.0), flow / reckoned, reckoned > 1.0e-3);
+    let froude = speed / sqrt(GRAVITY * max(depth, 0.005));
+    let deep_enough = smoothstep(0.02, 0.05, depth);
+    // Still to running; rapids; white with air, from the rapids or from
+    // collisions, tumbles and falls.
+    let moving = smoothstep(0.03, 0.25, speed);
+    let rapid = smoothstep(0.7, 1.2, froude) * smoothstep(0.25, 0.8, speed) * deep_enough;
+    let churn = clamp(varyings.churn, 0.0, 1.0);
+    let white = max(
+        0.7 * smoothstep(1.0, 1.5, froude) * smoothstep(0.4, 1.2, speed) * deep_enough,
+        churn,
+    );
+    // Metres a pixel spans: ripples fade with it, so far water reads as a
+    // calm mirror instead of aliasing.
+    let texel = fwidth(varyings.world_position.x);
+    let calm = 1.0 / (1.0 + texel * 4.0);
+
+    // Wind ripples, as tall as the water is deep: puddles and ponds lie
+    // glassy, lakes ripple. Running water wears its own wrinkles instead.
+    let wind = mix(0.1, 1.0, smoothstep(0.02, 0.6, depth)) * (1.0 - 0.6 * moving);
+    var slope = wind * calm * flowing_slope(point, flow, time);
+
+    // What the current carries: two copies, each drifting for a period
+    // and starting afresh, crossfaded so neither restart shows. The drift
+    // never outgrows a period, so a current that changes from step to step
+    // moves the surface a little, not by all the distance since launch.
+    let drift = select(vec2<f32>(0.0), flow * min(1.0, FASTEST_DRIFT / reckoned), reckoned > 0.0);
+    let cover = max(0.05 * moving, 0.8 * white);
+    var foam = 0.0;
+    var wrinkle = 0.0;
+#ifdef WATER_NOISE
+    if moving > 0.01 || white > 0.01 {
+        let first_age = fract(time / FLOW_PERIOD);
+        let second_age = fract(time / FLOW_PERIOD + 0.5);
+        let weight = 1.0 - abs(1.0 - 2.0 * first_age);
+        let first = carried(point, drift, first_age * FLOW_PERIOD, along, moving, white, cover, texel);
+        let second = carried(
+            point + vec2<f32>(0.37, 0.61),
+            drift,
+            second_age * FLOW_PERIOD,
+            along,
+            moving,
+            white,
+            cover,
+            texel,
+        );
+        slope += weight * first.slope + (1.0 - weight) * second.slope;
+        foam = weight * first.foam + (1.0 - weight) * second.foam;
+        wrinkle = weight * first.wrinkle + (1.0 - weight) * second.wrinkle;
+    }
+#endif
+
+    // Standing waves: crests across fast shallow water that hold still over
+    // the bed, as long as the wave that travels upstream as fast as the
+    // water runs down, broken up by the wrinkles riding through them.
+    if rapid > 0.01 {
+        let length = clamp(6.2831853 * speed * speed / GRAVITY, 0.15, 2.5);
+        let k = 6.2831853 / length;
+        let phase = k * dot(point, along) + 2.5 * wrinkle;
+        let pulse = 0.8 + 0.2 * sin(1.3 * time + 3.0 * wrinkle);
+        slope += along * (0.3 * rapid * pulse * cos(phase) * resolved(texel, 1.0 / length));
+    }
+
     // Ripples ride on the surface's own slope: water down a chute tilts.
     var normal = normalize(
-        normalize(varyings.world_normal) + vec3<f32>(-slope.x * calm, 0.0, -slope.y * calm),
+        normalize(varyings.world_normal) + vec3<f32>(-slope.x, 0.0, -slope.y),
     );
     if !is_front {
         normal = -normal;
@@ -134,22 +292,20 @@ fn fragment(
     // its edges; deep water is murky.
     let murk = 1.0 - exp(-depth / 3.0);
     let edge = smoothstep(0.003, 0.012, depth);
-    // Fast water breaks white in streaks along its current.
-    let speed = length(flow);
-    let along = select(vec2<f32>(1.0, 0.0), flow / speed, speed > 1.0e-3);
-    let across = dot(varyings.world_position.xz, vec2<f32>(-along.y, along.x));
-    let streak = 0.5 + 0.5 * sin(across * 23.0 + sin(across * 7.0 + globals.time));
-    let foam = smoothstep(0.8, 2.5, speed) * mix(0.4, 1.0, streak) * calm;
-    // Sediment turns water silty brown and hides the ground under it.
+    // Sediment turns water silty brown and hides the ground under it; air
+    // turns it pale and hides the ground too.
     let mud = clamp(varyings.mud, 0.0, 1.0);
-    let clear = mix(shallow.rgb, deep.rgb, murk);
+    let clear = mix(mix(shallow.rgb, deep.rgb, murk), AERATED, 0.35 * white);
     let colour = mix(clear, SILT, mud);
-    let opacity = max(mix(0.35, 0.9, 1.0 - exp(-depth / 1.2)), 0.95 * mud);
+    let opacity = max(max(mix(0.35, 0.9, 1.0 - exp(-depth / 1.2)), 0.95 * mud), 0.85 * white);
     pbr_input.material.base_color = vec4<f32>(
-        mix(colour, vec3<f32>(0.85, 0.9, 0.9), foam * 0.7),
-        edge * max(opacity, foam * 0.8),
+        mix(colour, FOAM, foam),
+        edge * max(opacity, foam * 0.9),
     );
-    pbr_input.material.perceptual_roughness = 0.06;
+    // Still water is a mirror; rapids and foam are matte.
+    var roughness = mix(0.02, 0.06, moving);
+    roughness = mix(roughness, 0.3, max(0.6 * rapid, white));
+    pbr_input.material.perceptual_roughness = mix(roughness, 0.6, foam);
     pbr_input.material.metallic = 0.0;
     pbr_input.material.reflectance = vec3<f32>(0.5);
     pbr_input.N = normal;

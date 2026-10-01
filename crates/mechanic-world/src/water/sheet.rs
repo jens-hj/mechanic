@@ -670,7 +670,8 @@ impl WaterWorld {
         // Water over a lip lands at once wherever the drop leads, with its
         // share of what its sheet carried over the lip.
         for (over, volume, index, face) in pours {
-            let end = self.landing(ground, over);
+            let (end, landed) = self.landing_cell(ground, over);
+            self.splash((over.x, over.z), volume, over.bottom() - landed.bottom());
             if let End::Pool(id) = end {
                 fed.insert(id);
             }

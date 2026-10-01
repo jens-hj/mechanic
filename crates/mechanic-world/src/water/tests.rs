@@ -1207,6 +1207,42 @@ fn a_pool_spilling_over_a_cliff_fills_the_pit_below() {
     );
 }
 
+#[test]
+fn water_pouring_over_a_cliff_churns_where_it_lands_and_calms_after_it_stops() {
+    let ground = cliff();
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.4, 1.0, 0.2), 0.2);
+    run(&mut water, &ground, 3);
+    let churned = |water: &WaterWorld| {
+        water
+            .splashes
+            .keys()
+            .map(|&column| water.churn_at(column))
+            .fold(0.0, f64::max)
+    };
+    assert!(
+        churned(&water) > 0.5,
+        "the fall churns its landing only {:.2} white",
+        churned(&water)
+    );
+    // The water the fall lands in draws white.
+    let surface = water.surface_tiles(&ground, &std::collections::HashMap::new());
+    let whitest = surface
+        .tiles
+        .iter()
+        .flat_map(|tile| &tile.attributes)
+        .map(|attributes| attributes[4])
+        .fold(0.0, f32::max);
+    assert!(whitest > 0.5, "the landing draws only {whitest:.2} white");
+    // Once the pool stops spilling, the foam clears.
+    run(&mut water, &ground, 60);
+    assert!(
+        churned(&water) < 0.05,
+        "the landing still churns {:.2} white",
+        churned(&water)
+    );
+}
+
 mod erosion;
 mod terrain;
 

@@ -30,6 +30,7 @@
 //! and what waits to be laid.
 
 use bevy_math::DVec3;
+use mechanic_core::WATER_DENSITY_KG_M3;
 use serde::{Deserialize, Serialize};
 
 use super::cells::CellMap;
@@ -43,9 +44,6 @@ use crate::{
 
 /// Horizontal area of one water cell, in square metres.
 const CELL_AREA_M2: f64 = WATER_CELL_METRES * WATER_CELL_METRES;
-
-/// Density of water, in kg/m³.
-const WATER_DENSITY: f64 = 1_000.0;
 
 /// How fast sand settles through water, in metres per second.
 const SAND_SETTLING_M_S: f64 = 0.02;
@@ -289,7 +287,7 @@ fn wear_rate(material: TerrainMaterial, depth: f64, speed: f64, mud: bool) -> f6
 /// `speed` m/s, by Manning's law, in Pa.
 fn shear(depth: f64, speed: f64) -> f64 {
     let roughness = super::sheet::ROUGHNESS;
-    WATER_DENSITY * GRAVITY * roughness * roughness * speed * speed / depth.cbrt()
+    WATER_DENSITY_KG_M3 * GRAVITY * roughness * roughness * speed * speed / depth.cbrt()
 }
 
 impl WaterWorld {

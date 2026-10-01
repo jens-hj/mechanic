@@ -54,8 +54,14 @@ pub(crate) const ATTRIBUTE_WATER: MeshVertexAttribute =
 pub(crate) const ATTRIBUTE_MURK: MeshVertexAttribute =
     MeshVertexAttribute::new("Murk", 0x6d65_6368_0011, VertexFormat::Float32);
 
-/// Colours and scale of the water surface.
+/// How white the water over a vertex churns where it collides, tumbles or
+/// takes a fall, from 0 to 1. Only stored water carries it.
+pub(crate) const ATTRIBUTE_CHURN: MeshVertexAttribute =
+    MeshVertexAttribute::new("Churn", 0x6d65_6368_0012, VertexFormat::Float32);
+
+/// Colours of the water surface, and the noise its current carries.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[bind_group_data(WaterMaterialKey)]
 pub(crate) struct WaterRenderMaterial {
     /// Linear colour of shallow water over pale ground.
     #[uniform(0)]
@@ -63,6 +69,11 @@ pub(crate) struct WaterRenderMaterial {
     /// Linear colour of deep water.
     #[uniform(1)]
     pub(crate) deep: LinearRgba,
+    /// Gradient noise and its slope, [`water_noise`]: without it the water
+    /// shows wind ripples only, with no wrinkles or foam.
+    #[texture(2)]
+    #[sampler(3)]
+    pub(crate) noise: Option<Handle<Image>>,
 }
 
 impl Default for WaterRenderMaterial {
@@ -70,8 +81,132 @@ impl Default for WaterRenderMaterial {
         Self {
             shallow: LinearRgba::rgb(0.05, 0.28, 0.3),
             deep: LinearRgba::rgb(0.005, 0.03, 0.08),
+            noise: None,
         }
     }
+}
+
+impl WaterRenderMaterial {
+    /// The water material with its noise.
+    pub(crate) fn with_noise(images: &mut Assets<Image>) -> Self {
+        Self {
+            noise: Some(images.add(water_noise())),
+            ..Self::default()
+        }
+    }
+}
+
+/// Which water shader a material needs: with its noise or without.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct WaterMaterialKey {
+    noise: bool,
+}
+
+impl From<&WaterRenderMaterial> for WaterMaterialKey {
+    fn from(material: &WaterRenderMaterial) -> Self {
+        Self {
+            noise: material.noise.is_some(),
+        }
+    }
+}
+
+/// Lattice cells along each edge of the water's noise, which repeats after
+/// as many.
+const NOISE_CELLS: u32 = 64;
+
+/// Texels along each lattice cell of the water's noise.
+const NOISE_TEXELS_PER_CELL: u32 = 8;
+
+/// A pseudo-random gradient for a lattice point of the water's noise,
+/// repeating every [`NOISE_CELLS`].
+fn noise_gradient(x: u32, z: u32) -> [f32; 2] {
+    let (x, z) = (x % NOISE_CELLS, z % NOISE_CELLS);
+    let mut bits = x.wrapping_mul(0x8da6_b343) ^ z.wrapping_mul(0xd816_3841);
+    bits = (bits ^ (bits >> 15)).wrapping_mul(0x2c1b_3c6d);
+    bits ^= bits >> 12;
+    let angle = f64::from(bits & 0xffff) * std::f64::consts::TAU / 65_536.0;
+    #[expect(clippy::cast_possible_truncation, reason = "shader data is f32")]
+    [angle.cos() as f32, angle.sin() as f32]
+}
+
+/// Tileable gradient noise for the water's surface: each texel holds the
+/// noise, about -0.7 to 0.7, and its slope along x and z per lattice cell.
+/// The shader samples it where it would have worked the noise out, which
+/// costs one texel read where the sum cost dozens of operations.
+pub(crate) fn water_noise() -> Image {
+    let edge = NOISE_CELLS * NOISE_TEXELS_PER_CELL;
+    let mut texels = Vec::with_capacity((edge * edge * 4) as usize);
+    #[expect(clippy::cast_precision_loss, reason = "a few hundred texels")]
+    let per_cell = NOISE_TEXELS_PER_CELL as f32;
+    for row in 0..edge {
+        for column in 0..edge {
+            #[expect(clippy::cast_precision_loss, reason = "a few hundred texels")]
+            let point = [
+                (column as f32 + 0.5) / per_cell,
+                (row as f32 + 0.5) / per_cell,
+            ];
+            let (value, slope) = gradient_noise(point);
+            texels.extend([value, slope[0], slope[1], 1.0]);
+        }
+    }
+    let data = texels
+        .into_iter()
+        .flat_map(|value| half_bits(value).to_le_bytes())
+        .collect::<Vec<_>>();
+    let mut image = Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: edge,
+            height: edge,
+            depth_or_array_layers: 1,
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba16Float,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        ..default()
+    });
+    image
+}
+
+/// Gradient noise at a point in lattice cells, with its slope.
+fn gradient_noise([x, z]: [f32; 2]) -> (f32, [f32; 2]) {
+    let (base_x, base_z) = (x.floor(), z.floor());
+    let (fx, fz) = (x - base_x, z - base_z);
+    let fade = |f: f32| f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let slope = |f: f32| 30.0 * f * f * (f * (f - 2.0) + 1.0);
+    let (ux, uz, dux, duz) = (fade(fx), fade(fz), slope(fx), slope(fz));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "lattice points of a positive texture"
+    )]
+    let (cx, cz) = (base_x as u32, base_z as u32);
+    let ga = noise_gradient(cx, cz);
+    let gb = noise_gradient(cx + 1, cz);
+    let gc = noise_gradient(cx, cz + 1);
+    let gd = noise_gradient(cx + 1, cz + 1);
+    let va = ga[0] * fx + ga[1] * fz;
+    let vb = gb[0] * (fx - 1.0) + gb[1] * fz;
+    let vc = gc[0] * fx + gc[1] * (fz - 1.0);
+    let vd = gd[0] * (fx - 1.0) + gd[1] * (fz - 1.0);
+    let mixed = va - vb - vc + vd;
+    let value = va + ux * (vb - va) + uz * (vc - va) + ux * uz * mixed;
+    let along = |axis: usize| {
+        ga[axis]
+            + ux * (gb[axis] - ga[axis])
+            + uz * (gc[axis] - ga[axis])
+            + ux * uz * (ga[axis] - gb[axis] - gc[axis] + gd[axis])
+    };
+    let dx = along(0) + dux * (uz * mixed + vb - va);
+    let dz = along(1) + duz * (ux * mixed + vc - va);
+    (value, [dx, dz])
 }
 
 impl Material for WaterRenderMaterial {
@@ -91,8 +226,13 @@ impl Material for WaterRenderMaterial {
         _pipeline: &bevy::pbr::MaterialPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
         layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: bevy::pbr::MaterialPipelineKey<Self>,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if key.bind_group_data.noise
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("WATER_NOISE".into());
+        }
         let mut attributes = vec![
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
@@ -101,6 +241,10 @@ impl Material for WaterRenderMaterial {
         if layout.0.contains(ATTRIBUTE_MURK) {
             attributes.push(ATTRIBUTE_MURK.at_shader_location(9));
             descriptor.vertex.shader_defs.push("WATER_MURK".into());
+        }
+        if layout.0.contains(ATTRIBUTE_CHURN) {
+            attributes.push(ATTRIBUTE_CHURN.at_shader_location(10));
+            descriptor.vertex.shader_defs.push("WATER_CHURN".into());
         }
         descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         // Both faces: the surface is seen from below when swimming.
@@ -279,8 +423,9 @@ pub(crate) fn stream_water(
     camera: Query<&GlobalTransform, With<MainCamera>>,
     mut meshes: ResMut<Assets<Mesh>>,
     materials: Option<ResMut<Assets<WaterRenderMaterial>>>,
+    images: Option<ResMut<Assets<Image>>>,
 ) {
-    let Some(mut materials) = materials else {
+    let (Some(mut materials), Some(mut images)) = (materials, images) else {
         return;
     };
     if !super::water::water_enabled() {
@@ -308,7 +453,7 @@ pub(crate) fn stream_water(
     }
     let material = tiles
         .material
-        .get_or_insert_with(|| materials.add(WaterRenderMaterial::default()))
+        .get_or_insert_with(|| materials.add(WaterRenderMaterial::with_noise(&mut images)))
         .clone();
     let camera = origin + camera.translation().as_dvec3();
     let wanted = wanted_tiles(camera);
@@ -428,7 +573,7 @@ fn refresh_stale(
 fn surface_mesh(
     positions: Vec<[f32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
-    attributes: &[[f32; 4]],
+    attributes: &[[f32; 5]],
     indices: Vec<u32>,
 ) -> Mesh {
     let normals = normals.unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
@@ -443,13 +588,17 @@ fn surface_mesh(
         VertexAttributeValues::Float32x3(
             attributes
                 .iter()
-                .map(|&[depth, x, z, _]| [depth, x, z])
+                .map(|&[depth, x, z, ..]| [depth, x, z])
                 .collect(),
         ),
     );
     mesh.insert_attribute(
         ATTRIBUTE_MURK,
         VertexAttributeValues::Float32(attributes.iter().map(|attribute| attribute[3]).collect()),
+    );
+    mesh.insert_attribute(
+        ATTRIBUTE_CHURN,
+        VertexAttributeValues::Float32(attributes.iter().map(|attribute| attribute[4]).collect()),
     );
     mesh.insert_indices(Indices::U32(indices));
     mesh
@@ -463,9 +612,10 @@ pub(crate) fn draw_stored_water(
     runtime: Res<WorldRuntime>,
     mut meshes: ResMut<Assets<Mesh>>,
     materials: Option<ResMut<Assets<WaterRenderMaterial>>>,
+    images: Option<ResMut<Assets<Image>>>,
     mut placed: Query<&mut Transform>,
 ) {
-    let Some(mut materials) = materials else {
+    let (Some(mut materials), Some(mut images)) = (materials, images) else {
         return;
     };
     if !super::water::water_enabled() {
@@ -486,7 +636,7 @@ pub(crate) fn draw_stored_water(
     tiles.drawn_revision = Some(runtime.water_revision);
     let material = tiles
         .material
-        .get_or_insert_with(|| materials.add(WaterRenderMaterial::default()))
+        .get_or_insert_with(|| materials.add(WaterRenderMaterial::with_noise(&mut images)))
         .clone();
     let spawn = |commands: &mut Commands,
                  meshes: &mut Assets<Mesh>,
@@ -766,7 +916,10 @@ mod tests {
 
     use mechanic_world::WetGround;
 
-    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, half_bits, wanted_tiles, wet_texels};
+    use super::{
+        FINEST_LEVEL, NOISE_CELLS, TileKey, WATER_REACH_METRES, gradient_noise, half_bits,
+        wanted_tiles, wet_texels,
+    };
 
     fn wet(column: (i32, i32), top: f64, soaked: f64) -> WetGround {
         WetGround {
@@ -815,6 +968,32 @@ mod tests {
                 .filter(|key: &&TileKey| key.distance_to(point) <= 0.0 && inside(**key, point))
                 .count();
             assert_eq!(covering, 1, "point {point} is covered {covering} times");
+        }
+    }
+
+    #[test]
+    fn water_noise_repeats_seamlessly_and_carries_its_own_slope() {
+        #[expect(clippy::cast_precision_loss, reason = "a small count")]
+        let period = NOISE_CELLS as f32;
+        for point in [[0.3, 5.2], [17.8, 40.01], [63.9, 0.05]] {
+            let (value, slope) = gradient_noise(point);
+            let (wrapped, _) = gradient_noise([point[0] + period, point[1] + period]);
+            assert!(
+                (value - wrapped).abs() < 1.0e-5,
+                "the noise seams at {point:?}"
+            );
+            let step = 1.0e-3;
+            let (east, _) = gradient_noise([point[0] + step, point[1]]);
+            let (south, _) = gradient_noise([point[0], point[1] + step]);
+            for (measured, carried) in [
+                ((east - value) / step, slope[0]),
+                ((south - value) / step, slope[1]),
+            ] {
+                assert!(
+                    (measured - carried).abs() < 0.02,
+                    "the slope at {point:?} is {measured}, not {carried}"
+                );
+            }
         }
     }
 

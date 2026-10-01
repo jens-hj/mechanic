@@ -51,6 +51,8 @@ struct Column {
     edge: bool,
     /// How cloudy with sediment its water is, from 0 to 1.
     murk: f64,
+    /// How white the falls landing on it churn its water, from 0 to 1.
+    churn: f64,
 }
 
 /// Least depth an anchor weighs in with on a corner, in metres: as deep
@@ -99,9 +101,10 @@ pub struct SurfaceTile {
     pub positions: Vec<[f32; 3]>,
     /// Upward vertex normals of the surface.
     pub normals: Vec<[f32; 3]>,
-    /// Depth of water under each vertex, its current along x and z, and how
-    /// cloudy with sediment it is, from 0 to 1.
-    pub attributes: Vec<[f32; 4]>,
+    /// Depth of water under each vertex, its current along x and z, how
+    /// cloudy with sediment it is, and how white it churns, each from 0
+    /// to 1.
+    pub attributes: Vec<[f32; 5]>,
     /// Upward-facing triangles.
     pub indices: Vec<u32>,
 }
@@ -261,6 +264,7 @@ impl WaterWorld {
                     anchor: false,
                     edge: false,
                     murk: view.murk,
+                    churn: 0.0,
                 },
             );
         }
@@ -286,6 +290,7 @@ impl WaterWorld {
                         anchor: false,
                         edge: false,
                         murk: pool.murk,
+                        churn: 0.0,
                     },
                 );
             }
@@ -319,11 +324,18 @@ impl WaterWorld {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
         }
         self.anchor_to_seed_water(ground, &mut columns);
+        // Falls landing churn whatever water they land in.
+        for &column in self.splashes.keys() {
+            if let Some(landed) = columns.get_mut(&column) {
+                landed.churn = self.churn_at(column);
+            }
+        }
         add_edges(&mut columns);
         columns
     }
@@ -368,6 +380,7 @@ impl WaterWorld {
                                 anchor: true,
                                 edge: false,
                                 murk: 0.0,
+                                churn: 0.0,
                             },
                         );
                     }
@@ -420,8 +433,10 @@ fn fingerprint(columns: &CellMap<(i32, i32), Column>, members: &[(i32, i32)]) ->
         ((column.depth * 500.0).round() as i64).hash(&mut hasher);
         ((column.flow.x * 10.0).round() as i64).hash(&mut hasher);
         ((column.flow.y * 10.0).round() as i64).hash(&mut hasher);
-        // Sediment clouds or clears the water in eighths.
+        // Sediment clouds or clears the water, and falls churn it, in
+        // eighths.
         ((column.murk * 8.0).round() as i64).hash(&mut hasher);
+        ((column.churn * 8.0).round() as i64).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -479,6 +494,7 @@ fn mesh_tile(
                         corner.flow.x as f32,
                         corner.flow.y as f32,
                         corner.murk as f32,
+                        corner.churn as f32,
                     ]);
                     index
                 });
@@ -489,14 +505,15 @@ fn mesh_tile(
     tile
 }
 
-/// One quad corner: its level, the depth it shows, the water's current and
-/// the surface's normal there.
+/// One quad corner: its level, the depth it shows, the water's current,
+/// the surface's normal there, and how cloudy and how churned the water is.
 struct Corner {
     level: f64,
     depth: f64,
     flow: DVec2,
     normal: DVec3,
     murk: f64,
+    churn: f64,
 }
 
 /// The corner at `(x, z)` of a column of water `own`, from the four columns
@@ -549,12 +566,14 @@ fn corner(
     let edge = WATER_CELL_METRES;
     let dx = 0.5 * (slope(height(0, 0), height(1, 0)) + slope(height(0, 1), height(1, 1))) / edge;
     let dz = 0.5 * (slope(height(0, 0), height(0, 1)) + slope(height(1, 0), height(1, 1))) / edge;
+    let flow = flow / weight;
     let mut corner = Corner {
         level: level / weight,
         depth: depth / shared,
-        flow: flow / weight,
+        flow,
         normal: DVec3::new(-dx, 1.0, -dz).normalize(),
         murk: murk / weight,
+        churn: churn(&around, &same, DVec2::new(dx, dz), flow),
     };
     drape(
         &around.map(|column| column.filter(same)),
@@ -592,8 +611,76 @@ fn beyond(
         flow: own.flow,
         normal: DVec3::Y,
         murk: own.murk,
+        churn: own.churn,
     }
 }
+
+/// How white the water churns at a corner, from 0 to 1: where a current
+/// runs into slower water around it, where it tumbles fast down a steep
+/// chute, and where a fall lands on the water around it.
+fn churn(
+    around: &[Option<Column>; 4],
+    same: &impl Fn(&Column) -> bool,
+    slope: DVec2,
+    flow: DVec2,
+) -> f64 {
+    // Water churns where it runs into slower water downstream, as a stream
+    // into a pool, whatever water that is. Only the currents' parts along
+    // the mean current count, between columns lying along it: water running
+    // past other water churns nothing, nor does a stream running diagonally
+    // across the grid, whose columns' currents zigzag along x and z.
+    let speed = flow.length();
+    let along = if speed > 1.0e-3 {
+        flow / speed
+    } else {
+        DVec2::ZERO
+    };
+    let offsets = [(-1, -1), (-1, 0), (0, -1), (0, 0)].map(|(x, z)| DVec2::new(x.into(), z.into()));
+    let mut clash: f64 = 0.0;
+    for (first, from) in around.iter().zip(offsets) {
+        for (second, to) in around.iter().zip(offsets) {
+            let (Some(first), Some(second)) = (first, second) else {
+                continue;
+            };
+            if first.edge || second.edge || from == to {
+                continue;
+            }
+            let downstream = (to - from).normalize().dot(along);
+            let closing = (first.flow - second.flow).dot(along) * downstream;
+            let deep = smoothstep(
+                CLASHING_METRES.0,
+                CLASHING_METRES.1,
+                first.depth.min(second.depth),
+            );
+            clash = clash.max(closing * deep);
+        }
+    }
+    let colliding = smoothstep(COLLIDING_M_S.0, COLLIDING_M_S.1, clash);
+    let tumbling = smoothstep(TUMBLING_SLOPE.0, TUMBLING_SLOPE.1, slope.length())
+        * smoothstep(TUMBLING_M_S.0, TUMBLING_M_S.1, speed);
+    let landing = around
+        .iter()
+        .flatten()
+        .filter(|column| same(column))
+        .map(|column| column.churn)
+        .fold(0.0, f64::max);
+    colliding.max(tumbling).max(landing)
+}
+
+/// How fast water runs into slower water beside it, in m/s, over which it
+/// churns from not at all to white.
+const COLLIDING_M_S: (f64, f64) = (0.3, 1.0);
+
+/// Depth of the shallower of two waters meeting, in metres, over which
+/// their meeting churns from not at all to fully.
+const CLASHING_METRES: (f64, f64) = (0.01, 0.03);
+
+/// Surface slope, rise over run, over which fast water tumbling down it
+/// churns from not at all to white.
+const TUMBLING_SLOPE: (f64, f64) = (0.25, 0.6);
+
+/// Current, in m/s, over which water down a steep slope tumbles.
+const TUMBLING_M_S: (f64, f64) = (0.2, 0.6);
 
 /// Lays a corner of shallow water over the drawn ground: each column around
 /// it counts as the ground at the corner plus its own depth while shallow,
@@ -711,6 +798,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -757,6 +845,7 @@ mod tests {
                     anchor: false,
                     edge: false,
                     murk: 0.0,
+                    churn: 0.0,
                 },
             );
         }
@@ -787,6 +876,7 @@ mod tests {
                 anchor: false,
                 edge: false,
                 murk: 0.0,
+                churn: 0.0,
             },
         );
         columns.insert(
@@ -798,6 +888,7 @@ mod tests {
                 anchor: true,
                 edge: false,
                 murk: 0.0,
+                churn: 0.0,
             },
         );
         let tile = mesh_tile(&columns, (0, 0), &[(0, 0)], 0, &mut |_, _, _| None);
@@ -837,6 +928,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -897,6 +989,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -935,6 +1028,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -1018,6 +1112,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -1076,6 +1171,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -1124,6 +1220,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -1155,6 +1252,7 @@ mod tests {
                 anchor: false,
                 edge: false,
                 murk: 0.0,
+                churn: 0.0,
             },
         );
         columns.insert(
@@ -1166,6 +1264,7 @@ mod tests {
                 anchor: true,
                 edge: false,
                 murk: 0.0,
+                churn: 0.0,
             },
         );
         let tile = mesh_tile(&columns, (-1, -1), &[(-1, 0), (0, 0)], 0, &mut |_, _, _| {
@@ -1210,6 +1309,7 @@ mod tests {
                         anchor: false,
                         edge: false,
                         murk: 0.0,
+                        churn: 0.0,
                     },
                 );
             }
@@ -1226,5 +1326,101 @@ mod tests {
                 .all(|position| (f64::from(position[1]) - 1.0).abs() < 1.0e-3),
             "the pond follows the ground under it"
         );
+    }
+
+    /// A stream 5 cm deep running east at `speed` into a still pool half a
+    /// metre deep, both at one level: the stream over x 0 to 4, the pool
+    /// from 4 to 10.
+    fn stream_into_a_pool(speed: f64) -> super::SurfaceTile {
+        let mut columns = CellMap::default();
+        for x in 0..10 {
+            for z in 0..4 {
+                let stream = x < 4;
+                columns.insert(
+                    (x, z),
+                    Column {
+                        level: 0.5,
+                        depth: if stream { 0.05 } else { 0.5 },
+                        flow: DVec2::new(if stream { speed } else { 0.0 }, 0.0),
+                        anchor: false,
+                        edge: false,
+                        murk: 0.0,
+                        churn: 0.0,
+                    },
+                );
+            }
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| None)
+    }
+
+    /// The most a tile's corners churn along the line of corners at `x`.
+    fn churn_along(tile: &super::SurfaceTile, x: i32) -> f32 {
+        let edge = super::WATER_CELL_METRES;
+        tile.positions
+            .iter()
+            .zip(&tile.attributes)
+            .filter(|(position, _)| (f64::from(position[0]) - f64::from(x) * edge).abs() < 1.0e-4)
+            .map(|(_, attributes)| attributes[4])
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn a_stream_running_into_a_still_pool_churns_where_they_meet() {
+        let tile = stream_into_a_pool(0.8);
+        assert!(
+            churn_along(&tile, 4) > 0.5,
+            "the inlet churns {}",
+            churn_along(&tile, 4)
+        );
+        for x in [1, 2, 6, 8] {
+            assert!(
+                churn_along(&tile, x) < 0.01,
+                "corners at x {x} churn {}",
+                churn_along(&tile, x)
+            );
+        }
+    }
+
+    #[test]
+    fn still_and_evenly_running_water_does_not_churn() {
+        let still = stream_into_a_pool(0.0);
+        // A stream 5 cm deep at 0.5 m/s down a slope of one in twenty.
+        let mut columns = ramp();
+        for (&(x, _), column) in &mut columns {
+            column.level = -f64::from(x) * 0.2 / 20.0 + 0.05;
+            column.flow = DVec2::new(0.5, 0.0);
+        }
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let running = mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| None);
+        for tile in [still, running] {
+            let most = tile
+                .attributes
+                .iter()
+                .map(|attributes| attributes[4])
+                .fold(0.0, f32::max);
+            assert!(most < 0.05, "the water churns {most}");
+        }
+    }
+
+    #[test]
+    fn a_fall_landing_on_water_churns_the_corners_around_it() {
+        let mut columns = ramp();
+        for column in columns.values_mut() {
+            column.flow = DVec2::ZERO;
+            column.level = 0.0;
+        }
+        columns
+            .get_mut(&(3, 1))
+            .expect("a column of the ramp")
+            .churn = 0.9;
+        let mut members = columns.keys().copied().collect::<Vec<_>>();
+        members.sort_unstable();
+        let tile = mesh_tile(&columns, (0, 0), &members, 0, &mut |_, _, _| None);
+        assert!((churn_along(&tile, 3) - 0.9).abs() < 1.0e-6);
+        assert!((churn_along(&tile, 4) - 0.9).abs() < 1.0e-6);
+        assert!(churn_along(&tile, 6) < 1.0e-6);
     }
 }

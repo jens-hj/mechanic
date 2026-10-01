@@ -21,6 +21,7 @@ mod pool;
 mod sediment;
 mod sheet;
 mod soil;
+mod splash;
 mod surface;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -528,6 +529,10 @@ pub struct WaterWorld {
     shown: BTreeMap<WaterBody, WaterShift>,
     /// Sediment beside the water.
     sediment: Sediment,
+    /// Power of the falls landing on each column, in watts, to draw.
+    splashes: CellMap<(i32, i32), f64>,
+    /// Energy landed on each column so far this step, in joules.
+    landed: CellMap<(i32, i32), f64>,
 }
 
 /// How far a lake or river moves from where it is drawn before it is drawn
@@ -884,25 +889,30 @@ impl WaterWorld {
     }
 
     /// Where water entering a cell ends up, following it down any drop.
-    fn landing(&mut self, ground: &impl WaterGround, mut cell: WaterCell) -> End {
+    fn landing(&mut self, ground: &impl WaterGround, cell: WaterCell) -> End {
+        self.landing_cell(ground, cell).0
+    }
+
+    /// Where water entering a cell ends up, and the cell it lands in.
+    fn landing_cell(&mut self, ground: &impl WaterGround, mut cell: WaterCell) -> (End, WaterCell) {
         for _ in 0..FALL_CELLS {
             if let Some(&id) = self.owner.get(&cell) {
-                return End::Pool(id);
+                return (End::Pool(id), cell);
             }
             if let Some(surface) = self.implicit(ground, cell) {
-                return End::Body(surface.body);
+                return (End::Body(surface.body), cell);
             }
             let below = cell.below();
             if !self.falls(ground, cell, None) {
                 // Water resting on water joins it.
                 if let Some(&id) = self.owner.get(&below) {
-                    return End::Pool(id);
+                    return (End::Pool(id), below);
                 }
-                return End::Seed(cell);
+                return (End::Seed(cell), cell);
             }
             cell = below;
         }
-        End::Seed(cell)
+        (End::Seed(cell), cell)
     }
 
     fn start_pool(&mut self, ground: &impl WaterGround, cell: WaterCell, volume: f64) -> u32 {
@@ -1132,6 +1142,7 @@ impl WaterWorld {
         moved_m3 += running;
         fed.extend(sheet_fed);
         self.wear_and_settle(ground, dt);
+        self.settle_splashes(dt);
         phases.sheets_ms = clock.lap();
         // Water that arrived floods at once, so no pool stands higher than
         // its water can reach.
@@ -1350,10 +1361,12 @@ impl WaterWorld {
             // presses nothing up.
             let head = level.min(top) - below.max(floor);
             if head > 0.0 {
+                let volume = weir(head).min(head * area);
+                self.splash((cell.x, cell.z), volume, floor - below);
                 out.transfers.push(Transfer {
                     from: End::Pool(id),
                     to: End::Sheet(cell),
-                    volume: weir(head).min(head * area),
+                    volume,
                 });
             }
             return;
@@ -1365,11 +1378,13 @@ impl WaterWorld {
         // Water a millimetre over a lip clings to it. The rest lands at once
         // wherever the drop leads.
         if head > CLING_METRES {
-            let to = self.landing(ground, cell);
+            let (to, landed) = self.landing_cell(ground, cell);
+            let volume = weir(head).min(head * area);
+            self.splash((cell.x, cell.z), volume, cell.bottom() - landed.bottom());
             out.transfers.push(Transfer {
                 from: End::Pool(id),
                 to,
-                volume: weir(head).min(head * area),
+                volume,
             });
         }
     }

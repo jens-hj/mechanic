@@ -203,11 +203,119 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     }
 }
 
+/// Water over pale ground, looked at from three metres up and away.
+#[derive(Clone, Copy)]
+struct WaterScene {
+    /// Depth of the water, in metres.
+    depth: f32,
+    /// Its current, in m/s.
+    flow: [f32; 2],
+    /// How cloudy with sediment it is, or none for water that carries none.
+    murk: Option<f32>,
+    /// How white it churns, or none for water that carries no churn.
+    churn: Option<f32>,
+    /// Pixels along each edge of the picture.
+    size: u32,
+}
+
+impl Default for WaterScene {
+    fn default() -> Self {
+        Self {
+            depth: 2.0,
+            flow: [0.3, 0.0],
+            murk: None,
+            churn: None,
+            size: 64,
+        }
+    }
+}
+
 /// The pixel at the middle of water two metres deep over pale ground, as
 /// cloudy with sediment as `murk` says, or clear without it.
 fn water_pixel(murk: Option<f32>) -> Vec<u8> {
+    let pixels = water_frame(WaterScene {
+        murk,
+        ..WaterScene::default()
+    });
+    let center = (32 * 64 + 32) * 4;
+    pixels[center..center + 4].to_vec()
+}
+
+/// The luminance of each pixel in the middle half of a picture of `scene`,
+/// from 0 to 1.
+fn water_luminance(scene: WaterScene) -> Vec<f32> {
+    let size = scene.size as usize;
+    let pixels = water_frame(scene);
+    let mut luminance = Vec::new();
+    for y in size / 4..size * 3 / 4 {
+        for x in size / 4..size * 3 / 4 {
+            let pixel = &pixels[(y * size + x) * 4..][..3];
+            luminance.push(
+                (0.2126 * f32::from(pixel[0])
+                    + 0.7152 * f32::from(pixel[1])
+                    + 0.0722 * f32::from(pixel[2]))
+                    / 255.0,
+            );
+        }
+    }
+    luminance
+}
+
+fn mean(values: &[f32]) -> f32 {
+    #[expect(clippy::cast_precision_loss, reason = "a few thousand pixels")]
+    let count = values.len() as f32;
+    values.iter().sum::<f32>() / count
+}
+
+/// How grainy a picture of `scene` is: the mean difference in luminance
+/// between pixels side by side in the middle half of it, so the light
+/// falling off across the picture counts for nothing.
+fn grain(scene: WaterScene) -> f32 {
+    let width = scene.size as usize / 2;
+    let luminance = water_luminance(scene);
+    let steps = luminance
+        .chunks(width)
+        .flat_map(|row| row.windows(2).map(|pair| (pair[1] - pair[0]).abs()))
+        .collect::<Vec<_>>();
+    mean(&steps)
+}
+
+/// The water surface of `scene`: a flat 8 m square.
+fn water_plane(scene: WaterScene) -> Mesh {
+    use crate::world::water_render::{ATTRIBUTE_CHURN, ATTRIBUTE_MURK, ATTRIBUTE_WATER};
+
+    let mut water = Mesh::from(Plane3d::default().mesh().size(8.0, 8.0));
+    let count = water.count_vertices();
+    water.insert_attribute(
+        ATTRIBUTE_WATER,
+        bevy::mesh::VertexAttributeValues::Float32x3(vec![
+            [
+                scene.depth,
+                scene.flow[0],
+                scene.flow[1]
+            ];
+            count
+        ]),
+    );
+    if let Some(murk) = scene.murk {
+        water.insert_attribute(
+            ATTRIBUTE_MURK,
+            bevy::mesh::VertexAttributeValues::Float32(vec![murk; count]),
+        );
+    }
+    if let Some(churn) = scene.churn {
+        water.insert_attribute(
+            ATTRIBUTE_CHURN,
+            bevy::mesh::VertexAttributeValues::Float32(vec![churn; count]),
+        );
+    }
+    water.remove_attribute(Mesh::ATTRIBUTE_UV_0);
+    water
+}
+
+/// A picture of `scene`, as RGBA bytes row by row.
+fn water_frame(scene: WaterScene) -> Vec<u8> {
     use crate::world::WaterRenderMaterial;
-    use crate::world::water_render::{ATTRIBUTE_MURK, ATTRIBUTE_WATER};
 
     let mut app = App::new();
     app.add_plugins(
@@ -232,7 +340,8 @@ fn water_pixel(murk: Option<f32>) -> Vec<u8> {
     .init_resource::<Pixels>();
     app.finish();
     app.cleanup();
-    let mut target = Image::new_target_texture(64, 64, TextureFormat::Rgba8UnormSrgb, None);
+    let mut target =
+        Image::new_target_texture(scene.size, scene.size, TextureFormat::Rgba8UnormSrgb, None);
     target.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = app.world_mut().resource_mut::<Assets<Image>>().add(target);
     app.world_mut()
@@ -264,24 +373,14 @@ fn water_pixel(murk: Option<f32>) -> Vec<u8> {
         MeshMaterial3d(ground),
         Transform::from_xyz(0.0, -2.0, 0.0),
     ));
-    let mut water = Mesh::from(Plane3d::default().mesh().size(8.0, 8.0));
-    let count = water.count_vertices();
-    water.insert_attribute(
-        ATTRIBUTE_WATER,
-        bevy::mesh::VertexAttributeValues::Float32x3(vec![[2.0, 0.3, 0.0]; count]),
-    );
-    if let Some(murk) = murk {
-        water.insert_attribute(
-            ATTRIBUTE_MURK,
-            bevy::mesh::VertexAttributeValues::Float32(vec![murk; count]),
-        );
-    }
-    water.remove_attribute(Mesh::ATTRIBUTE_UV_0);
+    let water = water_plane(scene);
     let water = app.world_mut().resource_mut::<Assets<Mesh>>().add(water);
+    let material =
+        WaterRenderMaterial::with_noise(&mut app.world_mut().resource_mut::<Assets<Image>>());
     let material = app
         .world_mut()
         .resource_mut::<Assets<WaterRenderMaterial>>()
-        .add(WaterRenderMaterial::default());
+        .add(material);
     app.world_mut()
         .spawn((Mesh3d(water), MeshMaterial3d(material)));
     app.world_mut().spawn((
@@ -294,9 +393,10 @@ fn water_pixel(murk: Option<f32>) -> Vec<u8> {
     for _ in 0..60 {
         render_frame(&mut app);
     }
-    let pixels = &app.world().resource::<Pixels>().0;
-    let center = (32 * 64 + 32) * 4;
-    pixels[center..center + 4].to_vec()
+    app.world_mut()
+        .remove_resource::<Pixels>()
+        .unwrap_or_default()
+        .0
 }
 
 #[test]
@@ -324,5 +424,63 @@ fn water_thick_with_sediment_draws_silty_brown() {
     assert!(
         muddy[0] > muddy[2] && muddy[1] > muddy[2],
         "muddy water should read brown: {muddy:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn fast_shallow_water_breaks_white() {
+    // A breach: water 8 cm deep at 1.5 m/s, against the same water at a
+    // walking pace's tenth.
+    let shallow = |flow| WaterScene {
+        depth: 0.08,
+        flow: [flow, 0.0],
+        size: 256,
+        ..WaterScene::default()
+    };
+    let slow = mean(&water_luminance(shallow(0.15)));
+    let fast = mean(&water_luminance(shallow(1.5)));
+    eprintln!("Slow {slow:.3}, fast {fast:.3}");
+    // The pale ground already shows bright through shallow water.
+    assert!(
+        fast > slow + 0.04,
+        "rapids should break white: {fast:.3} against {slow:.3}"
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn churned_water_draws_foam() {
+    let pool = |churn| WaterScene {
+        depth: 0.5,
+        flow: [0.0, 0.0],
+        churn: Some(churn),
+        size: 256,
+        ..WaterScene::default()
+    };
+    let calm = mean(&water_luminance(pool(0.0)));
+    let churned = mean(&water_luminance(pool(1.0)));
+    eprintln!("Calm {calm:.3}, churned {churned:.3}");
+    assert!(
+        churned > calm + 0.2,
+        "churned water should foam white: {churned:.3} against {calm:.3}"
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn still_shallow_water_is_smoother_than_running_water() {
+    let pond = |flow| WaterScene {
+        depth: 0.1,
+        flow: [flow, 0.0],
+        size: 256,
+        ..WaterScene::default()
+    };
+    let still = grain(pond(0.0));
+    let running = grain(pond(0.5));
+    eprintln!("Still {still:.4}, running {running:.4}");
+    assert!(
+        running > 2.0 * still,
+        "running water should wrinkle where still water lies glassy: {running:.4} against {still:.4}"
     );
 }
