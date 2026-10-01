@@ -7,6 +7,11 @@
 //! the ground fills (Green and Ampt, simplified): dry ground drinks a film
 //! quickly, saturated ground takes nothing, and water then runs on or
 //! stands on it as mud.
+//!
+//! Wet ground wicks water sideways into drier ground beside it, as
+//! capillarity does, but only while it is wetter by more than a margin: the
+//! ground beside running water and pools darkens into a damp fringe a few
+//! columns wide that fades out into dry ground.
 
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +38,24 @@ const DRY_SOIL_M3: f64 = 1.0e-7;
 /// Fill beyond which ground is mud.
 const MUD_FILL: f64 = 0.9;
 
+/// How fast ground wicks water sideways into drier ground beside it, in
+/// metres per second for each unit of fill it is wetter by beyond
+/// [`WICK_GRADIENT`]. Sped up for play as infiltration is: ground beside
+/// running water darkens within a minute and the fringe widens over minutes.
+const WICK_M_S: f64 = 1.0e-3;
+
+/// How much fuller ground must be than the ground beside it to wick water
+/// into it: wet ground pulls water only so far, so the damp fringe beside
+/// water fades out over a few columns rather than spreading on.
+const WICK_GRADIENT: f64 = 0.25;
+
+/// Most the ground's top may rise or fall from one column to the next for
+/// water to wick across, in metres: it climbs no bank and falls into no cave.
+const WICK_STEP_METRES: f64 = 0.25;
+
+/// Columns wick in turn, one of this many sets each step.
+const WICK_SETS: u32 = 64;
+
 /// How a material holds water: its pores, as a fraction of its volume, and
 /// how fast dry ground takes water in, in metres per second. Rates are sped
 /// up for play: a film soaks into dry soil in seconds.
@@ -56,6 +79,9 @@ pub(super) struct Soil {
     rate: f64,
     /// Height of the ground's top, in metres.
     top: f64,
+    /// Whether running water or a pool has stood on it since it last wicked:
+    /// its top is then wet through, whatever it holds below.
+    covered: bool,
 }
 
 /// Water in the ground under one column, in a saved world.
@@ -95,6 +121,11 @@ impl Soil {
         } else {
             0.0
         }
+    }
+
+    /// How wet it is for wicking: ground under water is wet through.
+    fn wetness(&self) -> f64 {
+        if self.covered { 1.0 } else { self.fill() }
     }
 
     /// Water it takes in over `dt` seconds from water standing on it, at
@@ -185,6 +216,7 @@ impl WaterWorld {
                     capacity: doc.capacity_m3,
                     rate: doc.rate_m_s,
                     top: doc.top,
+                    covered: false,
                 },
             );
         }
@@ -202,8 +234,116 @@ impl WaterWorld {
                 capacity: pores * SOIL_METRES * CELL_AREA_M2,
                 rate,
                 top: floor,
+                covered: false,
             }
         })
+    }
+
+    /// How much the ground under a column water wicks into from ground
+    /// whose top is at `top` can hold, and how wet it is, measured the first
+    /// time: none where the drawn ground lies further than
+    /// [`WICK_STEP_METRES`] above or below.
+    fn soil_beside(
+        &mut self,
+        ground: &impl WaterGround,
+        column: (i32, i32),
+        top: f64,
+    ) -> Option<(f64, f64)> {
+        if let Some(soil) = self.soil.get(&column) {
+            return ((soil.top - top).abs() <= WICK_STEP_METRES)
+                .then(|| (soil.capacity, soil.wetness()));
+        }
+        let centre = WaterCell::new(column.0, 0, column.1).centre();
+        // Ground a column cannot wick into is met again every turn it
+        // wicks, so the drawn ground's height is remembered.
+        #[expect(clippy::cast_possible_truncation, reason = "a cell height")]
+        let from = (column.0, (top / WATER_CELL_METRES).floor() as i32, column.1);
+        let beside = (*self.wick_tops.entry(from).or_insert_with(|| {
+            ground.ground_top(
+                centre.x,
+                centre.z,
+                top + WICK_STEP_METRES,
+                2.0 * WICK_STEP_METRES,
+            )
+        }))?;
+        let below = bevy_math::DVec3::new(centre.x, beside - 0.02, centre.z);
+        let (pores, rate) = ground.material(below).map_or((0.0, 0.0), holds);
+        let capacity = pores * SOIL_METRES * CELL_AREA_M2;
+        self.soil.insert(
+            column,
+            Soil {
+                moisture: 0.0,
+                capacity,
+                rate,
+                top: beside,
+                covered: false,
+            },
+        );
+        Some((capacity, 0.0))
+    }
+
+    /// Water wicking sideways from wet ground into drier ground beside it,
+    /// over `dt`. One set of columns wicks each step, over that set's turn.
+    fn wick(&mut self, ground: &impl WaterGround, dt: f64) {
+        let set = self.wick_set;
+        self.wick_set = (set + 1) % WICK_SETS;
+        let dt = dt * f64::from(WICK_SETS);
+        let turn = |(x, z): (i32, i32)| {
+            (i64::from(x) + 3 * i64::from(z)).rem_euclid(i64::from(WICK_SETS)) == i64::from(set)
+        };
+        let mut senders = Vec::new();
+        for (&column, soil) in &mut self.soil {
+            if !turn(column) {
+                continue;
+            }
+            let wetness = soil.wetness();
+            soil.covered = false;
+            if wetness > WICK_GRADIENT && soil.moisture > 0.0 {
+                senders.push((column, wetness, soil.top, soil.moisture));
+            }
+        }
+        let mut flows = Vec::new();
+        for (column, wetness, top, moisture) in senders {
+            let first = flows.len();
+            let mut given = 0.0;
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let beside = (column.0 + dx, column.1 + dz);
+                let Some((capacity, beside_wetness)) = self.soil_beside(ground, beside, top) else {
+                    continue;
+                };
+                if capacity <= 0.0 {
+                    continue;
+                }
+                let pull = wetness - beside_wetness - WICK_GRADIENT;
+                if pull > 0.0 {
+                    let flow = WICK_M_S * CELL_AREA_M2 * dt * pull;
+                    flows.push((column, beside, flow));
+                    given += flow;
+                }
+            }
+            // A column gives no more than it holds.
+            if given > moisture {
+                for flow in &mut flows[first..] {
+                    flow.2 *= moisture / given;
+                }
+            }
+        }
+        for (from, to, flow) in flows {
+            let room = self
+                .soil
+                .get(&to)
+                .map_or(0.0, |soil| (soil.capacity - soil.moisture).max(0.0));
+            let held = self.soil.get(&from).map_or(0.0, |soil| soil.moisture);
+            let moved = flow.min(room).min(held);
+            if moved > 0.0 {
+                if let Some(soil) = self.soil.get_mut(&from) {
+                    soil.moisture -= moved;
+                }
+                if let Some(soil) = self.soil.get_mut(&to) {
+                    soil.moisture += moved;
+                }
+            }
+        }
     }
 
     /// Water soaking from running water and pools into the ground under
@@ -211,9 +351,9 @@ impl WaterWorld {
     pub(super) fn soak(&mut self, ground: &impl WaterGround, dt: f64) {
         for (slot, cell) in self.sheets.wet() {
             let sheet = *self.sheets.at(slot);
-            let taken = self
-                .soil_at(ground, cell, sheet.floor())
-                .take(sheet.volume, dt);
+            let soil = self.soil_at(ground, cell, sheet.floor());
+            soil.covered = true;
+            let taken = soil.take(sheet.volume, dt);
             self.sheets.at_mut(slot).volume -= taken;
         }
         let beds = self
@@ -223,11 +363,14 @@ impl WaterWorld {
             .collect::<Vec<_>>();
         for (id, cell, floor) in beds {
             let offered = self.pools.get(&id).map_or(0.0, |pool| pool.volume);
-            let taken = self.soil_at(ground, cell, floor).take(offered, dt);
+            let soil = self.soil_at(ground, cell, floor);
+            soil.covered = true;
+            let taken = soil.take(offered, dt);
             if let Some(pool) = self.pools.get_mut(&id) {
                 pool.volume -= taken;
             }
         }
+        self.wick(ground, dt);
         let (mut drained, mut risen) = (0.0, 0.0);
         self.soil.retain(|_, soil| {
             let down = soil.moisture * DRAIN_PER_SECOND * dt;

@@ -173,6 +173,35 @@ fn value_noise(point: vec3<f32>) -> f32 {
     return mix(low, high, weight.z);
 }
 
+// Wet ground's ragged edge: noise this coarse and this strong moves where the
+// damp fringe fades out, never ground wet or dry through.
+const WET_EDGE_FEATURE_METRES: f32 = 0.3;
+const WET_EDGE_NOISE_STRENGTH: f32 = 0.6;
+
+// The wetness map at `uv`, filtered by a cubic B-spline from four bilinear
+// taps: smooth across its 20 cm texels, so wet ground shows no grid of
+// columns.
+fn sample_wetness(uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(textureDimensions(wetness_map));
+    let texel = uv * size - 0.5;
+    let base = floor(texel);
+    let f = texel - base;
+    let f2 = f * f;
+    let f3 = f2 * f;
+    let w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+    let w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+    let w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+    let w3 = f3 / 6.0;
+    let g0 = w0 + w1;
+    let g1 = w2 + w3;
+    let low = (base - 0.5 + w1 / g0) / size;
+    let high = (base + 1.5 + w3 / g1) / size;
+    return g0.y * (g0.x * textureSampleLevel(wetness_map, wetness_sampler, low, 0.0)
+            + g1.x * textureSampleLevel(wetness_map, wetness_sampler, vec2<f32>(high.x, low.y), 0.0))
+        + g1.y * (g0.x * textureSampleLevel(wetness_map, wetness_sampler, vec2<f32>(low.x, high.y), 0.0)
+            + g1.x * textureSampleLevel(wetness_map, wetness_sampler, high, 0.0));
+}
+
 // A surface's standing height at this fragment: its interpolated weight, moved
 // by noise this surface alone sees. A surface with no weight here stands well
 // below every present one and can never win the comparison that follows.
@@ -381,9 +410,13 @@ fn fragment(
     var roughness = surface.g;
     let wet_uv = (varyings.world_position.xz - wet_window.xy) / max(wet_window.z, 1.0e-3);
     if all(wet_uv > vec2<f32>(0.0)) && all(wet_uv < vec2<f32>(1.0)) {
-        let wet = textureSampleLevel(wetness_map, wetness_sampler, wet_uv, 0.0);
+        let wet = sample_wetness(wet_uv);
         let near = 1.0 - smoothstep(0.15, 0.4, abs(varyings.world_position.y - (wet.g + wet_window.w)));
-        let wetness = clamp(wet.r, 0.0, 1.0) * near;
+        // Noise moves the fringe in and out, most where it is half wet.
+        let shown = clamp(wet.r, 0.0, 1.0);
+        let point = coordinates * (TEXTURE_REPEAT_METRES / WET_EDGE_FEATURE_METRES);
+        let ragged = WET_EDGE_NOISE_STRENGTH * (value_noise(point + vec3<f32>(71.3)) - 0.5);
+        let wetness = clamp(shown + ragged * 4.0 * shown * (1.0 - shown), 0.0, 1.0) * near;
         base_color = vec4<f32>(base_color.rgb * mix(1.0, 0.5, wetness), base_color.a);
         roughness = mix(roughness, 0.25, wetness);
     }

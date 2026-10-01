@@ -18,7 +18,7 @@ use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
     WATER_CELL_METRES, WaterBody, WaterCell, WaterSheet, WaterShift, WaterSurface, WaterTile,
-    joined_water_sheet,
+    WetGround, joined_water_sheet,
 };
 
 use super::{WorldOwned, WorldRuntime};
@@ -572,6 +572,65 @@ fn half_bits(value: f32) -> u16 {
     sign | (exponent << 10) | mantissa
 }
 
+/// The wetness map's texels, `edge` along a side from the column `first`:
+/// how wet each column shows, then the height of its ground over `base`.
+///
+/// Dry texels within two of wet ground take the mean height of the wet or
+/// filled texels beside them, so the shader's filter fades the wetness out
+/// over the ground beside it rather than against a height metres off.
+fn wet_texels(wet: &[WetGround], first: (i32, i32), base: f64, edge: usize) -> Vec<f32> {
+    let mut texels = vec![0.0_f32; edge * edge * 2];
+    let mut known = vec![false; edge * edge];
+    let mut front = Vec::new();
+    for wet in wet {
+        let (x, z) = (wet.column.0 - first.0, wet.column.1 - first.1);
+        let (Ok(x), Ok(z)) = (usize::try_from(x), usize::try_from(z)) else {
+            continue;
+        };
+        if x >= edge || z >= edge {
+            continue;
+        }
+        let texel = x + z * edge;
+        // A few millimetres soaked in already darken the ground.
+        #[expect(clippy::cast_possible_truncation, reason = "shader data is f32")]
+        {
+            texels[texel * 2] = (1.0 - (-wet.soaked / 0.003).exp()) as f32;
+            texels[texel * 2 + 1] = (wet.top - base) as f32;
+        }
+        if !known[texel] {
+            known[texel] = true;
+            front.push(texel);
+        }
+    }
+    // Two rings out from the wet texels, each from the ring before.
+    let mut sums = vec![(0.0_f32, 0.0_f32); edge * edge];
+    for _ in 0..2 {
+        let mut ring = Vec::new();
+        for &texel in &front {
+            let (x, z) = (texel % edge, texel / edge);
+            for nz in z.saturating_sub(1)..=(z + 1).min(edge - 1) {
+                for nx in x.saturating_sub(1)..=(x + 1).min(edge - 1) {
+                    let beside = nx + nz * edge;
+                    if known[beside] {
+                        continue;
+                    }
+                    if sums[beside].1 == 0.0 {
+                        ring.push(beside);
+                    }
+                    sums[beside].0 += texels[texel * 2 + 1];
+                    sums[beside].1 += 1.0;
+                }
+            }
+        }
+        for &texel in &ring {
+            texels[texel * 2 + 1] = sums[texel].0 / sums[texel].1;
+            known[texel] = true;
+        }
+        front = ring;
+    }
+    texels
+}
+
 /// Draws how wet the ground is around the camera into the terrain's
 /// wetness map, after each water batch, moving the map with the camera.
 pub(crate) fn draw_wet_ground(
@@ -608,29 +667,17 @@ pub(crate) fn draw_wet_ground(
     let Some(window) = tiles.wet_window else {
         return;
     };
-    let edge = WET_TEXELS as usize;
-    let mut texels = vec![0.0_f32; edge * edge * 2];
     #[expect(clippy::cast_possible_truncation, reason = "texels within the map")]
     let first = (
         (window.x / WATER_CELL_METRES).round() as i32,
         (window.z / WATER_CELL_METRES).round() as i32,
     );
-    for wet in &runtime.water.view().wet {
-        let (x, z) = (wet.column.0 - first.0, wet.column.1 - first.1);
-        let (Ok(x), Ok(z)) = (usize::try_from(x), usize::try_from(z)) else {
-            continue;
-        };
-        if x >= edge || z >= edge {
-            continue;
-        }
-        let texel = (x + z * edge) * 2;
-        // A few millimetres soaked in already darken the ground.
-        #[expect(clippy::cast_possible_truncation, reason = "shader data is f32")]
-        {
-            texels[texel] = (1.0 - (-wet.soaked / 0.003).exp()) as f32;
-            texels[texel + 1] = (wet.top - window.y) as f32;
-        }
-    }
+    let texels = wet_texels(
+        &runtime.water.view().wet,
+        first,
+        window.y,
+        WET_TEXELS as usize,
+    );
     let Some(material) = materials.get(handle) else {
         return;
     };
@@ -698,7 +745,31 @@ fn note_joined(tiles: &mut WaterTiles, cells: &[(WaterCell, WaterSurface)], owne
 mod tests {
     use bevy::math::DVec3;
 
-    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, half_bits, wanted_tiles};
+    use mechanic_world::WetGround;
+
+    use super::{FINEST_LEVEL, TileKey, WATER_REACH_METRES, half_bits, wanted_tiles, wet_texels};
+
+    fn wet(column: (i32, i32), top: f64, soaked: f64) -> WetGround {
+        WetGround {
+            column,
+            top,
+            fill: 1.0,
+            soaked,
+        }
+    }
+
+    #[test]
+    fn dry_texels_beside_wet_ground_carry_its_height() {
+        let texels = wet_texels(&[wet((12, 7), 8.5, f64::INFINITY)], (10, 5), 10.0, 8);
+        let at = |x: usize, z: usize| (texels[(x + z * 8) * 2], texels[(x + z * 8) * 2 + 1]);
+        assert_eq!(at(2, 2), (1.0, -1.5));
+        // Two rings around the wet column fade out over its ground, dry.
+        for (x, z) in [(1, 1), (3, 2), (2, 4), (0, 0), (4, 4)] {
+            assert_eq!(at(x, z), (0.0, -1.5), "texel {x}, {z}");
+        }
+        // Further out the map keeps nothing.
+        assert_eq!(at(5, 2), (0.0, 0.0));
+    }
 
     #[test]
     fn wetness_values_become_half_floats() {

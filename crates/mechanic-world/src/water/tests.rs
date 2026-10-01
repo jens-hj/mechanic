@@ -1034,6 +1034,69 @@ fn a_film_soaks_into_soil_but_stays_on_rock() {
     }
 }
 
+/// A trench 20 cm deep and two columns wide along x, in a soil or rock
+/// field, with the ground beyond it at `beyond` metres.
+fn trench_in_a_field(beyond: f64, rock: bool) -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, 0.0, 0.0], [4.0, 2.0, 1.6]),
+            room([0.0, -0.2, 1.6], [4.0, 2.0, 2.0]),
+            room([0.0, beyond, 2.0], [4.0, 2.0, 4.0]),
+        ],
+        lake: None,
+        river: None,
+        rock,
+    }
+}
+
+/// Fills the trench of [`trench_in_a_field`] most of the way and runs it
+/// for `minutes`, checking every minute that no water is made or lost.
+fn fill_the_trench(ground: &Ground, minutes: u32) -> WaterWorld {
+    let mut water = WaterWorld::new();
+    let poured = 0.3;
+    water.deposit(ground, DVec3::new(2.0, -0.1, 1.8), poured);
+    for minute in 0..minutes {
+        run(&mut water, ground, 60);
+        assert!(
+            (water.ledger().total() - poured).abs() < 1.0e-9,
+            "minute {minute} made or lost water"
+        );
+    }
+    water
+}
+
+#[test]
+fn water_soaks_sideways_into_the_ground_beside_it() {
+    let water = fill_the_trench(&trench_in_a_field(0.0, false), 12);
+    // The trench covers columns 8 and 9; the ground beside it darkens less
+    // the further it lies from the water, and further out stays dry.
+    for (near, next, dry) in [(7, 6, 4), (10, 11, 13)] {
+        let (near, next, dry) = (
+            water.soil_fill(10, near),
+            water.soil_fill(10, next),
+            water.soil_fill(10, dry),
+        );
+        assert!(
+            near > next && next > 0.0,
+            "fringe {near:.3}, {next:.3} does not fade out from the trench"
+        );
+        assert!(dry <= 0.0, "ground three columns out holds {dry:.3}");
+    }
+    let rock = fill_the_trench(&trench_in_a_field(0.0, true), 2);
+    assert!(rock.soil_m3() < 1.0e-12, "rock wicked water");
+}
+
+#[test]
+fn wet_ground_wicks_into_no_bank_above_it() {
+    // Ground a metre over the trench's far side.
+    let water = fill_the_trench(&trench_in_a_field(1.0, false), 8);
+    assert!(water.soil_fill(10, 7) > 0.1, "the field beside stays dry");
+    for z in 10..14 {
+        let fill = water.soil_fill(10, z);
+        assert!(fill <= 0.0, "the bank wicked {fill:.3} at column {z}");
+    }
+}
+
 #[test]
 fn a_flood_on_soil_turns_it_to_mud_and_the_rest_stands() {
     let ground = pit(false);

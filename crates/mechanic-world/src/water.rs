@@ -497,6 +497,11 @@ pub struct WaterWorld {
     sheets: SheetGrid,
     /// Water held in the ground, by column.
     soil: CellMap<(i32, i32), soil::Soil>,
+    /// The set of ground columns that wicks next.
+    wick_set: u32,
+    /// Height of the drawn ground at the centre of each column water wicked
+    /// towards, by column and the water cell height it was sought from.
+    wick_tops: CellMap<(i32, i32, i32), Option<f64>>,
     /// Height of the drawn ground at each surface corner met, by corner and
     /// the water cell height it was sought from.
     tops: CellMap<(i32, i32, i32), Option<f64>>,
@@ -1623,6 +1628,7 @@ impl WaterWorld {
             };
             self.tops.retain(kept);
             self.floors.retain(kept);
+            self.wick_tops.retain(kept);
         }
         for &brick in &bricks {
             for cell in WaterCell::in_brick(brick) {
