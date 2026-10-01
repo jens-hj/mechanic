@@ -286,7 +286,8 @@ pub(super) fn commit_terrain_edit_result(
         for &(cell, ..) in &outcome.pressed_out {
             runtime.slump.disturb(cell);
         }
-        changed |= outcome.total_changed_cells() != 0;
+        // Sediment may only shrink or grow cells, which the mesh shows too.
+        changed |= outcome.total_changed_cells() != 0 || !outcome.sediment_cells.is_empty();
         changed_brick_coordinates.extend(outcome.changed_brick_coordinates().iter().copied());
         changed_bricks = changed_bricks
             .saturating_add(u64::try_from(outcome.changed_bricks).unwrap_or(u64::MAX));
@@ -350,6 +351,7 @@ pub(super) fn coordinate_terrain_edits(
     // Between one edit batch and the next, so neither overwrites the other.
     if list.phase() == WorldListPhase::Playing {
         runtime.transfer_material();
+        runtime.lay_sediment();
     }
 
     if runtime.terrain_edit_task.is_some()
