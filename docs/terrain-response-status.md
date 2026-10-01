@@ -101,8 +101,11 @@ Material is never made or destroyed. Every solid cell holds 510 quanta however
 packed it is: pressing packs a cell, and a cell pressed flat is squeezed out as
 510 quanta of spoil that settle beside whatever pressed it, which is the berm
 along a rut. Cells break out whole and settle whole, so the ground's solid cells
-and the clumps' quanta always add up. The player's terrain brush is outside
-this: it is a creative tool that adds and removes ground freely.
+and the clumps' quanta always add up. Running water's erosion keeps the same
+books: a cell gives up and takes back quanta in place, and what the ground lost
+less what it got back is what the water carries and has yet to lay
+(`docs/water.md`, Erosion). The player's terrain brush is outside this: it is
+a creative tool that adds and removes ground freely.
 The outstanding driving and collision work below remains open; this change does
 not claim those gates or a scale gate.
 

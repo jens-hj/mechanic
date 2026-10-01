@@ -189,6 +189,58 @@ ground beside it; the shader filters the map with a cubic B-spline, so wet
 ground shows no grid of columns, and noise moves the fringe in and out where
 it is half wet, so its edge is ragged rather than ruled.
 
+## Erosion
+
+Running water wears soft ground away, carries it, and lays it down again
+where it slows (`water/sediment.rs`). Its drag on the bed is Manning's,
+`ρ g n² v² / h^(1/3)`, and the ground wears in proportion to the drag beyond
+what it holds against: sand gives first, soil at 1 Pa, turf only to a
+violent flood at 80 Pa, and rock never. Soil soaked to mud gives at half the
+drag; roots hold soaked turf all the same. A stream 5 cm deep running at
+0.5 m/s over dug soil cuts about 20 cm an hour, and drag grows with the
+square of the speed. Water counts as running no faster than one and a half
+times its own wave speed, so a film a few millimetres deep, whose current
+from what crosses its faces can read a metre a second, drags as gently as a
+real film over grass does. Water wears the less the more it already carries,
+and not at all once a hundredth of its volume is sediment, so loaded water
+runs on over ground below without cutting it while clean water spilling over
+a dam bites hardest.
+
+What water carries is sand, which settles at 2 cm/s and so drops within a
+metre or two of where the flow slackens, building fans, and fines from soil
+and turf, which settle at half a millimetre a second, cloud the water and
+travel on to settle in still water over minutes. Fast water keeps both
+stirred up (Krone): sand settles only where the drag falls under 1 Pa, about
+20 cm/s in water 5 cm deep, and fines under 0.2 Pa. Sediment moves with water
+from running water to running water and to and from pools; water leaving
+any other way, into a lake, a river or the sea, the air or the ground,
+leaves it behind. A stream running into a lake therefore builds a delta at
+its mouth, and a flood's front leaves silt where it soaks away.
+
+The ground changes only on the main thread's terms. Each column keeps a bed
+account: sediment settled and not yet laid, and erosion owed but not yet
+taken. Every five seconds, once its last ask was answered, the worker asks
+for what is worth a change, half a centimetre of wear or enough to begin a
+cell, at most 512 columns at once, and samples the untouched bricks those
+changes may touch. The app makes the change on a worker of its own, as one
+terrain edit no other edit overlaps (`TerrainOctree::exchange_sediment`): a
+cell gives up its material a few quanta at a time and its surface sinks with
+it, until at half full it empties; laid sediment grows a loose cell the same
+way and begins another over it. The bed sinks and rises smoothly, settling
+by a centimetre or two as each cell goes or begins, and cut and laid ground
+is loose, so it slides to its angle of repose. The ground's answer, what it
+gave up and took back, reaches the water before anything reads or saves it:
+material enters the water only once the ground has given it up. The water
+then measures again only the cells that changed.
+
+No material is made or lost: what the ground lost, less what it got back, is
+what the water carries and what waits to be laid
+(`WaterWorld::sediment_ledger`). Saves keep what each sheet and pool carries
+and what waits on each bed. Stored water carries its murk to the water
+shader, which turns water thick with silt brown and hides the ground under
+it; lakes and rivers run clear. `ErosionConfig::speed` hurries erosion for
+tests and benchmarks.
+
 ## Drops
 
 Water pouring over a lip, from a pool at its weir rate or from a sheet at
@@ -441,9 +493,15 @@ Spawns keep a metre above any water within ten metres.
 trench through a lake's bank above open land (seed 1 by default: a lake over
 a 17 m hillside) and steps the water for 120 s (`BREACH_SECONDS`), printing
 JSONL per simulated second and a summary with each phase's p95
-(`WaterPhases`). On an M1 Pro the flood peaks at about 55,000 running cells,
-with a step p95 of 25 ms. Most cells then are films a few millimetres deep
-spread over the slope.
+(`WaterPhases`). On an M1 Pro the flood peaks at about 19,000 running cells,
+with a step p95 of 12 ms. Most cells then are films a few millimetres deep
+spread over the slope. The bench changes the ground as the water asks, as
+the app does: over its two minutes the breach wears some 0.1 m³ out of its
+trench and promotes some 40 bricks. Each change costs about 13 ms at p95 on
+the app's edit worker and 20 ms on the water's worker, every five seconds,
+and erosion adds about a millisecond to the step p95. Replaying the `water9`
+save for three minutes wears 0.35 m³, nearly all of it dug soil, and
+promotes some 90 bricks.
 
 The ground is read per water cell and cached: a cell the field bounds as
 wholly air or wholly ground costs one interval test, and only cells the
@@ -469,6 +527,10 @@ surface crosses sample the field's density.
   a water level, the two can meet at a wall of water. Stored water will
   resolve this by flowing when the region wakes.
 - Rivers are still traced before carves, so a ravine does not redirect them.
+- Every brick erosion touches is promoted, about 400 KB of memory, and saved
+  with the world. A violent flood promotes every brick it wears or silts.
+- Lakes and rivers neither erode nor carry sediment; what reaches them settles
+  at their edge.
 
 ## Authoring
 
