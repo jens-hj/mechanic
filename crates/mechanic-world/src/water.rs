@@ -64,6 +64,10 @@ const DEEP_METRES: f64 = 0.3;
 /// rather than a whole flat filling at the pool's level in one step.
 const FRONT_M_S: f64 = 0.25;
 
+/// How far over a cell, in water cells, ground closing over it counts as its
+/// roof: 8 m, over the tallest cave a pool fills.
+const ROOF_CELLS: i32 = 40;
+
 /// Water shallower than this clings to the ground and does not run, and
 /// water less than this over a lip does not pour over it, in metres.
 const CLING_METRES: f64 = 0.002;
@@ -439,6 +443,25 @@ const fn end_key(end: End) -> (u8, u32) {
     }
 }
 
+/// Keeps one pour of the transfers from `first` on into each column of
+/// running water, the largest: a pool touching one column at several cells
+/// up its height pours into it once, since the column is one water, and a
+/// pour per cell would stack it far over the pool.
+fn pour_once_per_column(transfers: &mut Vec<Transfer>, first: usize) {
+    let mut poured = CellMap::<(i32, i32), usize>::default();
+    for transfer in transfers.split_off(first) {
+        if let End::Sheet(cell) = transfer.to {
+            if let Some(&kept) = poured.get(&(cell.x, cell.z)) {
+                let kept: &mut Transfer = &mut transfers[kept];
+                kept.volume = kept.volume.max(transfer.volume);
+                continue;
+            }
+            poured.insert((cell.x, cell.z), transfers.len());
+        }
+        transfers.push(transfer);
+    }
+}
+
 /// What one step's contacts do.
 #[derive(Debug, Default)]
 struct Exchanges {
@@ -734,6 +757,21 @@ impl WaterWorld {
         self.ground.openings(ground, cell)
     }
 
+    /// Whether ground closes over a cell within [`ROOF_CELLS`]: the roof of
+    /// a cave, a tunnel or an overhang, however high its water has risen.
+    fn roofed(&mut self, ground: &impl WaterGround, cell: WaterCell) -> bool {
+        let whole = u32::try_from(WATER_CELL_EDGE_CELLS.pow(3)).expect("64 cells");
+        (1..=ROOF_CELLS).any(|up| {
+            let above = WaterCell::new(cell.x, cell.y + up, cell.z);
+            let open = self
+                .openings(ground, above)
+                .iter()
+                .map(|&open| u32::from(open))
+                .sum::<u32>();
+            open * 2 < whole
+        })
+    }
+
     /// Height of the ground running water rests on in a cell, where the cell
     /// has any opening.
     fn sheet_floor(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<f64> {
@@ -855,6 +893,39 @@ impl WaterWorld {
         id
     }
 
+    /// A pool begun from running water stands no higher than that water
+    /// did: running water holds its volume as if its cell were open right
+    /// across, a pool only in what the ground leaves open, so a sheet in a
+    /// sliver of a cell turns into a pool standing far over it. What the
+    /// pool holds over `height` runs on into the lowest running water beside
+    /// it, where it ran all along.
+    fn shed_over(&mut self, ground: &impl WaterGround, id: u32, height: f64) {
+        let Some(pool) = self.pools.get(&id) else {
+            return;
+        };
+        let over = pool.volume - pool.held_below(height);
+        if over <= 0.0 {
+            return;
+        }
+        let contacts = pool.contacts.iter().copied().collect::<Vec<_>>();
+        let lowest = contacts
+            .into_iter()
+            .filter_map(|cell| {
+                let slot = self.sheets.slot(cell.x, cell.z)?;
+                let sheet = self.sheets.at(slot);
+                (sheet.present && sheet.y <= cell.y && sheet.surface_height() < height)
+                    .then(|| (cell, sheet.surface_height()))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((cell, _)) = lowest {
+            if let Some(pool) = self.pools.get_mut(&id) {
+                pool.volume -= over;
+                pool.settle();
+            }
+            self.add_sheet(ground, cell, over);
+        }
+    }
+
     /// Queues a member's neighbours, or records them as contacts.
     fn border(&mut self, ground: &impl WaterGround, id: u32, cell: WaterCell) {
         for neighbour in cell.neighbours() {
@@ -908,10 +979,37 @@ impl WaterWorld {
             let Some((rim, level)) = self.pools.get(&id).map(|pool| (pool.rim, pool.level)) else {
                 return;
             };
+            // Under open sky water runs: a pool meets the cells beside it
+            // there at its edge, through the running water's pipes, and
+            // rises only straight up over its own water.
+            let open_beside = !self.pools.get(&id).is_some_and(|pool| pool.over_own(cell))
+                && !self.roofed(ground, cell);
+            // Running water filling the cell up from a cell below is taken in
+            // under a roof with every cell it fills, where the pool may take
+            // them all; elsewhere the pool meets it at its edge, through its
+            // pipes. Either way the pool never rests on it, both holding the
+            // water between them.
+            let (under, spill) = self
+                .sheets
+                .covering(cell)
+                .filter(|sheet| sheet.y < cell.y)
+                .map_or((None, false), |sheet| (Some(sheet.y), sheet.floor() < rim));
+            let over_running = under.is_some_and(|under| {
+                // Running water from below the rim is the pool's spill.
+                open_beside
+                    || spill
+                    || (under..cell.y).any(|y| {
+                        let filled = WaterCell::new(cell.x, y, cell.z);
+                        self.owner.contains_key(&filled)
+                            || floor_of(filled, self.openings(ground, filled)).is_none()
+                    })
+            });
             if floor < rim
                 || self.owner.contains_key(&cell)
                 || self.implicit(ground, cell).is_some()
                 || self.falls(ground, cell, Some(id))
+                || open_beside
+                || over_running
             {
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.contacts.insert(cell);
@@ -936,18 +1034,25 @@ impl WaterWorld {
                 }
                 spread = true;
             }
-            if let Some(pool) = self.pools.get_mut(&id) {
-                // Only ground the water crossed makes a rim, not the bottom of
-                // a cell over its own water.
-                if !pool.over_own(cell) {
-                    pool.rim = pool.rim.max(floor);
+            for y in under.unwrap_or(cell.y)..=cell.y {
+                let filled = WaterCell::new(cell.x, y, cell.z);
+                let openings = self.openings(ground, filled);
+                let Some(floor) = floor_of(filled, openings) else {
+                    continue;
+                };
+                if let Some(pool) = self.pools.get_mut(&id) {
+                    // Only ground the water crossed makes a rim, not the bottom
+                    // of a cell over its own water.
+                    if !pool.over_own(filled) {
+                        pool.rim = pool.rim.max(floor);
+                    }
+                    pool.add_member(filled, openings);
                 }
-                pool.add_member(cell, openings);
+                fresh.insert(filled);
+                self.owner.insert(filled, id);
+                self.absorb_sheet(id, filled);
+                self.border(ground, id, filled);
             }
-            fresh.insert(cell);
-            self.owner.insert(cell, id);
-            self.absorb_sheet(id, cell);
-            self.border(ground, id, cell);
             budget -= 1;
         };
         let Some(pool) = self.pools.get_mut(&id) else {
@@ -1057,6 +1162,7 @@ impl WaterWorld {
             entry.0.volume += volume;
             entry.1 = entry.1.min(even);
         };
+        let first = out.transfers.len();
         for cell in contacts {
             let openings = self.openings(ground, cell);
             let Some(floor) = floor_of(cell, openings) else {
@@ -1107,20 +1213,15 @@ impl WaterWorld {
                 level_between(from, to, weir(head), even);
             } else if self.falls(ground, cell, Some(id)) {
                 self.fall(ground, id, cell, [level, floor, area, top], dt, out);
+            } else if own_floor >= rim
+                && !self.pools[&id].over_own(cell)
+                && !self.roofed(ground, cell)
+            {
+                out.transfers
+                    .extend(self.open_beside(id, cell, [level.min(top), floor], dt));
             } else if own_floor < rim {
-                // Beyond the rim the water runs off as a sheet, over any
-                // water already running there.
-                let below = self
-                    .sheet_surface(ground, cell)
-                    .map_or(floor, |(height, _)| height.max(floor));
-                let head = level - below;
-                if head > 0.0 {
-                    out.transfers.push(Transfer {
-                        from: End::Pool(id),
-                        to: End::Sheet(cell),
-                        volume: weir(head).min(head * area),
-                    });
-                }
+                let spill = self.spill(ground, id, cell, [level.min(top), floor, area], dt);
+                out.transfers.extend(spill);
             } else {
                 self.drop_contact(id, cell);
                 if let Some(pool) = self.pools.get_mut(&id) {
@@ -1128,10 +1229,66 @@ impl WaterWorld {
                 }
             }
         }
+        pour_once_per_column(&mut out.transfers, first);
         for (mut transfer, even) in levelling.into_values() {
             transfer.volume = transfer.volume.min(even);
             out.transfers.push(transfer);
         }
+    }
+
+    /// What a pool standing at `level`, no higher than its cells' top, spills
+    /// past its rim onto a cell over the lip `floor`, with its surface `area`:
+    /// beyond the rim the water runs off as running water, over any already
+    /// running there. A pool fuller than its cells pours by no more head than
+    /// its cells hold, as over a drop.
+    fn spill(
+        &mut self,
+        ground: &impl WaterGround,
+        id: u32,
+        cell: WaterCell,
+        [level, floor, area]: [f64; 3],
+        dt: f64,
+    ) -> Option<Transfer> {
+        let below = self
+            .sheet_surface(ground, cell)
+            .map_or(floor, |(height, _)| height.max(floor));
+        let head = level - below;
+        (head > 0.0).then(|| Transfer {
+            from: End::Pool(id),
+            to: End::Sheet(cell),
+            volume: (WEIR_COEFFICIENT * WATER_CELL_METRES * head.powf(1.5) * dt).min(head * area),
+        })
+    }
+
+    /// What a pool pours onto a cell beside it under open sky, standing at
+    /// `level` (no higher than its cells' top) over the cell's `floor`.
+    /// Running water there trades with the pool through its pipes; dry
+    /// ground gets running water to start with, at most what brings the two
+    /// halfway level over its one column.
+    fn open_beside(
+        &self,
+        id: u32,
+        cell: WaterCell,
+        [level, floor]: [f64; 2],
+        dt: f64,
+    ) -> Option<Transfer> {
+        let running = self.sheets.slot(cell.x, cell.z).is_some_and(|slot| {
+            let sheet = self.sheets.at(slot);
+            sheet.present && sheet.y <= cell.y
+        });
+        let head = level - floor;
+        if running || head <= 0.0 {
+            return None;
+        }
+        let pool = self.pools.get(&id)?;
+        let volume = (WEIR_COEFFICIENT * WATER_CELL_METRES * head.powf(1.5) * dt)
+            .min(0.5 * head * WATER_CELL_METRES.powi(2))
+            .min(pool.volume - pool.held_below(floor));
+        (volume > 0.0).then_some(Transfer {
+            from: End::Pool(id),
+            to: End::Sheet(cell),
+            volume,
+        })
     }
 
     /// Water spilling from a pool over a drop at `cell`, with the pool's
@@ -1350,6 +1507,11 @@ impl WaterWorld {
                 } else if floor_of(cell, self.openings(ground, cell)).is_none() {
                     // Water set down in solid ground rises out of it.
                     self.deposit_at(ground, cell, volume);
+                } else if self.sheets.covering(cell).is_some() {
+                    // Water landing in running water is that water's: a pool
+                    // begun there would rest on it, both holding the water
+                    // between them.
+                    self.add_sheet(ground, cell, volume);
                 } else if self.stands(ground, cell, volume) {
                     self.start_pool(ground, cell, volume);
                 } else {

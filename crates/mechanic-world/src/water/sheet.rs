@@ -9,7 +9,8 @@
 //! current. A sheet climbs a step of one water cell and runs down a drop of
 //! up to a metre as a steep chute; a taller drop is a lip it pours over, and
 //! the water lands at once wherever the drop leads.
-//! Water reaching a pool or seed-derived water joins it. Under open sky a
+//! Water reaching seed-derived water joins it; running water and a pool meet
+//! through a pipe that runs either way, by the pool's level. Under open sky a
 //! sheet may grow as deep as it likes: a pond is running water that has come
 //! to rest, flat because the pipes have no other resting state, so a flood
 //! fills hollows and spills on without breaking into flat pools that step
@@ -29,8 +30,8 @@ use serde::{Deserialize, Serialize};
 
 use super::grid::Slot;
 use super::{
-    CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, WATER_CELL_METRES, WaterCell,
-    WaterGround, WaterWorld,
+    CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, SPREAD_CELLS_PER_STEP,
+    WATER_CELL_METRES, WaterCell, WaterGround, WaterWorld,
 };
 use super::{floor_of, held_in};
 use crate::WaterSurface;
@@ -179,8 +180,12 @@ enum Route {
     Wall,
     /// Onto the floor of a neighbour column, if the water stands above it.
     Onto { slot: Slot, y: i32, floor: f64 },
-    /// Into standing or seed-derived water with its surface here.
+    /// Into seed-derived water with its surface here.
     Water(End, f64),
+    /// To and from a pool, through its cell with this floor: the pipe runs
+    /// either way, by the pool's level as it stands, so running water and
+    /// the pool it meets come to one level.
+    Pool { id: u32, floor: f64 },
     /// Over a lip, pouring down from this cell.
     Lip(WaterCell),
 }
@@ -384,8 +389,18 @@ impl WaterWorld {
             Face::Lip { y, lowest } => (y, lowest),
         };
         for y in (bottom..=top).rev() {
-            if let Some((end, level)) = self.standing(ground, WaterCell::new(x, y, z)) {
-                return Route::Water(end, level);
+            let beside = WaterCell::new(x, y, z);
+            if let Some(&id) = self.owner.get(&beside)
+                && self.pools.contains_key(&id)
+            {
+                // A pool's surface is never below the floor it covers, even
+                // before it has water to settle.
+                let floor = floor_of(beside, self.openings(ground, beside))
+                    .unwrap_or_else(|| beside.bottom());
+                return Route::Pool { id, floor };
+            }
+            if let Some(surface) = self.implicit(ground, beside) {
+                return Route::Water(End::Body(surface.body), surface.level);
             }
         }
         match face {
@@ -397,20 +412,6 @@ impl WaterWorld {
             },
             Face::Lip { y, .. } => Route::Lip(WaterCell::new(x, y, z)),
         }
-    }
-
-    /// Standing water in a cell: a pool or seed-derived water.
-    fn standing(&mut self, ground: &impl WaterGround, cell: WaterCell) -> Option<(End, f64)> {
-        if let Some(&id) = self.owner.get(&cell) {
-            let level = self.pools.get(&id)?.level;
-            // A pool's surface is never below the floor it covers, even
-            // before it has water to settle.
-            let floor =
-                floor_of(cell, self.openings(ground, cell)).unwrap_or_else(|| cell.bottom());
-            return Some((End::Pool(id), level.max(floor)));
-        }
-        self.implicit(ground, cell)
-            .map(|surface| (End::Body(surface.body), surface.level))
     }
 
     /// Where each face of every sheet leads this step: the ground's routes,
@@ -457,6 +458,85 @@ impl WaterWorld {
         routes
     }
 
+    /// The surface beyond one face of a sheet, and the floor the water
+    /// crosses it over, where water may cross.
+    fn beyond(&self, sheet: &Sheet, route: Route) -> Option<(f64, f64)> {
+        let height = sheet.surface_height();
+        match route {
+            Route::Wall => None,
+            Route::Onto { floor, .. } if floor >= height => None,
+            Route::Onto { slot, floor, .. } => {
+                let other = self.sheets.at(slot);
+                Some((
+                    if other.present {
+                        other.surface_height()
+                    } else {
+                        floor
+                    },
+                    floor.max(sheet.floor),
+                ))
+            }
+            Route::Water(_, level) => Some((level, sheet.floor)),
+            Route::Pool { id, floor } => {
+                let sill = floor.max(sheet.floor);
+                // A pool fuller than its cells takes nothing in, and presses
+                // out no harder than their top: its surplus is no head of
+                // water.
+                self.pools
+                    .get(&id)
+                    .map(|pool| {
+                        let level = pool.level.max(floor);
+                        if height > level {
+                            level
+                        } else {
+                            pool.level.min(pool.top()).max(floor).max(height)
+                        }
+                    })
+                    .map(|level| (level, sill))
+                    .filter(|&(level, sill)| height.max(level) > sill)
+            }
+            Route::Lip(over) => Some((over.bottom(), sheet.floor)),
+        }
+    }
+
+    /// Moves what pools send into a sheet through its faces this substep,
+    /// each at most the water it holds over the sill and never below its
+    /// rim: water leaves a pool over the highest ground it crossed. Returns
+    /// the water moved, and marks the pools it came from.
+    fn take_from_pools(
+        &mut self,
+        slot: Slot,
+        faces: &[Route; 4],
+        flow: &mut [f64; 4],
+        sub: f64,
+        touched: &mut BTreeSet<u32>,
+    ) -> f64 {
+        let mut moved = 0.0;
+        for (face, route) in faces.iter().enumerate() {
+            let Route::Pool { id, floor } = *route else {
+                continue;
+            };
+            if flow[face] >= 0.0 {
+                continue;
+            }
+            let Some(pool) = self.pools.get_mut(&id) else {
+                flow[face] = 0.0;
+                continue;
+            };
+            let sill = floor.max(self.sheets.at(slot).floor).max(pool.rim);
+            let given = (-flow[face] * sub)
+                .min(pool.volume - pool.held_below(sill))
+                .max(0.0);
+            pool.volume -= given;
+            touched.insert(id);
+            flow[face] = -given / sub;
+            self.sheets.at_mut(slot).volume += given;
+            self.sheets.stir(slot, given / CELL_AREA_M2);
+            moved += given;
+        }
+        moved
+    }
+
     /// Runs the sheets for `dt` seconds. Returns the water moved and the
     /// pools that received water.
     pub(super) fn step_sheets(
@@ -476,6 +556,7 @@ impl WaterWorld {
         let mut into = Vec::new();
         let mut pours = Vec::new();
         let mut flows = vec![[0.0; 4]; routes.len()];
+        let mut fed = BTreeSet::new();
         for _ in 0..substeps {
             // Every face's flow first, from the surfaces as they stand.
             for ((slot, faces), flow) in routes.iter().zip(&mut flows) {
@@ -483,43 +564,31 @@ impl WaterWorld {
                 let height = sheet.surface_height();
                 let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
                 for (face, route) in faces.iter().enumerate() {
-                    // The surface beyond the face, and the floor the water
-                    // crosses it over.
-                    let beyond = match *route {
-                        Route::Wall => None,
-                        Route::Onto { floor, .. } if floor >= height => None,
-                        Route::Onto { slot, floor, .. } => {
-                            let other = self.sheets.at(slot);
-                            Some((
-                                if other.present {
-                                    other.surface_height()
-                                } else {
-                                    floor
-                                },
-                                floor.max(sheet.floor),
-                            ))
-                        }
-                        Route::Water(_, level) => Some((level, sheet.floor)),
-                        Route::Lip(over) => Some((over.bottom(), sheet.floor)),
-                    };
+                    let beyond = self.beyond(sheet, *route);
+                    let both_ways = matches!(route, Route::Pool { .. });
                     flow[face] = beyond.map_or(0.0, |(beyond, sill)| {
                         // The pipe is as deep as the water over the face:
                         // a film is pushed as a film, not as a stream.
                         let across = (height.max(beyond) - sill).clamp(CLING_METRES, DRIVE_METRES);
                         let driven = sheet.flux[face] + sub * GRAVITY * across * (height - beyond);
-                        (driven / (1.0 + friction(sheet.flux[face], depth) * sub)).max(0.0)
+                        let flow = driven / (1.0 + friction(sheet.flux[face], depth) * sub);
+                        if both_ways { flow } else { flow.max(0.0) }
                     });
                 }
-                let out = flow.iter().sum::<f64>() * sub;
+                // No sheet sends more than it holds; water a pool sends in
+                // is the pool's to give.
+                let out = flow.iter().map(|face| face.max(0.0)).sum::<f64>() * sub;
                 if out > 0.0 && out > sheet.volume {
                     let scale = sheet.volume.max(0.0) / out;
-                    for face in flow.iter_mut() {
+                    for face in flow.iter_mut().filter(|face| **face > 0.0) {
                         *face *= scale;
                     }
                 }
             }
             // Then the water moves.
-            for ((slot, faces), flow) in routes.iter().zip(&flows) {
+            let mut touched = BTreeSet::new();
+            for ((slot, faces), flow) in routes.iter().zip(&mut flows) {
+                moved += self.take_from_pools(*slot, faces, flow, sub, &mut touched);
                 self.sheets.at_mut(*slot).flux = *flow;
                 for (face, route) in faces.iter().enumerate() {
                     let volume = flow[face] * sub;
@@ -535,6 +604,13 @@ impl WaterWorld {
                             self.sheets.stir(slot, volume / CELL_AREA_M2);
                         }
                         Route::Water(end, _) => into.push((end, volume)),
+                        Route::Pool { id, .. } => {
+                            if let Some(pool) = self.pools.get_mut(&id) {
+                                pool.volume += volume;
+                                touched.insert(id);
+                                fed.insert(id);
+                            }
+                        }
                         // It pours through the lip's cell, which may be a hole
                         // in a bank lower than its surface.
                         Route::Lip(over) => pours.push((over, volume)),
@@ -542,8 +618,14 @@ impl WaterWorld {
                     }
                 }
             }
+            // Each pool stands where its water now leaves it, for the next
+            // substep's pipes.
+            for id in touched {
+                if let Some(pool) = self.pools.get_mut(&id) {
+                    pool.settle();
+                }
+            }
         }
-        let mut fed = BTreeSet::new();
         for (end, volume) in into {
             if let End::Pool(id) = end {
                 fed.insert(id);
@@ -590,7 +672,9 @@ impl WaterWorld {
             // water rising against a roof stands as a pool.
             if self.confined(ground, cell, sheet.surface_height()) {
                 self.sheets.remove_at(slot);
-                self.start_pool(ground, cell, sheet.volume);
+                let id = self.start_pool(ground, cell, sheet.volume);
+                self.flood(ground, id, SPREAD_CELLS_PER_STEP);
+                self.shed_over(ground, id, sheet.surface_height());
             } else {
                 self.sheets.at_mut(slot).settled = Some(sheet.top());
             }
@@ -615,12 +699,18 @@ impl WaterWorld {
             .collect::<Vec<_>>();
         let over = WaterCell::new(cell.x, top + 1, cell.z);
         around.push(over);
+        // Under open sky running water beside a pool trades with it through
+        // its pipes: taken in, it would spread the pool over running water.
+        let mut roofed = None;
         for beside in around {
             // Running water beside it is no still water.
             if self.sheets.covering(beside).is_some() {
                 continue;
             }
             if let Some(&id) = self.owner.get(&beside) {
+                if beside != over && !*roofed.get_or_insert_with(|| self.roofed(ground, cell)) {
+                    continue;
+                }
                 let Some(pool) = self.pools.get_mut(&id) else {
                     continue;
                 };

@@ -83,17 +83,14 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
     let dug = DVec3::new(beyond.x, level - 0.5, beyond.z);
     let surface = water.surface(&ground, dug).expect("the trench holds water");
     assert!(
-        matches!(surface.body, WaterBody::Lake(_)),
-        "the dug trench did not join the lake"
-    );
-    assert!(
         (surface.level - level).abs() < 0.05,
         "the trench stands at {:.3} m under a lake at {level:.3} m",
         surface.level
     );
-    let held = water.stored_m3() + water.joined_m3();
+    let held = water.stored_m3() + water.joined_m3() + water.running_m3();
     assert!(held > 0.5, "only {held:.2} m³ ran in");
-    // The lake's own sheet runs on over the trench, as deep as it was dug.
+    // The trench shows its water as deep as it was dug, drawn by the lake's
+    // own sheet where it joined the lake, or by the stored water's surface.
     let joined = water
         .joined_cells()
         .into_iter()
@@ -104,29 +101,45 @@ fn a_trench_dug_from_a_generated_lake_fills_to_its_level() {
         edge: 8.0,
         cells: 32,
     };
-    let shifts = water.cycle.shifts(&ground);
-    let sheet = joined_water_sheet(
-        &field,
-        &terrain,
-        tile,
-        &shifts,
-        &joined,
-        &std::collections::HashSet::new(),
-    )
-    .expect("the trench shows water");
-    let deepest = sheet
-        .vertices
+    let stored = water.surface_tiles(&ground, &std::collections::HashMap::new());
+    let owned = stored
+        .owned
         .iter()
-        .zip(&sheet.depths)
-        .filter(|(vertex, _)| {
-            let point = DVec2::new(
-                f64::from(vertex[0]) + tile.minimum[0],
-                f64::from(vertex[2]) + tile.minimum[1],
-            );
-            point.distance(DVec2::new(beyond.x, beyond.z)) < 1.0
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let near = |point: DVec2| point.distance(DVec2::new(beyond.x, beyond.z)) < 1.0;
+    let on_lake = joined_water_sheet(&field, &terrain, tile, &stored.shifts, &joined, &owned)
+        .map_or(0.0_f32, |sheet| {
+            sheet
+                .vertices
+                .iter()
+                .zip(&sheet.depths)
+                .filter(|(vertex, _)| {
+                    near(DVec2::new(
+                        f64::from(vertex[0]) + tile.minimum[0],
+                        f64::from(vertex[2]) + tile.minimum[1],
+                    ))
+                })
+                .map(|(_, &depth)| depth)
+                .fold(0.0, f32::max)
+        });
+    let on_stored = stored
+        .tiles
+        .iter()
+        .flat_map(|tile| {
+            tile.positions
+                .iter()
+                .zip(&tile.attributes)
+                .filter(|(position, _)| {
+                    near(DVec2::new(
+                        f64::from(position[0]) + tile.origin.x,
+                        f64::from(position[2]) + tile.origin.z,
+                    ))
+                })
+                .map(|(_, attributes)| attributes[0])
         })
-        .map(|(_, &depth)| depth)
         .fold(0.0_f32, f32::max);
+    let deepest = on_lake.max(on_stored);
     assert!(deepest > 0.4, "the trench shows {deepest:.2} m of water");
     // Water fills the dug trench and does not creep off along the shore.
     let flat = |point: DVec3| DVec2::new(point.x, point.z);
@@ -399,42 +412,53 @@ fn stored_triangles(tiles: &[crate::SurfaceTile]) -> Drawn {
         .collect()
 }
 
-/// How far apart a lake's sheets and the stored water's surface stand at
-/// the column corners they share over the ground, not under a bank that
-/// hides both, in metres.
+/// How far apart a lake's sheets and the stored water's visible surface
+/// stand at the column corners they share under open sky, in metres: not
+/// under a bank or an overhang that hides both, nor where the stored water
+/// has faded out past its edge.
 fn highest_step(
     sheets: &[crate::WaterSheet],
     tiles: &[crate::SurfaceTile],
     ground: &impl WaterGround,
-    level: f64,
 ) -> f64 {
     let corner = |x: f64, z: f64| {
         #[expect(clippy::cast_possible_truncation, reason = "far inside i64")]
         let key = ((x * 1_000.0).round() as i64, (z * 1_000.0).round() as i64);
         key
     };
-    let stored = tiles
-        .iter()
-        .flat_map(|tile| {
-            tile.positions.iter().map(|&[x, y, z]| {
-                (
-                    corner(f64::from(x) + tile.origin.x, f64::from(z) + tile.origin.z),
-                    f64::from(y) + tile.origin.y,
-                )
-            })
-        })
-        .collect::<std::collections::HashMap<_, _>>();
+    let mut stored = std::collections::HashMap::<_, Vec<f64>>::new();
+    for tile in tiles {
+        for (&[x, y, z], attributes) in tile.positions.iter().zip(&tile.attributes) {
+            if attributes[0] >= 0.003 {
+                stored
+                    .entry(corner(
+                        f64::from(x) + tile.origin.x,
+                        f64::from(z) + tile.origin.z,
+                    ))
+                    .or_default()
+                    .push(f64::from(y) + tile.origin.y);
+            }
+        }
+    }
     sheets
         .iter()
         .flat_map(|sheet| {
             sheet.vertices.iter().filter_map(|vertex| {
                 let [x, y, z] = vertex.map(f64::from);
                 let (x, z) = (x + sheet.origin.0.x, z + sheet.origin.0.z);
-                let height = *stored.get(&corner(x, z))?;
-                let shows = ground
-                    .ground_top(x, z, level + 0.25, 1.0)
-                    .is_none_or(|top| top < y.min(height) - 1.0e-3);
-                shows.then(|| (height - y).abs())
+                // The stored corner meeting this one, of any there.
+                let height = stored
+                    .get(&corner(x, z))?
+                    .iter()
+                    .copied()
+                    .min_by(|a, b| (a - y).abs().total_cmp(&(b - y).abs()))?;
+                let lower = y.min(height);
+                let open_sky = (0..60).all(|step| {
+                    ground
+                        .material(DVec3::new(x, lower + 1.0e-3 + f64::from(step) * 0.05, z))
+                        .is_none()
+                });
+                open_sky.then(|| (height - y).abs())
             })
         })
         .fold(0.0, f64::max)
@@ -531,7 +555,7 @@ fn a_channel_from_a_lake_is_drawn_once_where_it_meets_the_lake() {
         let lake = sheet_triangles(&sheets);
         // The two surfaces stand at one level wherever they meet over the
         // ground, not under a bank that hides both.
-        let step_height = highest_step(&sheets, &surface.tiles, &ground, level);
+        let step_height = highest_step(&sheets, &surface.tiles, &ground);
         assert!(
             step_height < 1.0e-3,
             "the surfaces meet {step_height:.4} m apart at {spacing} m"

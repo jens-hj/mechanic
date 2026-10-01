@@ -26,6 +26,26 @@ it.
   the player dug it takes in at once, so a dug trench or pit fills at the
   level of the water let into it. A saved pool fills out to its level at
   once when the world loads.
+- **Pools stay under their roof.** A pool takes in a cell beside it only
+  where ground closes over that cell within 8 m, a cave's, a tunnel's or an
+  overhang's roof, or straight over its own water. Under open sky water runs:
+  running water beside the pool trades with it through the running water's
+  pipes, which carry water either way by the pool's level as it stands, and
+  dry ground beside it gets running water to start with, at most what brings
+  the two halfway level over the one column. A pool never rests on running
+  water with both holding the water between them: under a roof it takes in a
+  cell running water fills from a cell below together with that water and
+  every cell it fills, where it may take them all, and elsewhere meets it at
+  its edge; water landing in running water joins it. Earlier a pool begun
+  under a channel's overhang spread over the open flood beside it as a flat
+  lid on the running water, drawn in 20 cm steps up to 12 cm above it. A pool
+  fuller than its cells takes nothing in through the pipes and presses out
+  no harder than the top of its cells, and it pours into one column of
+  running water once a step however many of its cells touch it. Running
+  water holds its volume as if its cell were open right across, a pool only
+  in what the ground leaves open, so a pool begun from running water in a
+  sliver of a cell would stand far over it: what it holds over that water's
+  surface runs on into the lowest running water beside it.
 - **Water moves across contacts.** A neighbour a pool cannot take in is a
   contact: another pool's cell, seed-derived water, or a drop, where the cell's
   bottom opens onto free space or lower water. Across a contact the higher
@@ -112,9 +132,10 @@ water step.
   0.02 mm a step for 40 steps sleeps: its pipes do not run. Water arriving,
   higher water beside it, a deposit or a change to its ground wakes it, and
   it wakes for one step in every 200 to follow slow changes.
-- **Where it ends.** Running water pours into a pool or seed-derived water
-  through its faces. A pool beside it or over it takes it in, and
-  seed-derived water only over it, as in a hole dug under a lake; every
+- **Where it ends.** Running water pours into seed-derived water through its
+  faces, and meets a pool through them both ways (see
+  [the model](#the-model)). A pool over it takes it in, one beside it only
+  under a roof, and seed-derived water only over it, as in a hole dug under a lake; every
   cell of a deep sheet joins, and nothing beside it: a pool there would
   flood the whole pit to the lake's level in one step and join it. Running water beside a lake at the lake's level stays running
   water: letting the lake take in whatever touched it spread the lake along
@@ -420,7 +441,8 @@ surface crosses sample the field's density.
 - A pool still floods a flat the player dug at its level at once: only
   natural ground makes it spread as a front. Pacing dug trenches too left
   pools there overfull, pressing water far above its source. An overfull
-  pool pours over a lip by no more head than its cells hold.
+  pool pours over a lip, past its rim or into running water by no more head
+  than its cells hold; what it holds over them waits until it has room.
 - Water crosses between any two water cells that both have open terrain
   cells, so a wall thinner than 20 cm leaks.
 - Where a surface-breaking carve meets a buried part of the same layer below

@@ -404,6 +404,84 @@ fn a_channel_from_a_lake_into_a_pit_fills_and_comes_to_rest() {
     assert!((drawn(&water) - held - ledger.air_m3 - ledger.sea_m3).abs() < 1.0e-9);
 }
 
+/// A lake to the west and a channel dug east from it under the sky, its
+/// floor 40 cm under the lake, with a pocket under a rock overhang along its
+/// side whose roof stands under the lake.
+fn lake_channel_and_pocket() -> Ground {
+    Ground {
+        rooms: vec![
+            room([0.0, 0.4, 0.0], [6.0, 12.0, 0.6]),
+            room([2.0, 0.2, 0.6], [4.0, 0.6, 1.4]),
+        ],
+        lake: Some((room([-20.0, -2.0, -20.0], [0.0, 12.0, 20.0]), 0.8)),
+        river: None,
+        rock: true,
+    }
+}
+
+#[test]
+fn a_pocket_under_an_overhang_meets_the_open_channel_at_its_level() {
+    let ground = lake_channel_and_pocket();
+    let mut water = WaterWorld::new();
+    water.terrain_changed(&ground, ground.bricks());
+    for step in 0..60 * 20 {
+        water.step(&ground, 0.05);
+        let highest = water
+            .running_cells()
+            .into_iter()
+            .map(|running| running.level)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            highest < 0.85,
+            "step {step}: running water stands at {highest:.3} m over a lake at 0.8 m"
+        );
+    }
+    // The channel under the sky runs; the pocket's water, risen against its
+    // roof, stands as a pool there and nowhere else.
+    let channel = water
+        .surface(&ground, DVec3::new(3.0, 0.5, 0.3))
+        .expect("the channel holds water");
+    assert_eq!(channel.body, WaterBody::Running);
+    assert!(
+        (channel.level - 0.8).abs() < 0.01,
+        "the channel stands at {:.3} m",
+        channel.level
+    );
+    let pocket = water
+        .surface(&ground, DVec3::new(3.0, 0.3, 1.0))
+        .expect("the pocket holds water");
+    assert!(
+        matches!(pocket.body, WaterBody::Pool(_)),
+        "the pocket's water is {:?}",
+        pocket.body
+    );
+    // Full to its roof, it presses up to the channel's level, no higher.
+    assert!(
+        (pocket.level - channel.level).abs() < 0.02,
+        "the pocket stands at {:.3} m by a channel at {:.3} m",
+        pocket.level,
+        channel.level
+    );
+    let pools = water
+        .pools()
+        .flat_map(|pool| pool.surface_cells)
+        .collect::<Vec<_>>();
+    assert!(
+        pools.iter().all(|cell| cell.centre().z > 0.6),
+        "a pool spread over the open channel"
+    );
+    // No pool rests on running water, both holding the water between them.
+    for cell in water.owner.keys() {
+        assert!(
+            water.sheets.covering(*cell).is_none(),
+            "a pool and running water both fill {cell:?}"
+        );
+    }
+    let held = held(&water);
+    let ledger = water.ledger();
+    assert!((drawn(&water) - held - ledger.air_m3 - ledger.sea_m3).abs() < 1.0e-9);
+}
+
 /// A lake over a bed 2 m down, with a 1 m hole dug into the bed.
 fn lake_with_hole() -> Ground {
     Ground {
@@ -882,6 +960,33 @@ fn still_water_a_few_centimetres_over_a_field_runs_onto_it_at_flowing_speed() {
         "three metres out after five seconds: {fronts:.2?}"
     );
     assert!(fronts[4] > 0.4, "no water ran out: {fronts:.2?}");
+    assert!((water.ledger().total() - 0.36).abs() < 1.0e-9);
+}
+
+#[test]
+fn a_cave_pool_brimming_onto_an_open_field_runs_out_as_running_water() {
+    let ground = cave_and_field();
+    let mut water = WaterWorld::new();
+    water.deposit(&ground, DVec3::new(0.3, 0.2, 0.5), 0.36);
+    run(&mut water, &ground, 5);
+    // The cave's water stands as a pool under its roof; what brims over its
+    // mouth runs out onto the field under the sky as running water, never as
+    // the pool spreading over it.
+    let pools = water
+        .pools()
+        .flat_map(|pool| pool.surface_cells)
+        .collect::<Vec<_>>();
+    assert!(!pools.is_empty(), "the cave holds no pool");
+    assert!(
+        pools.iter().all(|cell| cell.centre().x < 1.0),
+        "the cave's pool spread onto the field"
+    );
+    let field = water
+        .running_cells()
+        .into_iter()
+        .filter(|running| running.cell.centre().x > 1.0)
+        .count();
+    assert!(field > 0, "no water ran out onto the field");
     assert!((water.ledger().total() - 0.36).abs() < 1.0e-9);
 }
 
