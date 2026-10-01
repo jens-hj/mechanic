@@ -79,9 +79,27 @@ pub(super) struct Soil {
     rate: f64,
     /// Height of the ground's top, in metres.
     top: f64,
-    /// Whether running water or a pool has stood on it since it last wicked:
-    /// its top is then wet through, whatever it holds below.
-    covered: bool,
+    /// The water that has stood on it since it last wicked, if any: its top
+    /// is then wet through, whatever it holds below.
+    covered: Option<Cover>,
+}
+
+/// Water standing on a column of ground, which feeds what it wicks away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cover {
+    /// Running water in the column.
+    Sheet,
+    /// A pool, by its id.
+    Pool(u32),
+}
+
+/// Where water wicking out of a column comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    /// Water standing on it.
+    Cover(Cover),
+    /// Its own ground.
+    Ground,
 }
 
 /// Water in the ground under one column, in a saved world.
@@ -108,8 +126,8 @@ pub struct WetGround {
     pub top: f64,
     /// How full its pores are, from 0 to 1.
     pub fill: f64,
-    /// Water it holds as a depth over the column, in metres; running water
-    /// on it counts in full.
+    /// Water it holds, and running water standing on it, as a depth over
+    /// the column, in metres: a film too thin to see adds next to nothing.
     pub soaked: f64,
 }
 
@@ -125,7 +143,11 @@ impl Soil {
 
     /// How wet it is for wicking: ground under water is wet through.
     fn wetness(&self) -> f64 {
-        if self.covered { 1.0 } else { self.fill() }
+        if self.covered.is_some() {
+            1.0
+        } else {
+            self.fill()
+        }
     }
 
     /// Water it takes in over `dt` seconds from water standing on it, at
@@ -162,7 +184,11 @@ impl WaterWorld {
     }
 
     /// Every column of wet ground, to draw: ground water has soaked into,
-    /// and ground running water covers, which is wet through.
+    /// and ground running water stands on.
+    ///
+    /// Running water counts by its depth, and its column keeps the height
+    /// its ground was measured at: the film at the front of running water
+    /// comes and goes from step to step, and would otherwise flicker.
     pub fn wet_ground(&self) -> Vec<WetGround> {
         let mut wet = self
             .soil
@@ -181,15 +207,18 @@ impl WaterWorld {
             })
             .collect::<super::cells::CellMap<_, _>>();
         for (cell, sheet) in self.sheets.iter() {
-            wet.insert(
-                (cell.x, cell.z),
-                WetGround {
+            let depth = sheet.volume.max(0.0) / CELL_AREA_M2;
+            wet.entry((cell.x, cell.z))
+                .and_modify(|wet| wet.soaked += depth)
+                .or_insert(WetGround {
                     column: (cell.x, cell.z),
-                    top: sheet.floor(),
-                    fill: 1.0,
-                    soaked: f64::INFINITY,
-                },
-            );
+                    top: self
+                        .soil
+                        .get(&(cell.x, cell.z))
+                        .map_or(sheet.floor(), |soil| soil.top),
+                    fill: self.soil_fill(cell.x, cell.z),
+                    soaked: depth,
+                });
         }
         wet.into_values().collect()
     }
@@ -216,7 +245,7 @@ impl WaterWorld {
                     capacity: doc.capacity_m3,
                     rate: doc.rate_m_s,
                     top: doc.top,
-                    covered: false,
+                    covered: None,
                 },
             );
         }
@@ -234,7 +263,7 @@ impl WaterWorld {
                 capacity: pores * SOIL_METRES * CELL_AREA_M2,
                 rate,
                 top: floor,
-                covered: false,
+                covered: None,
             }
         })
     }
@@ -276,7 +305,7 @@ impl WaterWorld {
                 capacity,
                 rate,
                 top: beside,
-                covered: false,
+                covered: None,
             },
         );
         Some((capacity, 0.0))
@@ -284,6 +313,11 @@ impl WaterWorld {
 
     /// Water wicking sideways from wet ground into drier ground beside it,
     /// over `dt`. One set of columns wicks each step, over that set's turn.
+    ///
+    /// Ground under water is wet through, and the water on it feeds what it
+    /// wicks away: drawn from its own pores instead, a column a film once
+    /// crossed would empty into the dry ground beside it in one turn and
+    /// take the water back the next.
     fn wick(&mut self, ground: &impl WaterGround, dt: f64) {
         let set = self.wick_set;
         self.wick_set = (set + 1) % WICK_SETS;
@@ -291,19 +325,29 @@ impl WaterWorld {
         let turn = |(x, z): (i32, i32)| {
             (i64::from(x) + 3 * i64::from(z)).rem_euclid(i64::from(WICK_SETS)) == i64::from(set)
         };
-        let mut senders = Vec::new();
+        let mut turns = Vec::new();
         for (&column, soil) in &mut self.soil {
-            if !turn(column) {
-                continue;
+            if turn(column) {
+                turns.push((
+                    column,
+                    soil.covered.take(),
+                    soil.fill(),
+                    soil.top,
+                    soil.moisture,
+                ));
             }
-            let wetness = soil.wetness();
-            soil.covered = false;
-            if wetness > WICK_GRADIENT && soil.moisture > 0.0 {
-                senders.push((column, wetness, soil.top, soil.moisture));
+        }
+        let mut senders = Vec::new();
+        for (column, cover, fill, top, moisture) in turns {
+            let standing = cover.map_or(0.0, |cover| self.standing(column, cover));
+            if let Some(cover) = cover.filter(|_| standing > 0.0) {
+                senders.push((column, Source::Cover(cover), 1.0, top, standing));
+            } else if fill > WICK_GRADIENT && moisture > 0.0 {
+                senders.push((column, Source::Ground, fill, top, moisture));
             }
         }
         let mut flows = Vec::new();
-        for (column, wetness, top, moisture) in senders {
+        for (column, source, wetness, top, budget) in senders {
             let first = flows.len();
             let mut given = 0.0;
             for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
@@ -317,32 +361,64 @@ impl WaterWorld {
                 let pull = wetness - beside_wetness - WICK_GRADIENT;
                 if pull > 0.0 {
                     let flow = WICK_M_S * CELL_AREA_M2 * dt * pull;
-                    flows.push((column, beside, flow));
+                    flows.push((column, source, beside, flow));
                     given += flow;
                 }
             }
-            // A column gives no more than it holds.
-            if given > moisture {
+            // A column gives no more than it has.
+            if given > budget {
                 for flow in &mut flows[first..] {
-                    flow.2 *= moisture / given;
+                    flow.3 *= budget / given;
                 }
             }
         }
-        for (from, to, flow) in flows {
+        for (from, source, to, flow) in flows {
             let room = self
                 .soil
                 .get(&to)
                 .map_or(0.0, |soil| (soil.capacity - soil.moisture).max(0.0));
-            let held = self.soil.get(&from).map_or(0.0, |soil| soil.moisture);
+            let held = match source {
+                Source::Cover(cover) => self.standing(from, cover),
+                Source::Ground => self.soil.get(&from).map_or(0.0, |soil| soil.moisture),
+            };
             let moved = flow.min(room).min(held);
-            if moved > 0.0 {
-                if let Some(soil) = self.soil.get_mut(&from) {
-                    soil.moisture -= moved;
+            if moved <= 0.0 {
+                continue;
+            }
+            match source {
+                Source::Cover(Cover::Sheet) => {
+                    if let Some(slot) = self.sheets.slot(from.0, from.1) {
+                        self.sheets.at_mut(slot).volume -= moved;
+                    }
                 }
-                if let Some(soil) = self.soil.get_mut(&to) {
-                    soil.moisture += moved;
+                Source::Cover(Cover::Pool(id)) => {
+                    if let Some(pool) = self.pools.get_mut(&id) {
+                        pool.volume -= moved;
+                    }
+                }
+                Source::Ground => {
+                    if let Some(soil) = self.soil.get_mut(&from) {
+                        soil.moisture -= moved;
+                    }
                 }
             }
+            if let Some(soil) = self.soil.get_mut(&to) {
+                soil.moisture += moved;
+            }
+        }
+    }
+
+    /// Water standing on a column that may wick into the ground beside it,
+    /// in m³.
+    fn standing(&self, column: (i32, i32), cover: Cover) -> f64 {
+        match cover {
+            Cover::Sheet => self
+                .sheets
+                .slot(column.0, column.1)
+                .map(|slot| self.sheets.at(slot))
+                .filter(|sheet| sheet.present)
+                .map_or(0.0, |sheet| sheet.volume.max(0.0)),
+            Cover::Pool(id) => self.pools.get(&id).map_or(0.0, |pool| pool.volume.max(0.0)),
         }
     }
 
@@ -352,7 +428,7 @@ impl WaterWorld {
         for (slot, cell) in self.sheets.wet() {
             let sheet = *self.sheets.at(slot);
             let soil = self.soil_at(ground, cell, sheet.floor());
-            soil.covered = true;
+            soil.covered = Some(Cover::Sheet);
             let taken = soil.take(sheet.volume, dt);
             self.sheets.at_mut(slot).volume -= taken;
         }
@@ -364,7 +440,7 @@ impl WaterWorld {
         for (id, cell, floor) in beds {
             let offered = self.pools.get(&id).map_or(0.0, |pool| pool.volume);
             let soil = self.soil_at(ground, cell, floor);
-            soil.covered = true;
+            soil.covered = Some(Cover::Pool(id));
             let taken = soil.take(offered, dt);
             if let Some(pool) = self.pools.get_mut(&id) {
                 pool.volume -= taken;

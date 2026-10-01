@@ -163,26 +163,31 @@ six hours and gives a millimetre an hour to the air, so it too stays in the
 cycle; the ledger counts it as `soil_m3`, and saves keep it.
 
 Wet ground wicks water sideways into drier ground beside it, as capillarity
-does. A column under running water or a pool counts as wet through; one
-column gives to each of its four neighbours in proportion to how much fuller
-it is, less a quarter: wet ground pulls water only so far, so a damp fringe
-of three columns or so forms beside water, darkening within a minute and
-widening over minutes as the ground under the water feeds it, rather than
-spreading on for metres. Water wicks only between columns whose drawn ground
-lies within 25 cm of each other: it climbs no bank and falls into no cave.
-Columns take turns, one in 64 each step, so wicking costs little however
-much ground is wet.
+does. A column under running water or a pool counts as wet through, and the
+water standing on it feeds what it wicks, so the ground under the water never
+empties into the fringe and fills again a moment later. One column gives to
+each of its four neighbours in proportion to how much fuller it is, less a
+quarter: wet ground pulls water only so far, so a damp fringe of three
+columns or so forms beside water, darkening within a minute and widening
+over minutes, rather than spreading on for metres. Water wicks only between
+columns whose drawn ground lies within 25 cm of each other: it climbs no bank
+and falls into no cave. Columns take turns, one in 64 each step, so wicking
+costs little however much ground is wet.
 
 The terrain shader darkens and glosses wet ground: the worker publishes each
-wet column's ground height and the water soaked into it, and the app writes
-them into a 256 × 256 map around the camera, 20 cm a texel, that the
-terrain material samples. A few millimetres soaked in darken the ground by
-two thirds of its full wetness; a column only counts as wet within 40 cm of
-the height it was measured at, so a cave under a wet field stays dry. Dry
-texels within two of wet ground carry its height, so the edge fades out
-over the ground beside it; the shader filters the map with a cubic B-spline,
-so wet ground shows no grid of columns, and noise moves the fringe in and
-out where it is half wet, so its edge is ragged rather than ruled.
+wet column's ground height and the water soaked into it and standing on it,
+as a depth, and the app writes them into a 256 × 256 map around the camera,
+20 cm a texel, that the terrain material samples. A few millimetres darken
+the ground by two thirds of its full wetness. Running water counts by its
+depth rather than as wet through, so the film at its front, too thin to see
+and coming and going from step to step, does not flicker the ground dark and
+light; under running water a column keeps the height its ground was measured
+at for the same reason. A column only counts as wet within 40 cm of the
+height it was measured at, so a cave under a wet field stays dry. Dry texels
+within two of wet ground carry its height, so the edge fades out over the
+ground beside it; the shader filters the map with a cubic B-spline, so wet
+ground shows no grid of columns, and noise moves the fringe in and out where
+it is half wet, so its edge is ragged rather than ruled.
 
 ## Drops
 

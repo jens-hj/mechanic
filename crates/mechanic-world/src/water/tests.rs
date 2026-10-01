@@ -1087,6 +1087,41 @@ fn water_soaks_sideways_into_the_ground_beside_it() {
 }
 
 #[test]
+fn ground_under_water_keeps_what_it_soaked_while_it_wicks_beside_it() {
+    let ground = trench_in_a_field(0.0, false);
+    let mut water = fill_the_trench(&ground, 1);
+    // The water on the trench feeds the fringe, so the ground under it
+    // only fills: emptied into the fringe, it would show dry for a moment.
+    let mut held = [water.soil_fill(10, 8), water.soil_fill(10, 9)];
+    for step in 0..2_400 {
+        water.step(&ground, 0.05);
+        for (fill, z) in held.iter_mut().zip([8, 9]) {
+            let now = water.soil_fill(10, z);
+            assert!(
+                now > *fill - 1.0e-6,
+                "step {step}: column {z} fell from {fill:.4} to {now:.4}"
+            );
+            *fill = now;
+        }
+    }
+}
+
+#[test]
+fn a_film_too_thin_to_see_does_not_darken_the_ground() {
+    let ground = floor(true);
+    for (spilled, shown) in [(1.0e-6, 0.0..1.0e-4), (4.0e-4, 0.009..0.011)] {
+        let mut water = WaterWorld::new();
+        water.deposit(&ground, DVec3::new(1.0, 0.5, 1.0), spilled);
+        let wet = water.wet_ground();
+        let soaked = wet.iter().map(|wet| wet.soaked).fold(0.0, f64::max);
+        assert!(
+            shown.contains(&soaked),
+            "{spilled:.0e} m³ shows {soaked:.2e} m soaked"
+        );
+    }
+}
+
+#[test]
 fn wet_ground_wicks_into_no_bank_above_it() {
     // Ground a metre over the trench's far side.
     let water = fill_the_trench(&trench_in_a_field(1.0, false), 8);
