@@ -1207,6 +1207,7 @@ fn a_pool_spilling_over_a_cliff_fills_the_pit_below() {
     );
 }
 
+mod erosion;
 mod terrain;
 
 #[test]

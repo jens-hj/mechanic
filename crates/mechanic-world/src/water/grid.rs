@@ -166,7 +166,12 @@ impl SheetGrid {
 
     /// Every sheet's slot and cell.
     pub(super) fn wet(&self) -> Vec<(Slot, WaterCell)> {
-        let mut wet = Vec::with_capacity(self.wet);
+        self.wet_where(|_, _| true)
+    }
+
+    /// The slot and cell of every sheet in a column `keep` accepts.
+    pub(super) fn wet_where(&self, keep: impl Fn(i32, i32) -> bool) -> Vec<(Slot, WaterCell)> {
+        let mut wet = Vec::new();
         for (tile, entry) in self.tiles.iter().enumerate() {
             if entry.wet == 0 {
                 continue;
@@ -175,14 +180,13 @@ impl SheetGrid {
             for (index, sheet) in entry.columns.iter().enumerate() {
                 if sheet.present {
                     let index_i32 = i32::try_from(index).expect("a tile's index fits i32");
-                    wet.push((
-                        Slot { tile, index },
-                        WaterCell::new(
-                            tx * TILE_EDGE + index_i32 % TILE_EDGE,
-                            sheet.y,
-                            tz * TILE_EDGE + index_i32 / TILE_EDGE,
-                        ),
-                    ));
+                    let (x, z) = (
+                        tx * TILE_EDGE + index_i32 % TILE_EDGE,
+                        tz * TILE_EDGE + index_i32 / TILE_EDGE,
+                    );
+                    if keep(x, z) {
+                        wet.push((Slot { tile, index }, WaterCell::new(x, sheet.y, z)));
+                    }
                 }
             }
         }

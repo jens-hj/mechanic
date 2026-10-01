@@ -29,6 +29,7 @@ use bevy_math::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 
 use super::grid::Slot;
+use super::sediment::SedimentLoad;
 use super::{
     CLING_METRES, End, FILM_METRES, GRAVITY, Joined, MERGE_METRES, SPREAD_CELLS_PER_STEP,
     WATER_CELL_METRES, WaterCell, WaterGround, WaterWorld,
@@ -49,7 +50,7 @@ const FRICTION_PER_SECOND: f64 = 0.5;
 
 /// Manning's roughness of the ground under running water, in s/m^(1/3):
 /// short grass and bare soil.
-const ROUGHNESS: f64 = 0.03;
+pub(super) const ROUGHNESS: f64 = 0.03;
 
 /// Longest pipe substep, in seconds: pipes need shorter steps than pools,
 /// and a longer one rocks water back and forth between neighbours.
@@ -108,6 +109,8 @@ pub(super) struct Sheet {
     /// The height of the cell its surface was in, in water cells, when it
     /// was last found neither under still water nor under a roof.
     settled: Option<i32>,
+    /// Sediment it carries.
+    pub(super) load: SedimentLoad,
 }
 
 /// One sheet in a saved world.
@@ -117,6 +120,9 @@ pub struct SheetDoc {
     pub cell: WaterCell,
     /// Water held, in m³.
     pub volume_m3: f64,
+    /// Sediment it carries.
+    #[serde(default)]
+    pub load: SedimentLoad,
 }
 
 impl Sheet {
@@ -232,6 +238,7 @@ impl WaterWorld {
             .map(|(cell, sheet)| SheetDoc {
                 cell,
                 volume_m3: sheet.volume,
+                load: sheet.load,
             })
             .collect()
     }
@@ -505,11 +512,11 @@ impl WaterWorld {
     /// the water moved, and marks the pools it came from.
     fn take_from_pools(
         &mut self,
-        slot: Slot,
+        (index, slot): (usize, Slot),
         faces: &[Route; 4],
         flow: &mut [f64; 4],
         sub: f64,
-        touched: &mut BTreeSet<u32>,
+        (touched, drawn): (&mut BTreeSet<u32>, &mut Vec<(usize, u32, f64)>),
     ) -> f64 {
         let mut moved = 0.0;
         for (face, route) in faces.iter().enumerate() {
@@ -529,12 +536,46 @@ impl WaterWorld {
                 .max(0.0);
             pool.volume -= given;
             touched.insert(id);
+            if given > 0.0 {
+                drawn.push((index, id, given));
+            }
             flow[face] = -given / sub;
             self.sheets.at_mut(slot).volume += given;
             self.sheets.stir(slot, given / CELL_AREA_M2);
             moved += given;
         }
         moved
+    }
+
+    /// Every face's flow over the next substep of `sub` seconds, from the
+    /// surfaces as they stand.
+    fn pipe_flows(&self, routes: &[(Slot, [Route; 4])], flows: &mut [[f64; 4]], sub: f64) {
+        for ((slot, faces), flow) in routes.iter().zip(flows.iter_mut()) {
+            let sheet = self.sheets.at(*slot);
+            let height = sheet.surface_height();
+            let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
+            for (face, route) in faces.iter().enumerate() {
+                let beyond = self.beyond(sheet, *route);
+                let both_ways = matches!(route, Route::Pool { .. });
+                flow[face] = beyond.map_or(0.0, |(beyond, sill)| {
+                    // The pipe is as deep as the water over the face:
+                    // a film is pushed as a film, not as a stream.
+                    let across = (height.max(beyond) - sill).clamp(CLING_METRES, DRIVE_METRES);
+                    let driven = sheet.flux[face] + sub * GRAVITY * across * (height - beyond);
+                    let flow = driven / (1.0 + friction(sheet.flux[face], depth) * sub);
+                    if both_ways { flow } else { flow.max(0.0) }
+                });
+            }
+            // No sheet sends more than it holds; water a pool sends in
+            // is the pool's to give.
+            let out = flow.iter().map(|face| face.max(0.0)).sum::<f64>() * sub;
+            if out > 0.0 && out > sheet.volume {
+                let scale = sheet.volume.max(0.0) / out;
+                for face in flow.iter_mut().filter(|face| **face > 0.0) {
+                    *face *= scale;
+                }
+            }
+        }
     }
 
     /// Runs the sheets for `dt` seconds. Returns the water moved and the
@@ -557,38 +598,24 @@ impl WaterWorld {
         let mut pours = Vec::new();
         let mut flows = vec![[0.0; 4]; routes.len()];
         let mut fed = BTreeSet::new();
+        // Water each face sent where sediment goes with it, and every face
+        // sent anywhere, over the step, and what pools gave each sheet.
+        let mut carried = vec![[0.0; 4]; routes.len()];
+        let mut sent = vec![0.0; routes.len()];
+        let mut drawn = Vec::new();
         for _ in 0..substeps {
             // Every face's flow first, from the surfaces as they stand.
-            for ((slot, faces), flow) in routes.iter().zip(&mut flows) {
-                let sheet = self.sheets.at(*slot);
-                let height = sheet.surface_height();
-                let depth = (sheet.volume / CELL_AREA_M2).max(CLING_METRES);
-                for (face, route) in faces.iter().enumerate() {
-                    let beyond = self.beyond(sheet, *route);
-                    let both_ways = matches!(route, Route::Pool { .. });
-                    flow[face] = beyond.map_or(0.0, |(beyond, sill)| {
-                        // The pipe is as deep as the water over the face:
-                        // a film is pushed as a film, not as a stream.
-                        let across = (height.max(beyond) - sill).clamp(CLING_METRES, DRIVE_METRES);
-                        let driven = sheet.flux[face] + sub * GRAVITY * across * (height - beyond);
-                        let flow = driven / (1.0 + friction(sheet.flux[face], depth) * sub);
-                        if both_ways { flow } else { flow.max(0.0) }
-                    });
-                }
-                // No sheet sends more than it holds; water a pool sends in
-                // is the pool's to give.
-                let out = flow.iter().map(|face| face.max(0.0)).sum::<f64>() * sub;
-                if out > 0.0 && out > sheet.volume {
-                    let scale = sheet.volume.max(0.0) / out;
-                    for face in flow.iter_mut().filter(|face| **face > 0.0) {
-                        *face *= scale;
-                    }
-                }
-            }
+            self.pipe_flows(&routes, &mut flows, sub);
             // Then the water moves.
             let mut touched = BTreeSet::new();
-            for ((slot, faces), flow) in routes.iter().zip(&mut flows) {
-                moved += self.take_from_pools(*slot, faces, flow, sub, &mut touched);
+            for (index, ((slot, faces), flow)) in routes.iter().zip(&mut flows).enumerate() {
+                moved += self.take_from_pools(
+                    (index, *slot),
+                    faces,
+                    flow,
+                    sub,
+                    (&mut touched, &mut drawn),
+                );
                 self.sheets.at_mut(*slot).flux = *flow;
                 for (face, route) in faces.iter().enumerate() {
                     let volume = flow[face] * sub;
@@ -598,6 +625,10 @@ impl WaterWorld {
                     self.sheets.at_mut(*slot).volume -= volume;
                     self.sheets.stir(*slot, volume / CELL_AREA_M2);
                     moved += volume;
+                    sent[index] += volume;
+                    if !matches!(route, Route::Water(..)) {
+                        carried[index][face] += volume;
+                    }
                     match *route {
                         Route::Onto { slot, y, floor } => {
                             self.sheets.place(slot, y, floor).volume += volume;
@@ -613,7 +644,7 @@ impl WaterWorld {
                         }
                         // It pours through the lip's cell, which may be a hole
                         // in a bank lower than its surface.
-                        Route::Lip(over) => pours.push((over, volume)),
+                        Route::Lip(over) => pours.push((over, volume, index, face)),
                         Route::Wall => {}
                     }
                 }
@@ -626,22 +657,92 @@ impl WaterWorld {
                 }
             }
         }
+        let lips = self.carry_loads(&routes, &carried, &sent, &drawn);
         for (end, volume) in into {
             if let End::Pool(id) = end {
                 fed.insert(id);
             }
             self.deposit_end(ground, end, volume);
         }
-        // Water over a lip lands at once wherever the drop leads.
-        for (over, volume) in pours {
+        // Water over a lip lands at once wherever the drop leads, with its
+        // share of what its sheet carried over the lip.
+        for (over, volume, index, face) in pours {
             let end = self.landing(ground, over);
             if let End::Pool(id) = end {
                 fed.insert(id);
             }
-            self.deposit_end(ground, end, volume);
+            let placed = self.deposit_end(ground, end, volume);
+            let load = lips
+                .get(&(index, face))
+                .map_or_else(SedimentLoad::default, |load| {
+                    load.scaled(volume / carried[index][face])
+                });
+            self.give_load(placed, load, (over.x, over.z, over.bottom()));
         }
         self.sheets.rest(STILL_METRES * sub / dt);
         (moved, fed)
+    }
+
+    /// Sediment moving with the step's water, from what each sheet and pool
+    /// carried as it began: each gives the share of its load that the water
+    /// it sent on to running water or a pool was of all it held, as if well
+    /// stirred; water it sent into seed-derived water leaves its sediment
+    /// behind. Returns what each lip face carries over, for its pours.
+    fn carry_loads(
+        &mut self,
+        routes: &[(Slot, [Route; 4])],
+        carried: &[[f64; 4]],
+        sent: &[f64],
+        drawn: &[(usize, u32, f64)],
+    ) -> std::collections::BTreeMap<(usize, usize), SedimentLoad> {
+        let mut arriving = Vec::new();
+        let mut given = std::collections::BTreeMap::<u32, f64>::new();
+        for &(_, id, volume) in drawn {
+            *given.entry(id).or_default() += volume;
+        }
+        let mut from_pools = std::collections::BTreeMap::<u32, SedimentLoad>::new();
+        for (&id, &volume) in &given {
+            if let Some(pool) = self.pools.get_mut(&id) {
+                let held = pool.volume + volume;
+                from_pools.insert(id, pool.load.part(volume, held));
+            }
+        }
+        for &(index, id, volume) in drawn {
+            if let Some(load) = from_pools.get(&id) {
+                arriving.push((routes[index].0, load.scaled(volume / given[&id])));
+            }
+        }
+        let mut lips = std::collections::BTreeMap::new();
+        for (index, (slot, faces)) in routes.iter().enumerate() {
+            let out = carried[index].iter().sum::<f64>();
+            if out <= 0.0 || self.sheets.at(*slot).load.total() <= 0.0 {
+                continue;
+            }
+            let sheet = self.sheets.at_mut(*slot);
+            let held = sheet.volume.max(0.0) + sent[index];
+            let leaving = sheet.load.part(out, held);
+            for (face, route) in faces.iter().enumerate() {
+                if carried[index][face] <= 0.0 {
+                    continue;
+                }
+                let part = leaving.scaled(carried[index][face] / out);
+                match *route {
+                    Route::Onto { slot, .. } => arriving.push((slot, part)),
+                    Route::Pool { id, .. } => match self.pools.get_mut(&id) {
+                        Some(pool) => pool.load.add(part),
+                        None => self.sheets.at_mut(*slot).load.add(part),
+                    },
+                    Route::Lip(_) => {
+                        lips.insert((index, face), part);
+                    }
+                    Route::Wall | Route::Water(..) => self.sheets.at_mut(*slot).load.add(part),
+                }
+            }
+        }
+        for (slot, load) in arriving {
+            self.sheets.at_mut(slot).load.add(load);
+        }
+        lips
     }
 
     /// Sheets risen against a roof become pools; sheets that dried up
@@ -655,6 +756,7 @@ impl WaterWorld {
             if sheet.volume < DRY_SHEET_M3 {
                 self.sheets.remove_at(slot);
                 self.cycle.evaporate(sheet.volume.max(0.0));
+                self.settle_load((cell.x, cell.z), sheet.floor, sheet.load);
                 continue;
             }
             // Sleeping water has settled where it lies, and water whose
@@ -673,6 +775,9 @@ impl WaterWorld {
             if self.confined(ground, cell, sheet.surface_height()) {
                 self.sheets.remove_at(slot);
                 let id = self.start_pool(ground, cell, sheet.volume);
+                if let Some(pool) = self.pools.get_mut(&id) {
+                    pool.load.add(sheet.load);
+                }
                 self.flood(ground, id, SPREAD_CELLS_PER_STEP);
                 self.shed_over(ground, id, sheet.surface_height());
             } else {
@@ -716,6 +821,7 @@ impl WaterWorld {
                 };
                 if under(pool.level) && sheet.floor >= pool.rim {
                     pool.volume += sheet.volume;
+                    pool.load.add(sheet.load);
                     pool.queue(cell, sheet.floor);
                     self.sheets.remove(cell);
                     return true;
@@ -759,6 +865,7 @@ impl WaterWorld {
                     );
                 }
                 self.cycle.add(seed.body, sheet.volume - held);
+                self.settle_load((cell.x, cell.z), sheet.floor, sheet.load);
                 // Free cells around it now border the seed-derived water.
                 for y in cell.y..=top {
                     for neighbour in WaterCell::new(cell.x, y, cell.z).neighbours() {
@@ -803,10 +910,14 @@ impl WaterWorld {
 
     /// A sheet taken in by a pool gives it its water.
     pub(super) fn absorb_sheet(&mut self, id: u32, cell: WaterCell) {
-        if let Some(sheet) = self.sheets.remove(cell)
-            && let Some(pool) = self.pools.get_mut(&id)
-        {
-            pool.volume += sheet.volume;
+        if let Some(sheet) = self.sheets.remove(cell) {
+            match self.pools.get_mut(&id) {
+                Some(pool) => {
+                    pool.volume += sheet.volume;
+                    pool.load.add(sheet.load);
+                }
+                None => self.settle_load((cell.x, cell.z), sheet.floor, sheet.load),
+            }
         }
     }
 
@@ -827,7 +938,8 @@ impl WaterWorld {
             }
             _ => {
                 self.sheets.remove(cell);
-                self.deposit_at(ground, cell.up(), sheet.volume);
+                let placed = self.deposit_at(ground, cell.up(), sheet.volume);
+                self.give_load(placed, sheet.load, (cell.x, cell.z, sheet.floor));
             }
         }
     }
@@ -843,7 +955,7 @@ fn friction(flux: f64, depth: f64) -> f64 {
 }
 
 /// A sheet's current from the flow through its faces, in m/s.
-fn current(sheet: &Sheet, depth: f64) -> DVec2 {
+pub(super) fn current(sheet: &Sheet, depth: f64) -> DVec2 {
     let across = WATER_CELL_METRES * depth.max(CLING_METRES);
     DVec2::new(sheet.flux[1] - sheet.flux[0], sheet.flux[3] - sheet.flux[2]) / across
 }

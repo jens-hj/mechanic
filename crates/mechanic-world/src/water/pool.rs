@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
 
 use super::cells::CellMap;
 use super::ground::Openings;
+use super::sediment::SedimentLoad;
 use super::{FINE_LAYER_METRES, FINE_VOLUME_M3, WaterCell};
 
 /// Horizontal area of one terrain cell, in square metres.
@@ -52,6 +53,8 @@ pub(super) struct Pool {
     /// How far its edge may spread over dry, shallow ground before its next
     /// ring, in metres; infinite while a saved pool fills out again.
     pub(super) front: f64,
+    /// Sediment it carries.
+    pub(super) load: SedimentLoad,
 }
 
 impl Pool {
@@ -67,6 +70,7 @@ impl Pool {
             queued: HashSet::new(),
             contacts: BTreeSet::new(),
             front: 0.0,
+            load: SedimentLoad::default(),
         }
     }
 
@@ -202,6 +206,7 @@ impl Pool {
     /// Takes in another pool's cells and water.
     pub(super) fn absorb_pool(&mut self, other: Self) {
         self.volume += other.volume;
+        self.load.add(other.load);
         self.rim = self.rim.max(other.rim);
         for (cell, openings) in other.members {
             self.add_member(cell, openings);

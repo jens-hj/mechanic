@@ -78,7 +78,9 @@ pub(super) struct Soil {
     /// How fast it takes water in when dry, in metres per second.
     rate: f64,
     /// Height of the ground's top, in metres.
-    top: f64,
+    pub(super) top: f64,
+    /// What its top is made of, once measured.
+    pub(super) material: Option<TerrainMaterial>,
     /// The water that has stood on it since it last wicked, if any: its top
     /// is then wet through, whatever it holds below.
     covered: Option<Cover>,
@@ -133,7 +135,7 @@ pub struct WetGround {
 
 impl Soil {
     /// How full its pores are: ground without pores never fills.
-    fn fill(&self) -> f64 {
+    pub(super) fn fill(&self) -> f64 {
         if self.capacity > 0.0 {
             self.moisture / self.capacity
         } else {
@@ -245,6 +247,7 @@ impl WaterWorld {
                     capacity: doc.capacity_m3,
                     rate: doc.rate_m_s,
                     top: doc.top,
+                    material: None,
                     covered: None,
                 },
             );
@@ -253,16 +256,23 @@ impl WaterWorld {
 
     /// The ground under a cell whose water rests on `floor`, measured the
     /// first time water reaches it.
-    fn soil_at(&mut self, ground: &impl WaterGround, cell: WaterCell, floor: f64) -> &mut Soil {
+    pub(super) fn soil_at(
+        &mut self,
+        ground: &impl WaterGround,
+        cell: WaterCell,
+        floor: f64,
+    ) -> &mut Soil {
         self.soil.entry((cell.x, cell.z)).or_insert_with(|| {
             let centre = cell.centre();
             let below = bevy_math::DVec3::new(centre.x, floor - 0.02, centre.z);
-            let (pores, rate) = ground.material(below).map_or((0.0, 0.0), holds);
+            let material = ground.material(below);
+            let (pores, rate) = material.map_or((0.0, 0.0), holds);
             Soil {
                 moisture: 0.0,
                 capacity: pores * SOIL_METRES * CELL_AREA_M2,
                 rate,
                 top: floor,
+                material: Some(material.unwrap_or(TerrainMaterial::Rock)),
                 covered: None,
             }
         })
@@ -296,7 +306,8 @@ impl WaterWorld {
             )
         }))?;
         let below = bevy_math::DVec3::new(centre.x, beside - 0.02, centre.z);
-        let (pores, rate) = ground.material(below).map_or((0.0, 0.0), holds);
+        let material = ground.material(below);
+        let (pores, rate) = material.map_or((0.0, 0.0), holds);
         let capacity = pores * SOIL_METRES * CELL_AREA_M2;
         self.soil.insert(
             column,
@@ -305,6 +316,7 @@ impl WaterWorld {
                 capacity,
                 rate,
                 top: beside,
+                material: Some(material.unwrap_or(TerrainMaterial::Rock)),
                 covered: None,
             },
         );

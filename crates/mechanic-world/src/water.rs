@@ -18,6 +18,7 @@ mod cycle;
 mod grid;
 mod ground;
 mod pool;
+mod sediment;
 mod sheet;
 mod soil;
 mod surface;
@@ -35,6 +36,8 @@ use grid::SheetGrid;
 use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
 pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
+pub use sediment::{BedDoc, ErosionConfig, SedimentDoc, SedimentLedger, SedimentLoad};
+use sediment::{Placed, Sediment};
 pub use sheet::{RunningView, SheetDoc};
 pub use soil::{SoilDoc, WetGround};
 pub use surface::{SURFACE_TILE_COLUMNS, StoredSurface, SurfaceTile};
@@ -318,6 +321,9 @@ pub struct PoolDoc {
     pub seed: WaterCell,
     /// Water held, in m³.
     pub volume_m3: f64,
+    /// Sediment it carries.
+    #[serde(default)]
+    pub load: SedimentLoad,
 }
 
 /// Stored water of a saved world.
@@ -338,6 +344,8 @@ pub struct StoredWaterDoc {
     pub sheets: Vec<SheetDoc>,
     /// Water held in the ground.
     pub soil: Vec<SoilDoc>,
+    /// Sediment waiting to be laid, and what erosion has moved.
+    pub sediment: SedimentDoc,
 }
 
 /// A cell that filled from seed-derived water and joined it, in a saved
@@ -516,6 +524,8 @@ pub struct WaterWorld {
     /// lake's own sheet and the stored water meeting it are drawn at this
     /// one level, so neither shows a step against the other.
     shown: BTreeMap<WaterBody, WaterShift>,
+    /// Sediment beside the water.
+    sediment: Sediment,
 }
 
 /// How far a lake or river moves from where it is drawn before it is drawn
@@ -551,12 +561,21 @@ impl WaterWorld {
             );
         }
         for pool in &doc.pools {
-            water.deposit_at(ground, pool.seed, pool.volume_m3);
+            let placed = water.deposit_at(ground, pool.seed, pool.volume_m3);
+            let near = (pool.seed.x, pool.seed.z, pool.seed.bottom());
+            water.give_load(placed, pool.load, near);
         }
         for sheet in &doc.sheets {
             water.add_sheet(ground, sheet.cell, sheet.volume_m3);
+            let (cell, load) = (sheet.cell, sheet.load);
+            water.give_load(
+                Placed::Sheet(cell.x, cell.z),
+                load,
+                (cell.x, cell.z, cell.bottom()),
+            );
         }
         water.load_soil(&doc.soil);
+        water.load_sediment(&doc.sediment);
         let ids = water.pools.keys().copied().collect::<Vec<_>>();
         for id in ids {
             // A saved pool fills out to its level again at once.
@@ -577,6 +596,7 @@ impl WaterWorld {
                 .map(|pool| PoolDoc {
                     seed: pool.seed,
                     volume_m3: pool.volume,
+                    load: pool.load,
                 })
                 .collect(),
             bodies: self.cycle.to_doc(),
@@ -598,6 +618,7 @@ impl WaterWorld {
             },
             sheets: self.sheet_docs(),
             soil: self.soil_docs(),
+            sediment: self.sediment_doc(),
         }
     }
 
@@ -923,11 +944,18 @@ impl WaterWorld {
             })
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((cell, _)) = lowest {
+            let mut load = SedimentLoad::default();
             if let Some(pool) = self.pools.get_mut(&id) {
+                load = pool.load.part(over, pool.volume);
                 pool.volume -= over;
                 pool.settle();
             }
             self.add_sheet(ground, cell, over);
+            self.give_load(
+                Placed::Sheet(cell.x, cell.z),
+                load,
+                (cell.x, cell.z, cell.bottom()),
+            );
         }
     }
 
@@ -1100,6 +1128,7 @@ impl WaterWorld {
         let (running, sheet_fed) = self.step_sheets(ground, dt);
         moved_m3 += running;
         fed.extend(sheet_fed);
+        self.wear_and_settle(ground, dt);
         phases.sheets_ms = clock.lap();
         // Water that arrived floods at once, so no pool stands higher than
         // its water can reach.
@@ -1397,9 +1426,20 @@ impl WaterWorld {
             for cell in pool.members.keys() {
                 self.owner.remove(cell);
             }
-            match heir {
-                Some(heir) => self.deposit_end(ground, heir, pool.volume),
-                None => self.cycle.evaporate(pool.volume),
+            let placed = if let Some(heir) = heir {
+                self.deposit_end(ground, heir, pool.volume)
+            } else {
+                self.cycle.evaporate(pool.volume);
+                Placed::Gone
+            };
+            // What it carried goes on into a pool that takes its water, and
+            // otherwise settles on its bed.
+            if let Placed::Pool(heir) = placed
+                && let Some(heir) = self.pools.get_mut(&heir)
+            {
+                heir.load.add(pool.load);
+            } else {
+                self.settle_pool_load(&pool, pool.load);
             }
         }
     }
@@ -1420,6 +1460,7 @@ impl WaterWorld {
             return;
         };
         let level = self.drawn(ground, surface).level;
+        self.settle_pool_load(&pool, pool.load);
         let mut spare = pool.volume;
         for (&cell, &openings) in &pool.members {
             let held = held_in(cell, openings, level);
@@ -1480,10 +1521,18 @@ impl WaterWorld {
             if volume <= 0.0 {
                 continue;
             }
+            // Water a pool sends on to stored water carries its share of
+            // what the pool carries; into seed-derived water it leaves it.
+            let mut load = SedimentLoad::default();
+            let mut near = (0, 0, 0.0);
             match transfer.from {
                 End::Pool(id) => {
                     if let Some(pool) = self.pools.get_mut(&id) {
+                        if !matches!(transfer.to, End::Body(_)) {
+                            load = pool.load.part(volume, pool.volume);
+                        }
                         pool.volume -= volume;
+                        near = (pool.seed.x, pool.seed.z, pool.seed.bottom());
                     }
                 }
                 End::Body(body) => self.cycle.add(body, -volume),
@@ -1492,38 +1541,53 @@ impl WaterWorld {
             if let End::Pool(id) = transfer.to {
                 fed.insert(id);
             }
-            self.deposit_end(ground, transfer.to, volume);
+            if let End::Seed(cell) | End::Sheet(cell) = transfer.to {
+                near = (cell.x, cell.z, cell.bottom());
+            }
+            let placed = self.deposit_end(ground, transfer.to, volume);
+            self.give_load(placed, load, near);
             moved += volume;
         }
         (moved, fed)
     }
 
-    fn deposit_end(&mut self, ground: &impl WaterGround, to: End, volume: f64) {
+    /// Puts water down at one end of a transfer. Returns where it went.
+    fn deposit_end(&mut self, ground: &impl WaterGround, to: End, volume: f64) -> Placed {
         match to {
             End::Pool(id) => {
                 if let Some(pool) = self.pools.get_mut(&id) {
                     pool.volume += volume;
+                    return Placed::Pool(id);
                 }
+                Placed::Gone
             }
-            End::Body(body) => self.cycle.add(body, volume),
+            End::Body(body) => {
+                self.cycle.add(body, volume);
+                Placed::Gone
+            }
             End::Seed(cell) => {
                 if let Some(&id) = self.owner.get(&cell) {
-                    self.deposit_end(ground, End::Pool(id), volume);
+                    self.deposit_end(ground, End::Pool(id), volume)
                 } else if floor_of(cell, self.openings(ground, cell)).is_none() {
                     // Water set down in solid ground rises out of it.
-                    self.deposit_at(ground, cell, volume);
+                    self.deposit_at(ground, cell, volume)
                 } else if self.sheets.covering(cell).is_some() {
                     // Water landing in running water is that water's: a pool
                     // begun there would rest on it, both holding the water
                     // between them.
                     self.add_sheet(ground, cell, volume);
+                    Placed::Sheet(cell.x, cell.z)
                 } else if self.stands(ground, cell, volume) {
-                    self.start_pool(ground, cell, volume);
+                    Placed::Pool(self.start_pool(ground, cell, volume))
                 } else {
                     self.add_sheet(ground, cell, volume);
+                    Placed::Sheet(cell.x, cell.z)
                 }
             }
-            End::Sheet(cell) => self.add_sheet(ground, cell, volume),
+            End::Sheet(cell) => {
+                self.add_sheet(ground, cell, volume);
+                Placed::Sheet(cell.x, cell.z)
+            }
         }
     }
 
@@ -1543,7 +1607,12 @@ impl WaterWorld {
         }
     }
 
-    fn deposit_at(&mut self, ground: &impl WaterGround, mut cell: WaterCell, volume: f64) {
+    fn deposit_at(
+        &mut self,
+        ground: &impl WaterGround,
+        mut cell: WaterCell,
+        volume: f64,
+    ) -> Placed {
         // Water pressed out of ground that filled in rises to the first open
         // space over it: it never stands inside solid ground, where a pool
         // with no room would draw from the water it touches for ever.
@@ -1551,13 +1620,13 @@ impl WaterWorld {
         while floor_of(cell, self.openings(ground, cell)).is_none() {
             if climbed == ROOFED_CELLS {
                 self.cycle.evaporate(volume);
-                return;
+                return Placed::Gone;
             }
             cell = cell.up();
             climbed += 1;
         }
         let to = self.landing(ground, cell);
-        self.deposit_end(ground, to, volume);
+        self.deposit_end(ground, to, volume)
     }
 
     /// Pours water in at a point: it lands in whatever lies below. Returns
@@ -1664,9 +1733,10 @@ impl WaterWorld {
                     pool.settle();
                     // Filled in whole: its water rises out of the ground.
                     if pool.members.is_empty() {
-                        let volume = pool.volume;
+                        let (volume, load) = (pool.volume, pool.load);
                         self.pools.remove(&id);
-                        self.deposit_at(ground, cell.up(), volume);
+                        let placed = self.deposit_at(ground, cell.up(), volume);
+                        self.give_load(placed, load, (cell.x, cell.z, cell.bottom()));
                         return;
                     }
                 }
