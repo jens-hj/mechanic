@@ -355,6 +355,7 @@ pub(super) fn coordinate_terrain_edits(
     }
 
     if runtime.terrain_edit_task.is_some()
+        || runtime.water.sediment_busy()
         || runtime.pending_terrain_edits.is_empty()
         || runtime.terrain_edit_error.is_some()
     {
@@ -380,6 +381,7 @@ pub(super) fn coordinate_terrain_edits(
 }
 
 pub(super) fn finish_terrain_edits(runtime: &mut WorldRuntime) -> Result<(), String> {
+    runtime.finish_sediment();
     if let Some(task) = runtime.terrain_edit_task.take() {
         let result = block_on(task)?;
         commit_terrain_edit_result(runtime, result);

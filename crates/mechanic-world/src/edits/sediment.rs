@@ -30,7 +30,7 @@ const THIN_DENSITY: f32 = 0.001;
 
 /// Most quanta one cell gives or takes before the next column's turn, so a
 /// column's cells sink and rise together.
-const STEP_QUANTA: u32 = 8;
+const STEP_QUANTA: u32 = 32;
 
 /// Cells above and below the given height searched for a column's top.
 const SEARCH_CELLS: i32 = 6;
@@ -52,6 +52,27 @@ pub struct SedimentChange {
     pub quanta: i64,
     /// Material to lay; what is taken is whatever soft ground is there.
     pub material: TerrainMaterial,
+}
+
+impl SedimentChange {
+    /// The bricks the change may touch: every brick its square's columns
+    /// cross within the search around its height.
+    pub fn bricks(&self) -> Vec<BrickCoord> {
+        let from = height_cell(self);
+        let mut bricks = Vec::new();
+        for (x, z) in [
+            (self.x, self.z),
+            (self.x + self.edge - 1, self.z + self.edge - 1),
+        ] {
+            for y in [from - SEARCH_CELLS, from + SEARCH_CELLS + 1] {
+                let brick = WorldCell::new(x, y, z).brick();
+                if !bricks.contains(&brick) {
+                    bricks.push(brick);
+                }
+            }
+        }
+        bricks
+    }
 }
 
 /// What one [`SedimentChange`] did.
@@ -94,6 +115,8 @@ struct Working<'a> {
     terrain: &'a TerrainOctree,
     field: &'a TerrainField,
     bricks: BTreeMap<BrickCoord, TerrainBrick>,
+    /// Untouched bricks sampled ahead.
+    untouched: BTreeMap<BrickCoord, TerrainBrick>,
 }
 
 impl Working<'_> {
@@ -107,10 +130,11 @@ impl Working<'_> {
     fn brick(&mut self, cell: WorldCell) -> &mut TerrainBrick {
         let coordinate = cell.brick();
         self.bricks.entry(coordinate).or_insert_with(|| {
-            self.terrain
-                .brick(coordinate)
-                .cloned()
-                .unwrap_or_else(|| TerrainBrick::promote(self.field, coordinate))
+            self.terrain.brick(coordinate).cloned().unwrap_or_else(|| {
+                self.untouched
+                    .remove(&coordinate)
+                    .unwrap_or_else(|| TerrainBrick::promote(self.field, coordinate))
+            })
         })
     }
 
@@ -127,12 +151,6 @@ impl Working<'_> {
         }
         None
     }
-
-    /// Where a column's drawn surface lies, in cells: its top cell's middle
-    /// plus how far its density reaches above that.
-    fn surface(&self, cell: WorldCell) -> f64 {
-        f64::from(cell.y) + 0.5 + f64::from(self.sample(cell).density) / TERRAIN_CELL_METERS
-    }
 }
 
 impl TerrainOctree {
@@ -141,10 +159,13 @@ impl TerrainOctree {
     /// a change asked of an older snapshot does what still can be done.
     /// Only soft ground gives sediment up, and the highest column of a
     /// square gives first and the lowest takes first, so the bed evens out.
+    /// `untouched` holds bricks the changes may touch sampled ahead, as the
+    /// seed made them; one edited since is read as it now is instead.
     pub fn exchange_sediment(
         &mut self,
         field: &TerrainField,
         changes: &[SedimentChange],
+        untouched: Vec<TerrainBrick>,
     ) -> (TerrainEditOutcome, Vec<SedimentApplied>) {
         let mut outcome = TerrainEditOutcome::default();
         let mut applied = Vec::with_capacity(changes.len());
@@ -152,6 +173,10 @@ impl TerrainOctree {
             terrain: self,
             field,
             bricks: BTreeMap::new(),
+            untouched: untouched
+                .into_iter()
+                .map(|brick| (brick.coordinate(), brick))
+                .collect(),
         };
         for change in changes {
             let done = if change.quanta < 0 {
@@ -188,6 +213,34 @@ fn height_cell(change: &SedimentChange) -> i32 {
     (change.height / TERRAIN_CELL_METERS).floor() as i32
 }
 
+/// The top cell of one column of a change's square, as it now stands.
+#[derive(Clone, Copy)]
+struct Top {
+    cell: WorldCell,
+    sample: TerrainSample,
+    /// Where its drawn surface lies, in cells.
+    surface: f64,
+}
+
+impl Top {
+    fn of(working: &Working<'_>, cell: WorldCell) -> Self {
+        let sample = working.sample(cell);
+        Self {
+            cell,
+            sample,
+            surface: f64::from(cell.y) + 0.5 + f64::from(sample.density) / TERRAIN_CELL_METERS,
+        }
+    }
+}
+
+/// The top of each column of a change's square, near its height.
+fn tops(working: &Working<'_>, change: &SedimentChange) -> Vec<Option<Top>> {
+    let from = height_cell(change);
+    columns(change)
+        .map(|(x, z)| working.top(x, z, from).map(|cell| Top::of(working, cell)))
+        .collect()
+}
+
 fn take(
     working: &mut Working<'_>,
     change: &SedimentChange,
@@ -195,25 +248,24 @@ fn take(
 ) -> SedimentApplied {
     let mut done = SedimentApplied::default();
     let mut owed = change.quanta.unsigned_abs();
-    let from = height_cell(change);
-    let mut tops = columns(change)
-        .map(|(x, z)| working.top(x, z, from))
-        .collect::<Vec<_>>();
+    let mut tops = tops(working, change);
+    let mut changed = std::collections::BTreeSet::new();
     while owed > 0 {
-        let soft = |cell: WorldCell| {
-            cell.is_editable() && BreakageResponse::for_material(working.sample(cell).material).soft
+        let soft = |top: &Top| {
+            top.cell.is_editable() && BreakageResponse::for_material(top.sample.material).soft
         };
-        let Some((index, cell)) = tops
+        let Some((index, top)) = tops
             .iter()
             .enumerate()
-            .filter_map(|(index, top)| top.filter(|&cell| soft(cell)).map(|cell| (index, cell)))
-            .max_by(|a, b| working.surface(a.1).total_cmp(&working.surface(b.1)))
+            .filter_map(|(index, top)| top.filter(soft).map(|top| (index, top)))
+            .max_by(|a, b| a.1.surface.total_cmp(&b.1.surface))
         else {
             break;
         };
-        let sample = working.sample(cell);
+        let (cell, sample) = (top.cell, top.sample);
         let held = quanta_of(sample);
         let code = sample.material.code() as usize;
+        changed.insert(cell);
         if held > LEAST_QUANTA {
             let given = u32::try_from(owed)
                 .unwrap_or(u32::MAX)
@@ -226,18 +278,20 @@ fn take(
                 .reshape(cell.local_in_brick(), looseness_holding(left), density);
             done.taken[code] += u64::from(given);
             owed -= u64::from(given);
+            tops[index] = Some(Top::of(working, cell));
         } else {
             working.brick(cell).set_empty(cell.local_in_brick());
             outcome.removed_cells[code] += 1;
             done.taken[code] += u64::from(held);
             owed = owed.saturating_sub(u64::from(held));
             let below = WorldCell::new(cell.x, cell.y - 1, cell.z);
-            tops[index] = working.sample(below).is_solid().then_some(below);
-        }
-        if outcome.sediment_cells.last() != Some(&cell) {
-            outcome.sediment_cells.push(cell);
+            tops[index] = working
+                .sample(below)
+                .is_solid()
+                .then(|| Top::of(working, below));
         }
     }
+    outcome.sediment_cells.extend(changed);
     outcome.quanta_given_up += done.total_taken();
     done
 }
@@ -253,52 +307,52 @@ fn lay(
         return done;
     }
     let mut owed = u64::try_from(change.quanta).unwrap_or(0);
-    let from = height_cell(change);
-    let mut tops = columns(change)
-        .map(|(x, z)| working.top(x, z, from))
-        .collect::<Vec<_>>();
+    let mut tops = tops(working, change);
+    let mut changed = std::collections::BTreeSet::new();
     while owed > 0 {
         // A loose top of the same material fills; any other top takes a new
         // cell over it, if enough is owed to begin one.
-        let fills = |cell: WorldCell| {
-            let sample = working.sample(cell);
-            sample.material == material
-                && sample.looseness >= SLIDING_LOOSENESS
-                && quanta_of(sample) < LAID_QUANTA
+        let fills = |top: &Top| {
+            top.sample.material == material
+                && top.sample.looseness >= SLIDING_LOOSENESS
+                && quanta_of(top.sample) < LAID_QUANTA
         };
-        let begins = |cell: WorldCell| {
-            let over = WorldCell::new(cell.x, cell.y + 1, cell.z);
+        let begins = |top: &Top| {
+            let over = WorldCell::new(top.cell.x, top.cell.y + 1, top.cell.z);
             owed >= u64::from(LEAST_QUANTA)
                 && over.is_editable()
                 && over.centre().is_inside_world()
                 && !working.sample(over).is_solid()
         };
-        let Some((index, cell)) = tops
+        let Some((index, top)) = tops
             .iter()
             .enumerate()
-            .filter_map(|(index, top)| top.map(|cell| (index, cell)))
-            .filter(|&(_, cell)| cell.is_editable() && (fills(cell) || begins(cell)))
-            .min_by(|a, b| working.surface(a.1).total_cmp(&working.surface(b.1)))
+            .filter_map(|(index, top)| top.map(|top| (index, top)))
+            .filter(|(_, top)| top.cell.is_editable() && (fills(top) || begins(top)))
+            .min_by(|a, b| a.1.surface.total_cmp(&b.1.surface))
         else {
             break;
         };
-        if fills(cell) {
-            let sample = working.sample(cell);
-            let held = quanta_of(sample);
+        let cell = top.cell;
+        if fills(&top) {
+            let held = quanta_of(top.sample);
             let given = u32::try_from(owed)
                 .unwrap_or(u32::MAX)
                 .min(LAID_QUANTA - held)
                 .min(STEP_QUANTA);
             let now = held + given;
-            let density = sample.density.max(density_holding(now)).min(FULL_DENSITY);
+            let density = top
+                .sample
+                .density
+                .max(density_holding(now))
+                .min(FULL_DENSITY);
             working
                 .brick(cell)
                 .reshape(cell.local_in_brick(), looseness_holding(now), density);
             done.laid += u64::from(given);
             owed -= u64::from(given);
-            if outcome.sediment_cells.last() != Some(&cell) {
-                outcome.sediment_cells.push(cell);
-            }
+            changed.insert(cell);
+            tops[index] = Some(Top::of(working, cell));
         } else {
             let over = WorldCell::new(cell.x, cell.y + 1, cell.z);
             working.brick(over).set_solid(
@@ -310,10 +364,11 @@ fn lay(
             outcome.added_cells[material.code() as usize] += 1;
             done.laid += u64::from(LEAST_QUANTA);
             owed -= u64::from(LEAST_QUANTA);
-            tops[index] = Some(over);
-            outcome.sediment_cells.push(over);
+            changed.insert(over);
+            tops[index] = Some(Top::of(working, over));
         }
     }
+    outcome.sediment_cells.extend(changed);
     outcome.quanta_taken_back += done.laid;
     done
 }
@@ -403,8 +458,11 @@ mod tests {
             if held(&terrain, &field).1.is_empty() {
                 break;
             }
-            let (outcome, applied) =
-                terrain.exchange_sediment(&field, &[change(-40, TerrainMaterial::Soil)]);
+            let (outcome, applied) = terrain.exchange_sediment(
+                &field,
+                &[change(-40, TerrainMaterial::Soil)],
+                Vec::new(),
+            );
             taken += applied[0].taken[TerrainMaterial::Soil.code() as usize];
             assert_eq!(outcome.quanta_given_up, applied[0].total_taken());
             let now = terrain.sample_cell(&field, top);
@@ -426,12 +484,16 @@ mod tests {
         let (field, mut terrain) = flat(TerrainMaterial::Soil);
         let (before, _) = held(&terrain, &field);
         // Too little to begin a cell lays nothing on undisturbed ground.
-        let (_, applied) = terrain.exchange_sediment(&field, &[change(100, TerrainMaterial::Sand)]);
+        let (_, applied) =
+            terrain.exchange_sediment(&field, &[change(100, TerrainMaterial::Sand)], Vec::new());
         assert_eq!(applied[0].laid, 0);
         let mut laid = 0;
         for _ in 0..40 {
-            let (outcome, applied) =
-                terrain.exchange_sediment(&field, &[change(300, TerrainMaterial::Sand)]);
+            let (outcome, applied) = terrain.exchange_sediment(
+                &field,
+                &[change(300, TerrainMaterial::Sand)],
+                Vec::new(),
+            );
             laid += applied[0].laid;
             assert_eq!(outcome.quanta_taken_back, applied[0].laid);
         }
@@ -453,7 +515,7 @@ mod tests {
     fn rock_gives_nothing_and_a_change_finds_only_the_ground_near_it() {
         let (field, mut terrain) = flat(TerrainMaterial::Rock);
         let (outcome, applied) =
-            terrain.exchange_sediment(&field, &[change(-500, TerrainMaterial::Soil)]);
+            terrain.exchange_sediment(&field, &[change(-500, TerrainMaterial::Soil)], Vec::new());
         assert_eq!(applied[0].total_taken(), 0);
         assert_eq!(outcome.changed_bricks, 0);
         let (field, mut terrain) = flat(TerrainMaterial::Soil);
@@ -463,7 +525,7 @@ mod tests {
             height: 1599.85,
             ..change(-500, TerrainMaterial::Soil)
         };
-        let (_, applied) = terrain.exchange_sediment(&field, &[far]);
+        let (_, applied) = terrain.exchange_sediment(&field, &[far], Vec::new());
         assert_eq!(applied[0].total_taken(), 0);
         assert_eq!(held(&terrain, &field).0, before);
     }

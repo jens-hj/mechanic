@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use bevy::tasks::futures::check_ready;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, SedimentApplied, SedimentChange, SurfaceTile, TerrainEditOutcome, TerrainField,
-    TerrainOctree, TerrainWater, WaterBody, WaterCell, WaterLedger, WaterShift, WaterStep,
-    WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldCell, WorldStore,
+    BrickCoord, SedimentApplied, SedimentChange, SurfaceTile, TerrainBrick, TerrainEditOutcome,
+    TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterCell, WaterLedger, WaterShift,
+    WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldCell, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -94,6 +95,8 @@ struct WaterBatch {
     ledger: WaterLedger,
     /// Changes to the ground the water asks for.
     asks: Vec<SedimentChange>,
+    /// The untouched bricks those changes may touch, sampled on the worker.
+    untouched: Vec<TerrainBrick>,
 }
 
 /// The world's stored water, stepped on a worker so a slow step never holds
@@ -111,12 +114,20 @@ pub(crate) struct WaterRunner {
     drawn: HashMap<(i32, i32), u64>,
     /// Changes to the ground the water asked for, not yet made.
     asks: Vec<SedimentChange>,
+    /// The untouched bricks they may touch, sampled ahead.
+    untouched: Vec<TerrainBrick>,
     /// What the ground did with the water's last asks, until the water is
     /// home to hear it.
     answer: Option<GroundAnswer>,
     /// Terrain cells sediment changed since the water last looked.
     sediment_cells: Vec<WorldCell>,
+    /// The ground changing as the water asked, on a worker.
+    sediment_task: Option<Task<SedimentEdit>>,
 }
+
+/// The ground changed as the water asked: the terrain with the change, what
+/// it did, and what each ask did.
+type SedimentEdit = (TerrainOctree, TerrainEditOutcome, Vec<SedimentApplied>);
 
 impl WaterRunner {
     /// Water to run, with its view as it stands.
@@ -132,9 +143,26 @@ impl WaterRunner {
             view,
             drawn,
             asks: Vec::new(),
+            untouched: Vec::new(),
             answer: None,
             sediment_cells: Vec::new(),
+            sediment_task: None,
         }
+    }
+
+    /// Whether the ground is changing as the water asked: no other edit
+    /// may start meanwhile, or one would overwrite the other.
+    pub(super) const fn sediment_busy(&self) -> bool {
+        self.sediment_task.is_some()
+    }
+
+    /// Keeps what the ground did with the water's asks for the water, and
+    /// tells it at once if it is home.
+    fn take_answer(&mut self, outcome: &TerrainEditOutcome, applied: Vec<SedimentApplied>) {
+        self.sediment_cells
+            .extend_from_slice(&outcome.sediment_cells);
+        self.answer = Some(GroundAnswer::Applied(applied));
+        self.hear_answer();
     }
 
     /// Tells the water, if it is home, what the ground did with its asks.
@@ -147,25 +175,6 @@ impl WaterRunner {
             Some(GroundAnswer::Refused) => world.sediment_refused(),
             None => {}
         }
-    }
-
-    /// Makes the changes to the ground the water asked for in `terrain`, and
-    /// keeps what the ground did for the water. Returns the edit, if any.
-    fn answer_asks(
-        &mut self,
-        terrain: &mut TerrainOctree,
-        field: &TerrainField,
-    ) -> Option<TerrainEditOutcome> {
-        if self.asks.is_empty() {
-            return None;
-        }
-        let asks = std::mem::take(&mut self.asks);
-        let (outcome, applied) = terrain.exchange_sediment(field, &asks);
-        self.sediment_cells
-            .extend_from_slice(&outcome.sediment_cells);
-        self.answer = Some(GroundAnswer::Applied(applied));
-        self.hear_answer();
-        Some(outcome)
     }
 
     /// The water itself, waiting for a running batch to finish.
@@ -272,11 +281,25 @@ pub(super) fn step_water(
             let step = world.step(&ground, WATER_STEP_SECONDS);
             done.push((started.elapsed().as_secs_f64() * 1000.0, step));
         }
+        let asks = world.sediment_requests();
+        // Sampling ground the seed made is most of the cost of changing it:
+        // done here, it stays off the frame.
+        let mut bricks = asks
+            .iter()
+            .flat_map(SedimentChange::bricks)
+            .filter(|&brick| edits.brick(brick).is_none())
+            .collect::<Vec<_>>();
+        bricks.sort_unstable();
+        bricks.dedup();
         WaterBatch {
             view: view(&mut world, &ground, &drawn),
             surfaces: world.surfaces(field.clone()),
             ledger: world.ledger(),
-            asks: world.sediment_requests(),
+            untouched: bricks
+                .into_iter()
+                .map(|brick| TerrainBrick::untouched(&field, brick))
+                .collect(),
+            asks,
             world,
             steps: done,
         }
@@ -310,6 +333,7 @@ fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
         runtime.autosave.mutate(runtime.clock);
     }
     runtime.water.asks.extend(batch.asks);
+    runtime.water.untouched.extend(batch.untouched);
     runtime.water.drawn = fingerprints(&batch.view);
     runtime.water.view = batch.view;
     runtime.water_surfaces = Arc::new(batch.surfaces);
@@ -317,30 +341,51 @@ fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
 }
 
 impl WorldRuntime {
-    /// Makes the changes to the ground the water asked for, as one ordinary
-    /// terrain edit: running water wears the ground and lays sediment back
-    /// on it. The water measures again only the cells that changed, not
-    /// their whole bricks.
+    /// Changes the ground as the water asked, as one ordinary terrain edit
+    /// made on a worker: running water wears the ground and lays sediment
+    /// back on it. The water measures again only the cells that changed,
+    /// not their whole bricks.
     pub(super) fn lay_sediment(&mut self) {
-        if self.water.asks.is_empty() || self.terrain_edit_task.is_some() {
+        if let Some(done) = self.water.sediment_task.as_mut().and_then(check_ready) {
+            self.water.sediment_task = None;
+            self.commit_sediment(done);
+        }
+        if self.water.sediment_busy()
+            || self.water.asks.is_empty()
+            || self.terrain_edit_task.is_some()
+        {
             return;
         }
         if self.terrain_edit_error.is_some() {
             self.water.asks.clear();
+            self.water.untouched.clear();
             self.water.answer = Some(GroundAnswer::Refused);
             self.water.hear_answer();
             return;
         }
-        let started = std::time::Instant::now();
+        let asks = std::mem::take(&mut self.water.asks);
+        let untouched = std::mem::take(&mut self.water.untouched);
         let mut terrain = self.edits.clone();
         let field = Arc::clone(&self.field);
-        let Some(outcome) = self.water.answer_asks(&mut terrain, &field) else {
-            return;
-        };
+        self.water.sediment_task = Some(AsyncComputeTaskPool::get().spawn(async move {
+            let (outcome, applied) = terrain.exchange_sediment(&field, &asks, untouched);
+            (terrain, outcome, applied)
+        }));
+    }
+
+    /// Waits for the ground to finish changing as the water asked.
+    pub(super) fn finish_sediment(&mut self) {
+        if let Some(task) = self.water.sediment_task.take() {
+            let done = block_on(task);
+            self.commit_sediment(done);
+        }
+    }
+
+    fn commit_sediment(&mut self, (terrain, outcome, applied): SedimentEdit) {
         crate::performance_capture::record("sediment", || {
             serde_json::json!({
-                "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
                 "cells": outcome.sediment_cells.len(),
+                "bricks": outcome.changed_bricks,
                 "quanta_given_up": outcome.quanta_given_up,
                 "quanta_taken_back": outcome.quanta_taken_back,
             })
@@ -349,6 +394,7 @@ impl WorldRuntime {
         for &cell in &outcome.sediment_cells {
             self.slump.disturb(cell);
         }
+        self.water.take_answer(&outcome, applied);
         let pending = self.water.pending.len();
         super::brush::commit_terrain_edit_result(
             self,
@@ -372,6 +418,23 @@ mod tests {
     };
 
     use super::WaterRunner;
+
+    /// Changes the ground as the water asked, at once, as the app does on a
+    /// worker. Returns the edit, if any.
+    fn answer_asks(
+        runner: &mut WaterRunner,
+        terrain: &mut TerrainOctree,
+        field: &TerrainField,
+    ) -> Option<mechanic_world::TerrainEditOutcome> {
+        if runner.asks.is_empty() {
+            return None;
+        }
+        let asks = std::mem::take(&mut runner.asks);
+        let untouched = std::mem::take(&mut runner.untouched);
+        let (outcome, applied) = terrain.exchange_sediment(field, &asks, untouched);
+        runner.take_answer(&outcome, applied);
+        Some(outcome)
+    }
 
     #[test]
     fn ground_the_water_wears_changes_and_the_books_balance() {
@@ -410,7 +473,7 @@ mod tests {
             world.step(&ground, 0.05);
             let asks = world.sediment_requests();
             runner.asks.extend(asks);
-            if let Some(outcome) = runner.answer_asks(&mut terrain, &field) {
+            if let Some(outcome) = answer_asks(&mut runner, &mut terrain, &field) {
                 changed += outcome.sediment_cells.len();
             }
             let books = runner.world_mut().sediment_ledger();

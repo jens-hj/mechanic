@@ -108,6 +108,7 @@ impl WorldRuntime {
     /// and the mesh follows like after any other edit.
     pub(super) fn transfer_material(&mut self) {
         if self.terrain_edit_task.is_some()
+            || self.water.sediment_busy()
             || self.terrain_edit_error.is_some()
             || self
                 .last_material_transfer

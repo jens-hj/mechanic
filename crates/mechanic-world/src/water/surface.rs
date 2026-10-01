@@ -420,8 +420,8 @@ fn fingerprint(columns: &CellMap<(i32, i32), Column>, members: &[(i32, i32)]) ->
         ((column.depth * 500.0).round() as i64).hash(&mut hasher);
         ((column.flow.x * 10.0).round() as i64).hash(&mut hasher);
         ((column.flow.y * 10.0).round() as i64).hash(&mut hasher);
-        // Sediment clouds or clears the water in sixteenths.
-        ((column.murk * 16.0).round() as i64).hash(&mut hasher);
+        // Sediment clouds or clears the water in eighths.
+        ((column.murk * 8.0).round() as i64).hash(&mut hasher);
     }
     hasher.finish()
 }

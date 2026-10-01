@@ -52,6 +52,12 @@ impl TerrainBrick {
         local_index(local).map(|index| self.cells[index])
     }
 
+    /// A brick as the seed made it, to edit: sampling its cells is most of
+    /// the cost of a first edit, and may be done ahead, off the frame.
+    pub fn untouched(field: &TerrainField, coordinate: BrickCoord) -> Self {
+        Self::promote(field, coordinate)
+    }
+
     pub(super) fn promote(field: &TerrainField, coordinate: BrickCoord) -> Self {
         let edge = usize::try_from(BRICK_EDGE_CELLS).expect("brick edge is positive");
         let cells = field.sample_cells(coordinate.minimum_cell(), [edge; 3]);

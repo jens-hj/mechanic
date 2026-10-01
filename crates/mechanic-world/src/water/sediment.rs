@@ -37,7 +37,9 @@ use super::{
     CLING_METRES, GRAVITY, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterGround,
     WaterWorld,
 };
-use crate::{MATERIAL_QUANTUM_M3, SedimentApplied, SedimentChange, TerrainMaterial, WorldCell};
+use crate::{
+    CELL_QUANTA, MATERIAL_QUANTUM_M3, SedimentApplied, SedimentChange, TerrainMaterial, WorldCell,
+};
 
 /// Horizontal area of one water cell, in square metres.
 const CELL_AREA_M2: f64 = WATER_CELL_METRES * WATER_CELL_METRES;
@@ -52,10 +54,22 @@ const SAND_SETTLING_M_S: f64 = 0.02;
 /// metre deep clears over half an hour.
 const FINES_SETTLING_M_S: f64 = 5.0e-4;
 
+/// Fastest running water counts as running, against its own wave speed
+/// (a Froude number): a film's current, from what crosses its faces, can run
+/// far faster than water a few millimetres deep ever flows over the ground.
+const FASTEST_FROUDE: f64 = 1.5;
+
+/// Drag above which running water keeps sand stirred up, in Pa: sand drops
+/// only where the flow slackens.
+const SAND_STAYS_PA: f64 = 1.0;
+
+/// Drag above which running water keeps fines stirred up, in Pa.
+const FINES_STAY_PA: f64 = 0.2;
+
 /// Most sediment running water carries, as a share of its volume: water
 /// wears its bed the less the more it already carries, and none at all as
-/// thick as this.
-const CAPACITY: f64 = 0.03;
+/// thick as this, a flood's muddy water.
+const CAPACITY: f64 = 0.01;
 
 /// The least drag any ground holds against, in Pa: sand turned to mud.
 const LEAST_HOLD: f64 = 0.15;
@@ -63,12 +77,17 @@ const LEAST_HOLD: f64 = 0.15;
 /// Ground more than this full of water is mud, which gives at half the drag.
 const MUD_FILL: f64 = 0.9;
 
-/// Least sediment, in quanta, worth a change to the ground: a millimetre and
-/// a half over a column.
-const WORTH_QUANTA: f64 = 16.0;
+/// Least erosion, in quanta, worth a change to the ground: half a centimetre
+/// over a column.
+const WORTH_QUANTA: f64 = 64.0;
 
-/// Seconds between the worker's asks of the ground.
-const ASK_SECONDS: f64 = 2.0;
+/// Least sediment, in quanta, worth laying: as little as begins a new cell
+/// of ground, which settled sediment mostly needs.
+const LAY_QUANTA: f64 = (CELL_QUANTA - u8::MAX as u32) as f64;
+
+/// Seconds between the worker's asks of the ground: every change remeshes
+/// the ground there and its water finds its way again.
+const ASK_SECONDS: f64 = 5.0;
 
 /// Columns wear and settle in turn, one of this many sets each step.
 const WEAR_SETS: u32 = 4;
@@ -84,8 +103,9 @@ const fn wears(material: TerrainMaterial) -> Option<(f64, f64)> {
     match material {
         TerrainMaterial::Soil => Some((1.0, 1.1e-5)),
         TerrainMaterial::Sand => Some((0.3, 3.3e-5)),
-        // Roots hold turf against all but a flood.
-        TerrainMaterial::SurfaceCover => Some((30.0, 1.1e-5)),
+        // Roots hold turf against all but a violent flood: grass-lined
+        // channels stand some 80 Pa.
+        TerrainMaterial::SurfaceCover => Some((80.0, 1.1e-5)),
         TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => None,
     }
 }
@@ -252,12 +272,16 @@ pub(super) struct Sediment {
 
 /// How fast running water `depth` metres deep running at `speed` m/s wears
 /// ground of a material away, in metres of bed per second; mud gives at
-/// half the drag.
+/// half the drag, but soaked turf is held by its roots all the same.
 fn wear_rate(material: TerrainMaterial, depth: f64, speed: f64, mud: bool) -> f64 {
     let Some((holds, rate)) = wears(material) else {
         return 0.0;
     };
-    let holds = if mud { 0.5 * holds } else { holds };
+    let holds = if mud && material != TerrainMaterial::SurfaceCover {
+        0.5 * holds
+    } else {
+        holds
+    };
     rate * (shear(depth, speed) - holds).max(0.0)
 }
 
@@ -377,7 +401,9 @@ impl WaterWorld {
             let speed = if depth < CLING_METRES {
                 0.0
             } else {
-                super::sheet::current(&sheet, depth).length()
+                super::sheet::current(&sheet, depth)
+                    .length()
+                    .min(FASTEST_FROUDE * (GRAVITY * depth).sqrt())
             };
             // Clean water dragging less than the softest mud holds against
             // neither wears nor drops anything.
@@ -386,14 +412,19 @@ impl WaterWorld {
             }
             let column = (cell.x, cell.z);
             // What settles: each kind in proportion to how much the water
-            // carries and how fast it falls through it.
+            // carries and how fast it falls through it, and only where the
+            // flow is too slack to keep it stirred up (Krone).
             let mut load = sheet.load;
+            let drag = shear(depth.max(CLING_METRES), speed);
             let settled = if depth < CLING_METRES {
                 load
             } else {
+                let falls = |settling: f64, stays: f64| {
+                    (settling * dt / depth).min(1.0) * (1.0 - drag / stays).max(0.0)
+                };
                 SedimentLoad {
-                    sand: load.sand * (SAND_SETTLING_M_S * dt / depth).min(1.0),
-                    fines: load.fines * (FINES_SETTLING_M_S * dt / depth).min(1.0),
+                    sand: load.sand * falls(SAND_SETTLING_M_S, SAND_STAYS_PA),
+                    fines: load.fines * falls(FINES_SETTLING_M_S, FINES_STAY_PA),
                 }
             };
             load.sub(settled);
@@ -448,7 +479,7 @@ impl WaterWorld {
     }
 
     /// The changes to the ground the water asks for now: every column's
-    /// sediment worth laying and erosion worth taking, at most every two
+    /// sediment worth laying and erosion worth taking, at most every five
     /// seconds and only once the last ask was answered. Hand the ground's
     /// answer back to [`Self::sediment_applied`].
     pub fn sediment_requests(&mut self) -> Vec<SedimentChange> {
@@ -487,7 +518,7 @@ impl WaterWorld {
                 } else {
                     bed.settled.fines
                 };
-                if ready < WORTH_QUANTA {
+                if ready < LAY_QUANTA {
                     continue;
                 }
                 let laying = ready.trunc();
@@ -625,38 +656,49 @@ impl WaterWorld {
     /// the water over them finds its routes and floors again. Cheaper than
     /// [`Self::terrain_changed`], which measures whole bricks again.
     pub fn ground_cells_changed(&mut self, ground: &impl WaterGround, cells: &[WorldCell]) {
-        let mut touched = std::collections::BTreeSet::new();
-        for cell in cells {
-            touched.insert(WaterCell::containing(cell.centre().0));
-        }
-        let mut columns = std::collections::BTreeSet::new();
-        for cell in &touched {
-            self.ground.forget_cell(*cell);
-            for dz in -1..=1 {
-                for dx in -1..=1 {
-                    columns.insert((cell.x + dx, cell.z + dz));
+        let touched = cells
+            .iter()
+            .map(|cell| WaterCell::containing(cell.centre().0))
+            .collect::<std::collections::BTreeSet<_>>();
+        for &cell in &touched {
+            self.ground.forget_cell(cell);
+            // The drawn ground at the column's corners and centre, as sought
+            // from the heights around it.
+            for y in cell.y - 2..=cell.y + 2 {
+                for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    self.tops.remove(&(cell.x + dx, y, cell.z + dz));
                 }
+                self.floors.remove(&(cell.x, y, cell.z));
+                self.wick_tops.remove(&(cell.x, y, cell.z));
             }
         }
-        let near = |&(x, _, z): &(i32, i32, i32), _: &mut Option<f64>| {
-            // Surface corners are keyed by their lowest column.
-            !(0..=1).any(|dx| (0..=1).any(|dz| columns.contains(&(x - dx, z - dz))))
-        };
-        self.tops.retain(near);
-        self.floors.retain(near);
-        self.wick_tops.retain(near);
-        for cell in touched {
-            for y in -1..=1 {
-                let cell = WaterCell::new(cell.x, cell.y + y, cell.z);
-                self.remeasure(ground, cell);
-            }
+        // Running water over the change rests on the ground's new top and
+        // finds its routes again; still water there is measured again whole.
+        // Dry ground is measured afresh when water reaches it.
+        let mut measured = std::collections::BTreeSet::new();
+        for &cell in &touched {
             if let Some(slot) = self.sheets.slot(cell.x, cell.z)
                 && self.sheets.at(slot).present
             {
-                let floor = self.sheets.at(slot).floor();
-                if let Some(soil) = self.soil.get_mut(&(cell.x, cell.z)) {
-                    soil.top = floor;
-                    soil.material = None;
+                let at = WaterCell::new(cell.x, self.sheets.at(slot).y, cell.z);
+                if measured.insert(at) {
+                    self.remeasure_sheet(ground, at);
+                }
+                if let Some(slot) = self.sheets.slot(cell.x, cell.z)
+                    && self.sheets.at(slot).present
+                {
+                    let floor = self.sheets.at(slot).floor();
+                    if let Some(soil) = self.soil.get_mut(&(cell.x, cell.z)) {
+                        soil.top = floor;
+                        soil.material = None;
+                    }
+                }
+            }
+            for cell in [cell, cell.up()] {
+                if (self.owner.contains_key(&cell) || self.joined.contains_key(&cell))
+                    && measured.insert(cell)
+                {
+                    self.remeasure(ground, cell);
                 }
             }
         }
@@ -708,7 +750,9 @@ mod tests {
     fn turf_holds_against_a_stream_until_a_flood_strips_it_and_rock_never_wears() {
         let rate = |material, depth, speed| wear_rate(material, depth, speed, false);
         assert!(rate(TerrainMaterial::SurfaceCover, 0.05, 0.5) <= 0.0);
-        assert!(rate(TerrainMaterial::SurfaceCover, 0.1, 1.5) > 0.0);
+        // A breach's flood, half a metre deep at 3 m/s, strips it.
+        assert!(rate(TerrainMaterial::SurfaceCover, 0.5, 3.0) > 0.0);
+        assert!(rate(TerrainMaterial::SurfaceCover, 0.1, 1.5) <= 0.0);
         for material in [
             TerrainMaterial::Rock,
             TerrainMaterial::Iron,

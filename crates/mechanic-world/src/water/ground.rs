@@ -349,20 +349,17 @@ impl OpeningsCache {
     }
 
     /// Forgets what the ground was in a brick.
-    /// Forgets one cell's openings, and the floors of the cells around it
-    /// whose drawn ground reads it.
+    /// Forgets one cell's openings, and the floors of its column's cells
+    /// around it: the drawn ground at a column's centre reads only the
+    /// terrain cells of that column.
     pub(super) fn forget_cell(&mut self, cell: WaterCell) {
         if let Some(known) = self.bricks.get_mut(&cell.brick()) {
             known[cell.local_index_in_brick()] = UNKNOWN;
         }
-        for dz in -1..=1 {
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    let near = WaterCell::new(cell.x + dx, cell.y + dy, cell.z + dz);
-                    if let Some(floors) = self.floors.get_mut(&near.brick()) {
-                        floors[near.local_index_in_brick()] = f64::NAN;
-                    }
-                }
+        for dy in -1..=1 {
+            let near = WaterCell::new(cell.x, cell.y + dy, cell.z);
+            if let Some(floors) = self.floors.get_mut(&near.brick()) {
+                floors[near.local_index_in_brick()] = f64::NAN;
             }
         }
         self.implicit.remove(&cell);

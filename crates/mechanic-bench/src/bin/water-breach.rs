@@ -1,15 +1,15 @@
 //! Reproducible timings for stored water flooding open land: a trench cut
-//! through a lake's bank lets it run out over lower ground beyond. Emits one
-//! JSONL line per simulated second and a summary. `BREACH_PROFILE=1` prints
-//! the ground along the breach.
+//! through a lake's bank lets it run out over lower ground beyond, wearing
+//! the ground as it goes. Emits one JSONL line per simulated second and a
+//! summary. `BREACH_PROFILE=1` prints the ground along the breach.
 
 use std::time::Instant;
 
 use bevy_math::DVec3;
 use mechanic_bench::stats::percentile;
 use mechanic_world::{
-    BrickCoord, TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterPhases, WaterWorld,
-    WorldPosition, WorldSeed,
+    BrickCoord, SedimentChange, TerrainBrick, TerrainField, TerrainOctree, TerrainWater, WaterBody,
+    WaterPhases, WaterWorld, WorldPosition, WorldSeed,
 };
 
 /// Water steps per second, as the app runs them.
@@ -144,12 +144,30 @@ struct Samples {
     view_ms: Vec<f64>,
     peak_sheets: usize,
     ledger_error: f64,
+    /// Time to change the ground as the water asked, each time it asked,
+    /// which the app spends on a worker.
+    sediment_ms: Vec<f64>,
+    /// Time for the water to measure the changed ground again, which the
+    /// app spends on the water's worker.
+    remeasure_ms: Vec<f64>,
+    /// The worst the sediment books were out, in quanta.
+    sediment_error: f64,
 }
 
 impl Samples {
-    fn summary(mut self, seed: u64, length: f64) -> String {
+    fn summary(mut self, seed: u64, length: f64, water: &WaterWorld, bricks: usize) -> String {
         self.durations.sort_by(f64::total_cmp);
         self.view_ms.sort_by(f64::total_cmp);
+        self.sediment_ms.sort_by(f64::total_cmp);
+        self.remeasure_ms.sort_by(f64::total_cmp);
+        let p95 = |samples: &[f64]| {
+            if samples.is_empty() {
+                0.0
+            } else {
+                percentile(samples, 95)
+            }
+        };
+        let books = water.sediment_ledger();
         let phases = &self.phases;
         let phase = |pick: fn(&WaterPhases) -> f64| {
             let mut samples = phases.iter().map(pick).collect::<Vec<_>>();
@@ -157,7 +175,7 @@ impl Samples {
             percentile(&samples, 95)
         };
         format!(
-            "{{\"type\":\"water_breach\",\"seed\":{seed},\"trench_m\":{length:.1},\"steps\":{},\"step_p50_ms\":{:.3},\"step_p95_ms\":{:.3},\"step_max_ms\":{:.3},\"flood_p95_ms\":{:.3},\"exchange_p95_ms\":{:.3},\"sheets_p95_ms\":{:.3},\"joins_p95_ms\":{:.3},\"settle_p95_ms\":{:.3},\"view_p95_ms\":{:.3},\"peak_sheet_cells\":{},\"ledger_error_m3\":{:.3e}}}",
+            "{{\"type\":\"water_breach\",\"seed\":{seed},\"trench_m\":{length:.1},\"steps\":{},\"step_p50_ms\":{:.3},\"step_p95_ms\":{:.3},\"step_max_ms\":{:.3},\"flood_p95_ms\":{:.3},\"exchange_p95_ms\":{:.3},\"sheets_p95_ms\":{:.3},\"joins_p95_ms\":{:.3},\"settle_p95_ms\":{:.3},\"view_p95_ms\":{:.3},\"peak_sheet_cells\":{},\"ledger_error_m3\":{:.3e},\"sediment_asks\":{},\"sediment_p95_ms\":{:.3},\"sediment_max_ms\":{:.3},\"remeasure_p95_ms\":{:.3},\"eroded_quanta\":{:.0},\"laid_quanta\":{:.0},\"suspended_quanta\":{:.0},\"sediment_error_quanta\":{:.3e},\"promoted_bricks\":{bricks}}}",
             self.durations.len(),
             percentile(&self.durations, 50),
             percentile(&self.durations, 95),
@@ -170,8 +188,57 @@ impl Samples {
             percentile(&self.view_ms, 95),
             self.peak_sheets,
             self.ledger_error,
+            self.sediment_ms.len(),
+            p95(&self.sediment_ms),
+            self.sediment_ms.last().copied().unwrap_or_default(),
+            p95(&self.remeasure_ms),
+            books.eroded,
+            books.laid,
+            books.suspended,
+            self.sediment_error,
         )
     }
+}
+
+/// Changes the ground as the water asks, as the app does: untouched bricks
+/// sampled first, as on the water's worker, then the change, then the water
+/// measuring the changed ground again, each timed.
+fn answer_water(
+    water: &mut WaterWorld,
+    terrain: &mut TerrainOctree,
+    field: &TerrainField,
+    samples: &mut Samples,
+) {
+    let asks = water.sediment_requests();
+    if asks.is_empty() {
+        return;
+    }
+    let mut bricks = asks
+        .iter()
+        .flat_map(SedimentChange::bricks)
+        .filter(|&brick| terrain.brick(brick).is_none())
+        .collect::<Vec<_>>();
+    bricks.sort_unstable();
+    bricks.dedup();
+    let untouched = bricks
+        .into_iter()
+        .map(|brick| TerrainBrick::untouched(field, brick))
+        .collect();
+    let started = Instant::now();
+    let (outcome, applied) = terrain.exchange_sediment(field, &asks, untouched);
+    samples
+        .sediment_ms
+        .push(started.elapsed().as_secs_f64() * 1000.0);
+    let started = Instant::now();
+    water.sediment_applied(&applied);
+    let ground = TerrainWater {
+        field,
+        edits: terrain,
+    };
+    water.ground_cells_changed(&ground, &outcome.sediment_cells);
+    samples
+        .remeasure_ms
+        .push(started.elapsed().as_secs_f64() * 1000.0);
 }
 
 fn main() {
@@ -187,13 +254,15 @@ fn main() {
     if std::env::var_os("BREACH_PROFILE").is_some() {
         profile(&field, lake, end, level);
     }
-    let (terrain, bricks, length) = dig(&field, lake, end, level);
-    let ground = TerrainWater {
-        field: &field,
-        edits: &terrain,
-    };
+    let (mut terrain, bricks, length) = dig(&field, lake, end, level);
     let mut water = WaterWorld::new();
-    water.terrain_changed(&ground, bricks);
+    water.terrain_changed(
+        &TerrainWater {
+            field: &field,
+            edits: &terrain,
+        },
+        bricks,
+    );
     let total = water.ledger().total();
     let mut samples = Samples::default();
     let mut drawn = std::collections::HashMap::new();
@@ -206,6 +275,10 @@ fn main() {
         let mut sheets = 0;
         let mut spent = [0.0; 5];
         for _ in 0..STEPS_PER_SECOND {
+            let ground = TerrainWater {
+                field: &field,
+                edits: &terrain,
+            };
             let started = Instant::now();
             let step = water.step(&ground, 1.0 / f64::from(STEPS_PER_SECOND));
             second_ms.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -235,6 +308,11 @@ fn main() {
             samples.ledger_error = samples
                 .ledger_error
                 .max((water.ledger().total() - total).abs());
+            // The ground changes as the water asks, as the app does it.
+            answer_water(&mut water, &mut terrain, &field, &mut samples);
+            samples.sediment_error = samples
+                .sediment_error
+                .max(water.sediment_ledger().unaccounted().abs());
         }
         samples.peak_sheets = samples.peak_sheets.max(sheets);
         second_ms.sort_by(f64::total_cmp);
@@ -254,5 +332,6 @@ fn main() {
         );
         samples.durations.extend(second_ms);
     }
-    println!("{}", samples.summary(seed, length));
+    let bricks = terrain.promoted_brick_count();
+    println!("{}", samples.summary(seed, length, &water, bricks));
 }

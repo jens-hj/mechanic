@@ -131,10 +131,11 @@ fn sediment_running_into_a_lake_settles_at_its_mouth() {
     let mut stirred = 0.0;
     for step in 0..600 {
         water.deposit(&ground, DVec3::new(5.9, 0.0, 0.1), 0.002);
+        // Fines, which travel the length of the channel.
         if step < 300 && water.sheets.slot(source.x, source.z).is_some() {
             let load = SedimentLoad {
-                sand: 5.0,
-                fines: 5.0,
+                sand: 0.0,
+                fines: 10.0,
             };
             muddy(&mut water, source, load);
             stirred += load.total();
@@ -148,26 +149,29 @@ fn sediment_running_into_a_lake_settles_at_its_mouth() {
         (held - stirred).abs() < 1.0e-6 * stirred,
         "sediment made or lost: {books:?} of {stirred}"
     );
-    // What reached the lake's edge stayed there: nothing settles out in
-    // the lake, and most of it lies within a metre of the mouth.
-    let near_mouth = water
-        .sediment_doc()
-        .beds
-        .iter()
-        .filter(|bed| (-2..5).contains(&bed.column.0))
-        .map(|bed| bed.settled.total())
-        .sum::<f64>();
+    // Nothing settles out in the lake: what reached its edge stays there,
+    // settled, laid or carried in the water at the mouth.
+    let mouth = |x: i32| (-2..5).contains(&x);
+    let beds = water.sediment_doc().beds;
     assert!(
-        water
-            .sediment_doc()
-            .beds
-            .iter()
-            .all(|bed| bed.column.0 >= -2),
+        beds.iter().all(|bed| bed.column.0 >= -2),
         "sediment settled out in the lake"
     );
+    let settled = beds
+        .iter()
+        .filter(|bed| mouth(bed.column.0))
+        .map(|bed| bed.settled.total())
+        .sum::<f64>();
+    let carried = water
+        .sheets
+        .iter()
+        .filter(|(cell, _)| mouth(cell.x))
+        .map(|(_, sheet)| sheet.load.total())
+        .sum::<f64>();
     assert!(
-        near_mouth + books.laid > 0.3 * stirred,
-        "only {near_mouth:.0} and {:.0} laid of {stirred:.0} by the mouth",
+        settled + carried + books.laid > 0.5 * stirred,
+        "only {settled:.0} settled, {carried:.0} carried and {:.0} laid of {stirred:.0} \
+         by the mouth",
         books.laid
     );
 }
@@ -185,7 +189,7 @@ fn sediment_the_ground_had_no_room_for_waits_to_be_laid_again() {
         .expect("the pool")
         .load
         .add(SedimentLoad {
-            sand: 4_000.0,
+            sand: 20_000.0,
             fines: 0.0,
         });
     super::run(&mut water, &ground, 20);
@@ -195,12 +199,12 @@ fn sediment_the_ground_had_no_room_for_waits_to_be_laid_again() {
     // The ground refuses outright, then lays nothing.
     water.sediment_refused();
     assert!((water.sediment_ledger().settled - settled).abs() < 1e-9);
-    super::run(&mut water, &ground, 3);
+    super::run(&mut water, &ground, 6);
     let asks = water.sediment_requests();
     assert!(!asks.is_empty());
     water.sediment_applied(&vec![SedimentApplied::default(); asks.len()]);
     let books = water.sediment_ledger();
-    assert!((books.suspended + books.settled - 4_000.0).abs() < 1.0e-6);
+    assert!((books.suspended + books.settled - 20_000.0).abs() < 1.0e-6);
     assert!(books.laid <= 0.0);
 }
 
@@ -353,7 +357,7 @@ fn run_a_stream(
         water.step(&ground, 0.05);
         let asks = water.sediment_requests();
         if !asks.is_empty() {
-            let (outcome, applied) = terrain.exchange_sediment(field, &asks);
+            let (outcome, applied) = terrain.exchange_sediment(field, &asks, Vec::new());
             water.sediment_applied(&applied);
             let ground = TerrainWater {
                 field,
