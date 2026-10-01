@@ -357,8 +357,42 @@ The app (`world/water_render.rs`) keeps a quadtree of tiles around the camera:
 2,048 m tiles split down to 64 m ones, with 64 cells each, out to 4 km. Tiles
 mesh on worker threads, and a tile the camera leaves stays until everything
 that replaces it is ready. `water_material.wgsl` colours by depth, fades to
-clear at the shore, ripples along the current, and lights through Bevy's
-PBR path, so the sky reflects in it. Water neither casts nor receives shadows.
+clear at the shore, shows its current, and lights through Bevy's PBR path,
+so the sky reflects in it. Water neither casts nor receives shadows.
+
+The surface looks the way the water runs. The shader reads each vertex's
+depth and current, and from them the Froude number, counting no water as
+running faster than one and a half times its wave speed, as erosion does,
+so films a few millimetres deep never break white.
+
+- Still water is a mirror: its wind ripples grow with its depth, so puddles
+  and ponds lie glassy while lakes ripple, and its roughness is 0.02.
+- Running water wears wrinkles stretched along its current and sparse flecks
+  of foam gathered into lines, both carried downstream at the current's
+  speed: two copies of the pattern, each drifting for 1.5 s and starting
+  afresh, crossfade so neither restart shows.
+- Fast shallow water, at a Froude number from 0.7, stands in waves across its
+  current that hold still over the bed, as long as the wave that runs
+  upstream as fast as the water runs down (2π v²/g). From a Froude number of
+  1 it breaks white: choppy, matte, pale and opaque, with foam over up to
+  half of it.
+- Stored water also churns white where the world says (`ATTRIBUTE_CHURN`):
+  where water runs into slower water downstream, as a stream into a pool,
+  where it tumbles fast down a steep chute, and where a fall lands. Each
+  corner of the surface takes the most of the three. Only the currents'
+  parts along the mean current count towards a collision, between columns
+  lying along it: a stream running diagonally across the grid zigzags from
+  column to column, and counting whole currents churned a third of a dug
+  stream white. Falls book their power where they land (`water/splash.rs`),
+  over a lip or a pool's rim, and churn the water there by
+  1 − exp(−P / 20 W), fading with a half-life of 1.5 s once they stop.
+
+The noise behind the wrinkles, flecks and chop is baked once into a 512²
+texture of gradient noise and its slope, which repeats every 64 lattice
+cells. Worked out in the shader, it cost about 2 ms a frame over 4 million
+pixels of running water on an M1 Pro; read from the texture, running water
+costs about 0.2 ms more than still water, and whitewater 0.5 ms. A material
+without the texture, as in tests, draws wind ripples only.
 
 Stored water is one surface (`water/surface.rs`): running sheets, the open
 tops of pools, and cells joined to a lake beyond the lake's own sheet, meshed
@@ -531,6 +565,11 @@ surface crosses sample the field's density.
   with the world. A violent flood promotes every brick it wears or silts.
 - Lakes and rivers neither erode nor carry sediment; what reaches them settles
   at their edge.
+- Foam is drawn where water churns, not carried: a fall's foam does not trail
+  downstream, and only the drifting flecks hint at it.
+- Currents change from one water batch to the next, and a tile's current is
+  meshed again in steps of 0.1 m/s, so the surface pattern can jump a few
+  centimetres when they do.
 
 ## Authoring
 
