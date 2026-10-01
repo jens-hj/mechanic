@@ -18,6 +18,10 @@ struct WaterVertex {
     @location(1) normal: vec3<f32>,
     // Depth of water under the vertex, then its current along x and z.
     @location(8) water: vec3<f32>,
+#ifdef WATER_MURK
+    // How cloudy with sediment the water is, from 0 to 1.
+    @location(9) murk: f32,
+#endif
 }
 
 struct WaterVaryings {
@@ -28,6 +32,7 @@ struct WaterVaryings {
     @location(6) @interpolate(flat) instance_index: u32,
 #endif
     @location(8) water: vec3<f32>,
+    @location(9) mud: f32,
 }
 
 @vertex
@@ -47,6 +52,11 @@ fn vertex(vertex: WaterVertex) -> WaterVaryings {
     out.instance_index = vertex.instance_index;
 #endif
     out.water = vertex.water;
+#ifdef WATER_MURK
+    out.mud = vertex.murk;
+#else
+    out.mud = 0.0;
+#endif
     return out;
 }
 
@@ -69,6 +79,9 @@ fn wave_slope(point: vec2<f32>, time: f32) -> vec2<f32> {
     }
     return slope;
 }
+
+// Linear colour of water thick with silt.
+const SILT: vec3<f32> = vec3<f32>(0.16, 0.1, 0.045);
 
 // Seconds the ripples ride the current before they start afresh.
 const FLOW_PERIOD: f32 = 2.0;
@@ -127,9 +140,14 @@ fn fragment(
     let across = dot(varyings.world_position.xz, vec2<f32>(-along.y, along.x));
     let streak = 0.5 + 0.5 * sin(across * 23.0 + sin(across * 7.0 + globals.time));
     let foam = smoothstep(0.8, 2.5, speed) * mix(0.4, 1.0, streak) * calm;
+    // Sediment turns water silty brown and hides the ground under it.
+    let mud = clamp(varyings.mud, 0.0, 1.0);
+    let clear = mix(shallow.rgb, deep.rgb, murk);
+    let colour = mix(clear, SILT, mud);
+    let opacity = max(mix(0.35, 0.9, 1.0 - exp(-depth / 1.2)), 0.95 * mud);
     pbr_input.material.base_color = vec4<f32>(
-        mix(mix(shallow.rgb, deep.rgb, murk), vec3<f32>(0.85, 0.9, 0.9), foam * 0.7),
-        edge * max(mix(0.35, 0.9, 1.0 - exp(-depth / 1.2)), foam * 0.8),
+        mix(colour, vec3<f32>(0.85, 0.9, 0.9), foam * 0.7),
+        edge * max(opacity, foam * 0.8),
     );
     pbr_input.material.perceptual_roughness = 0.06;
     pbr_input.material.metallic = 0.0;

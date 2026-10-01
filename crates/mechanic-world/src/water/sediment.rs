@@ -149,6 +149,16 @@ impl SedimentLoad {
     }
 }
 
+/// How cloudy water holding `volume` m³ is with what it carries, from 0 to
+/// 1: a hundredth of its volume in sediment is thick mud.
+pub(super) fn murk(load: SedimentLoad, volume: f64) -> f64 {
+    if volume <= 0.0 {
+        return 0.0;
+    }
+    let carried = load.total() * MATERIAL_QUANTUM_M3 / volume;
+    1.0 - (-carried / 0.01).exp()
+}
+
 /// One column's sediment waiting on the ground.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Bed {

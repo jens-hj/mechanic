@@ -49,6 +49,11 @@ const TILES_IN_FLIGHT: usize = 8;
 pub(crate) const ATTRIBUTE_WATER: MeshVertexAttribute =
     MeshVertexAttribute::new("Water", 0x6d65_6368_0010, VertexFormat::Float32x3);
 
+/// How cloudy with sediment the water over a vertex is, from 0 to 1. Only
+/// stored water carries it: seed-derived water runs clear.
+pub(crate) const ATTRIBUTE_MURK: MeshVertexAttribute =
+    MeshVertexAttribute::new("Murk", 0x6d65_6368_0011, VertexFormat::Float32);
+
 /// Colours and scale of the water surface.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
 pub(crate) struct WaterRenderMaterial {
@@ -88,11 +93,16 @@ impl Material for WaterRenderMaterial {
         layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         _key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
-        descriptor.vertex.buffers = vec![layout.0.get_layout(&[
+        let mut attributes = vec![
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
             ATTRIBUTE_WATER.at_shader_location(8),
-        ])?];
+        ];
+        if layout.0.contains(ATTRIBUTE_MURK) {
+            attributes.push(ATTRIBUTE_MURK.at_shader_location(9));
+            descriptor.vertex.shader_defs.push("WATER_MURK".into());
+        }
+        descriptor.vertex.buffers = vec![layout.0.get_layout(&attributes)?];
         // Both faces: the surface is seen from below when swimming.
         descriptor.primitive.cull_mode = None;
         Ok(())
@@ -418,7 +428,7 @@ fn refresh_stale(
 fn surface_mesh(
     positions: Vec<[f32; 3]>,
     normals: Option<Vec<[f32; 3]>>,
-    attributes: Vec<[f32; 3]>,
+    attributes: &[[f32; 4]],
     indices: Vec<u32>,
 ) -> Mesh {
     let normals = normals.unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; positions.len()]);
@@ -430,7 +440,16 @@ fn surface_mesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(
         ATTRIBUTE_WATER,
-        VertexAttributeValues::Float32x3(attributes),
+        VertexAttributeValues::Float32x3(
+            attributes
+                .iter()
+                .map(|&[depth, x, z, _]| [depth, x, z])
+                .collect(),
+        ),
+    );
+    mesh.insert_attribute(
+        ATTRIBUTE_MURK,
+        VertexAttributeValues::Float32(attributes.iter().map(|attribute| attribute[3]).collect()),
     );
     mesh.insert_indices(Indices::U32(indices));
     mesh
@@ -502,7 +521,7 @@ pub(crate) fn draw_stored_water(
         let mesh = surface_mesh(
             tile.positions.clone(),
             Some(tile.normals.clone()),
-            tile.attributes.clone(),
+            &tile.attributes,
             tile.indices.clone(),
         );
         let entity = spawn(

@@ -203,11 +203,11 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     }
 }
 
-#[test]
-#[ignore = "requires a real GPU"]
-fn water_draws_a_translucent_blue_surface_over_the_ground() {
+/// The pixel at the middle of water two metres deep over pale ground, as
+/// cloudy with sediment as `murk` says, or clear without it.
+fn water_pixel(murk: Option<f32>) -> Vec<u8> {
     use crate::world::WaterRenderMaterial;
-    use crate::world::water_render::ATTRIBUTE_WATER;
+    use crate::world::water_render::{ATTRIBUTE_MURK, ATTRIBUTE_WATER};
 
     let mut app = App::new();
     app.add_plugins(
@@ -270,6 +270,12 @@ fn water_draws_a_translucent_blue_surface_over_the_ground() {
         ATTRIBUTE_WATER,
         bevy::mesh::VertexAttributeValues::Float32x3(vec![[2.0, 0.3, 0.0]; count]),
     );
+    if let Some(murk) = murk {
+        water.insert_attribute(
+            ATTRIBUTE_MURK,
+            bevy::mesh::VertexAttributeValues::Float32(vec![murk; count]),
+        );
+    }
     water.remove_attribute(Mesh::ATTRIBUTE_UV_0);
     let water = app.world_mut().resource_mut::<Assets<Mesh>>().add(water);
     let material = app
@@ -290,11 +296,33 @@ fn water_draws_a_translucent_blue_surface_over_the_ground() {
     }
     let pixels = &app.world().resource::<Pixels>().0;
     let center = (32 * 64 + 32) * 4;
-    let pixel = &pixels[center..center + 4];
+    pixels[center..center + 4].to_vec()
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn water_draws_a_translucent_blue_surface_over_the_ground() {
+    let pixel = water_pixel(None);
     eprintln!("Water pixel: {pixel:?}");
     assert!(pixel[1] > 8, "water is still the magenta error material");
     assert!(
         pixel[2] > pixel[0],
         "water over pale ground should read blue: {pixel:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn water_thick_with_sediment_draws_silty_brown() {
+    let clear = water_pixel(Some(0.0));
+    let muddy = water_pixel(Some(1.0));
+    eprintln!("Clear {clear:?}, muddy {muddy:?}");
+    assert!(
+        clear[2] > clear[0],
+        "clear water should read blue: {clear:?}"
+    );
+    assert!(
+        muddy[0] > muddy[2] && muddy[1] > muddy[2],
+        "muddy water should read brown: {muddy:?}"
     );
 }
