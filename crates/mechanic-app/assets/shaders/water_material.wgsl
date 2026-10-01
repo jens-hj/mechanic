@@ -139,6 +139,9 @@ const FLOW_PERIOD: f32 = 1.5;
 // Fastest current the surface drifts with, in m/s.
 const FASTEST_DRIFT: f32 = 2.0;
 
+// Fixed headings in half a turn that patterns are drawn out along.
+const HEADINGS: f32 = 8.0;
+
 #ifdef WATER_NOISE
 // What the current carries along at a point: wrinkles stretched along it,
 // their height's slope in metres per metre, fine chop, and foam.
@@ -148,13 +151,9 @@ struct Carried {
     wrinkle: f32,
 }
 
-// The surface the current carries, sampled where `point` was `age` seconds
-// ago. `along` and `across` are the current's frame, `cover` the share of
-// the surface foam covers.
-fn carried(
-    point: vec2<f32>,
-    drift: vec2<f32>,
-    age: f32,
+// The surface drawn out along one of the fixed headings, at `at`.
+fn drawn_out(
+    at: vec2<f32>,
     along: vec2<f32>,
     moving: f32,
     white: f32,
@@ -162,22 +161,16 @@ fn carried(
     texel: f32,
 ) -> Carried {
     var out: Carried;
-    let at = point - drift * age;
     // Wrinkles 60 cm long and 25 cm across, in two octaves.
-    let frame = vec2<f32>(dot(at, along), dot(at, vec2<f32>(-along.y, along.x)));
+    let across = vec2<f32>(-along.y, along.x);
+    let frame = vec2<f32>(dot(at, along), dot(at, across));
     let scale = vec2<f32>(1.6, 4.0);
     let first = noise(frame * scale);
     let second = noise(frame * scale * 2.1 + vec2<f32>(17.3, 5.1));
     let height = 0.03 * moving;
     let local = height * (first.yz * scale + 0.5 * second.yz * scale * 2.1);
-    let across = vec2<f32>(-along.y, along.x);
     out.slope = (along * local.x + across * local.y) * resolved(texel, 8.0);
     out.wrinkle = first.x;
-    // Chop: whitewater roughened all over.
-    if white > 0.01 {
-        let chop = noise(at * 9.0 + vec2<f32>(3.7, 11.2));
-        out.slope += 0.012 * white * 9.0 * chop.yz * resolved(texel, 9.0);
-    }
     // Foam: the brightest of a noise, as much of it as `cover` says, in
     // flecks drawn out along the current. Flecks on running water gather
     // into lines that drift with it; whitewater foams soft-edged.
@@ -191,7 +184,49 @@ fn carried(
     }
     return out;
 }
+
+// The surface the current carries, sampled where `point` was `age` seconds
+// ago, drawn out along the two headings either side of the current, `turn`
+// in eighths of half a turn, and `cover` the share of the surface foam
+// covers.
+fn carried(
+    point: vec2<f32>,
+    drift: vec2<f32>,
+    age: f32,
+    turn: f32,
+    moving: f32,
+    white: f32,
+    cover: f32,
+    texel: f32,
+) -> Carried {
+    let at = point - drift * age;
+    let lower = floor(turn);
+    let blend = smoothstep(0.3, 0.7, turn - lower);
+    var out = drawn_out(at, heading(lower), moving, white, cover, texel);
+    if blend > 0.0 {
+        let next = drawn_out(at, heading(lower + 1.0), moving, white, cover, texel);
+        out.slope = mix(out.slope, next.slope, blend);
+        out.foam = mix(out.foam, next.foam, blend);
+        out.wrinkle = mix(out.wrinkle, next.wrinkle, blend);
+    }
+    // Chop: whitewater roughened all over.
+    if white > 0.01 {
+        let chop = noise(at * 9.0 + vec2<f32>(3.7, 11.2));
+        out.slope += 0.012 * white * 9.0 * chop.yz * resolved(texel, 9.0);
+    }
+    return out;
+}
 #endif
+
+// One of the fixed headings the surface's patterns are drawn out along,
+// `turn` eighths of half a turn from x. Patterns follow the current by
+// fading between the headings either side of it: turning a pattern to the
+// current itself turns it about the world's origin, so a current that
+// bends even slightly, far from the origin, tears it into arcs and kinks.
+fn heading(turn: f32) -> vec2<f32> {
+    let angle = turn * 3.14159265 / HEADINGS;
+    return vec2<f32>(cos(angle), sin(angle));
+}
 
 @fragment
 fn fragment(
@@ -218,6 +253,8 @@ fn fragment(
     let reckoned = length(flow);
     let speed = min(reckoned, 1.5 * sqrt(GRAVITY * depth));
     let along = select(vec2<f32>(1.0, 0.0), flow / reckoned, reckoned > 1.0e-3);
+    // The current's heading, in eighths of half a turn from x.
+    let turn = atan2(along.y, along.x) / 3.14159265 * HEADINGS;
     let froude = speed / sqrt(GRAVITY * max(depth, 0.005));
     let deep_enough = smoothstep(0.02, 0.05, depth);
     // Still to running; rapids; white with air, from the rapids or from
@@ -252,12 +289,12 @@ fn fragment(
         let first_age = fract(time / FLOW_PERIOD);
         let second_age = fract(time / FLOW_PERIOD + 0.5);
         let weight = 1.0 - abs(1.0 - 2.0 * first_age);
-        let first = carried(point, drift, first_age * FLOW_PERIOD, along, moving, white, cover, texel);
+        let first = carried(point, drift, first_age * FLOW_PERIOD, turn, moving, white, cover, texel);
         let second = carried(
             point + vec2<f32>(0.37, 0.61),
             drift,
             second_age * FLOW_PERIOD,
-            along,
+            turn,
             moving,
             white,
             cover,
@@ -271,13 +308,30 @@ fn fragment(
 
     // Standing waves: crests across fast shallow water that hold still over
     // the bed, as long as the wave that travels upstream as fast as the
-    // water runs down, broken up by the wrinkles riding through them.
+    // water runs down, broken up by the wrinkles riding through them. Like
+    // the wrinkles, they fade between fixed headings, and between lengths
+    // a quarter octave apart: a phase that follows the current's own
+    // heading or speed slides wherever either changes.
     if rapid > 0.01 {
-        let length = clamp(6.2831853 * speed * speed / GRAVITY, 0.15, 2.5);
-        let k = 6.2831853 / length;
-        let phase = k * dot(point, along) + 2.5 * wrinkle;
-        let pulse = 0.8 + 0.2 * sin(1.3 * time + 3.0 * wrinkle);
-        slope += along * (0.3 * rapid * pulse * cos(phase) * resolved(texel, 1.0 / length));
+        let octaves = 4.0 * log2(clamp(6.2831853 * speed * speed / GRAVITY, 0.15, 2.5));
+        let shorter = floor(octaves);
+        let longer = smoothstep(0.3, 0.7, octaves - shorter);
+        let lower = floor(turn);
+        let next = smoothstep(0.3, 0.7, turn - lower);
+        let height = 0.3 * rapid * (0.8 + 0.2 * sin(1.3 * time + 3.0 * wrinkle));
+        let lengths = vec2<f32>(exp2(shorter / 4.0), exp2((shorter + 1.0) / 4.0));
+        let shares = vec2<f32>(1.0 - longer, longer)
+            * vec2<f32>(resolved(texel, 1.0 / lengths.x), resolved(texel, 1.0 / lengths.y));
+        let first = heading(lower);
+        let second = heading(lower + 1.0);
+        // Whole crests from the origin dropped, so the cosine never sees a
+        // phase of thousands of turns.
+        let crests = vec4<f32>(dot(point, first) / lengths, dot(point, second) / lengths);
+        let waves = cos(6.2831853 * fract(crests) + 2.5 * wrinkle);
+        slope += height * (
+            first * ((1.0 - next) * dot(shares, waves.xy))
+            + second * (next * dot(shares, waves.zw))
+        );
     }
 
     // Ripples ride on the surface's own slope: water down a chute tilts.

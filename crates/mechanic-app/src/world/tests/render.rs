@@ -210,6 +210,11 @@ struct WaterScene {
     depth: f32,
     /// Its current, in m/s.
     flow: [f32; 2],
+    /// Radians the current turns through across the picture, from left to
+    /// right.
+    turn: f32,
+    /// Where in the world the water lies.
+    origin: Vec3,
     /// How cloudy with sediment it is, or none for water that carries none.
     murk: Option<f32>,
     /// How white it churns, or none for water that carries no churn.
@@ -223,6 +228,8 @@ impl Default for WaterScene {
         Self {
             depth: 2.0,
             flow: [0.3, 0.0],
+            turn: 0.0,
+            origin: Vec3::ZERO,
             murk: None,
             churn: None,
             size: 64,
@@ -286,16 +293,23 @@ fn water_plane(scene: WaterScene) -> Mesh {
 
     let mut water = Mesh::from(Plane3d::default().mesh().size(8.0, 8.0));
     let count = water.count_vertices();
+    let Some(bevy::mesh::VertexAttributeValues::Float32x3(positions)) =
+        water.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        unreachable!("a plane has positions");
+    };
+    // The current turns about the vertical as it crosses the plane.
+    let currents = positions
+        .iter()
+        .map(|position| {
+            let turned = Vec2::from_angle(scene.turn * position[0] / 8.0)
+                .rotate(Vec2::from_array(scene.flow));
+            [scene.depth, turned.x, turned.y]
+        })
+        .collect::<Vec<_>>();
     water.insert_attribute(
         ATTRIBUTE_WATER,
-        bevy::mesh::VertexAttributeValues::Float32x3(vec![
-            [
-                scene.depth,
-                scene.flow[0],
-                scene.flow[1]
-            ];
-            count
-        ]),
+        bevy::mesh::VertexAttributeValues::Float32x3(currents),
     );
     if let Some(murk) = scene.murk {
         water.insert_attribute(
@@ -357,7 +371,8 @@ fn water_frame(scene: WaterScene) -> Vec<u8> {
             ..default()
         },
         RenderTarget::Image(target.into()),
-        Transform::from_xyz(0.0, 3.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Transform::from_translation(scene.origin + Vec3::new(0.0, 3.0, 3.0))
+            .looking_at(scene.origin, Vec3::Y),
     ));
     // Pale ground under the water.
     let ground = app
@@ -371,7 +386,7 @@ fn water_frame(scene: WaterScene) -> Vec<u8> {
     app.world_mut().spawn((
         Mesh3d(plane),
         MeshMaterial3d(ground),
-        Transform::from_xyz(0.0, -2.0, 0.0),
+        Transform::from_translation(scene.origin - 2.0 * Vec3::Y),
     ));
     let water = water_plane(scene);
     let water = app.world_mut().resource_mut::<Assets<Mesh>>().add(water);
@@ -381,8 +396,11 @@ fn water_frame(scene: WaterScene) -> Vec<u8> {
         .world_mut()
         .resource_mut::<Assets<WaterRenderMaterial>>()
         .add(material);
-    app.world_mut()
-        .spawn((Mesh3d(water), MeshMaterial3d(material)));
+    app.world_mut().spawn((
+        Mesh3d(water),
+        MeshMaterial3d(material),
+        Transform::from_translation(scene.origin),
+    ));
     app.world_mut().spawn((
         DirectionalLight {
             illuminance: 18_000.0,
@@ -482,5 +500,26 @@ fn still_shallow_water_is_smoother_than_running_water() {
     assert!(
         running > 2.0 * still,
         "running water should wrinkle where still water lies glassy: {running:.4} against {still:.4}"
+    );
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn streaks_hold_their_grain_far_from_the_origin() {
+    // A stream bending gently, here and 400 m away.
+    let stream = |origin| WaterScene {
+        depth: 0.1,
+        flow: [0.5, 0.0],
+        turn: 10.0_f32.to_radians(),
+        origin,
+        size: 256,
+        ..WaterScene::default()
+    };
+    let near = grain(stream(Vec3::ZERO));
+    let far = grain(stream(Vec3::new(300.0, 0.0, 300.0)));
+    eprintln!("Near {near:.4}, far {far:.4}");
+    assert!(
+        far < 1.5 * near && near < 1.5 * far,
+        "a bending current should draw the same streaks anywhere: {far:.4} against {near:.4}"
     );
 }

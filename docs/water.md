@@ -370,7 +370,12 @@ so films a few millimetres deep never break white.
 - Running water wears wrinkles stretched along its current and sparse flecks
   of foam gathered into lines, both carried downstream at the current's
   speed: two copies of the pattern, each drifting for 1.5 s and starting
-  afresh, crossfade so neither restart shows.
+  afresh, crossfade so neither restart shows. The pattern is never turned to
+  the current itself: turning it turns the world about its origin, and 200 m
+  out a current bending 1° slides the pattern 4 m, so a gently curving flood
+  drew streaks in arcs and kinks. It is drawn out along 16 fixed headings
+  instead, fading between the two either side of the current; standing waves
+  fade the same way, and between lengths a quarter octave apart.
 - Fast shallow water, at a Froude number from 0.7, stands in waves across its
   current that hold still over the bed, as long as the wave that runs
   upstream as fast as the water runs down (2π v²/g). From a Froude number of
