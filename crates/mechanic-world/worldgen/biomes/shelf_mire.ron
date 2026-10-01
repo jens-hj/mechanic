@@ -39,8 +39,10 @@ Biome(
     carves: {"tunnels": 0, "entrances": 0},
 
     surface: [
+        // Established beds and the narrow bare shore precede vegetation.
+        (when: All([WaterDepth(-0.35, inf), Up(0.55, 1), Depth(0, 0.8)]), use: "mire_mud"),
+        (when: All([WaterDepth(-0.35, inf), Not(Up(0.55, 1)), Depth(0, 0.8)]), use: "fungal_stone"),
         (when: Ceiling, use: "gill_pink"),
-        (when: All([Altitude(-100, 2.4), Depth(0, 1.2)]), use: "mire_mud"),
         (when: All([Altitude(6, 1000), Up(0.8, 1), Depth(0, 0.4)]), use: "cap_ochre"),
         (when: All([Up(0.7, 1), Depth(0, 0.25)]), use: "sickly_turf"),
         (when: Always, use: "fungal_stone"),

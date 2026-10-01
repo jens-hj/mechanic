@@ -47,6 +47,7 @@ pub(super) struct TerrainSelectionTaskResult {
     pub(super) selection: TerrainSelection,
     pub(super) bounds_cache: TerrainBoundsCache,
     pub(super) focus: WorldPosition,
+    pub(super) interest: Option<WorldPosition>,
     pub(super) terrain_revision: u64,
     pub(super) detail_steps: u8,
     pub(super) elapsed_ms: f64,
@@ -141,6 +142,7 @@ pub(super) fn update_terrain_selection(
     runtime: &mut WorldRuntime,
     diagnostics: &mut WorldDiagnostics,
     focus: WorldPosition,
+    interest: Option<WorldPosition>,
 ) {
     const RESELECT_DISTANCE_METRES: f64 = 8.0;
 
@@ -168,7 +170,14 @@ pub(super) fn update_terrain_selection(
                 let cut = result.selection.nodes;
                 let mut focus_capsule = runtime.capsule;
                 focus_capsule.position = result.focus;
-                let critical = startup_region_nodes(&cut, result.focus).collect::<Vec<_>>();
+                let critical = startup_region_nodes(&cut, result.focus)
+                    .chain(
+                        result
+                            .interest
+                            .into_iter()
+                            .flat_map(|interest| startup_region_nodes(&cut, interest)),
+                    )
+                    .collect::<Vec<_>>();
                 runtime.terrain_streamer.set_pinned(
                     player_collision_nodes(&cut, &focus_capsule).chain(critical.iter().copied()),
                 );
@@ -177,6 +186,7 @@ pub(super) fn update_terrain_selection(
                     .set_critical_nodes(critical.iter().copied());
                 runtime.terrain_streamer.set_desired(cut);
                 runtime.selection_focus = Some(result.focus);
+                runtime.selection_interest = result.interest;
                 runtime.selected_terrain_revision = result.terrain_revision;
                 runtime.terrain_detail.selected = result.detail_steps;
             }
@@ -184,7 +194,15 @@ pub(super) fn update_terrain_selection(
         }
     }
 
-    let needs_selection = runtime.selected_terrain_revision != runtime.terrain_revision
+    let interest_changed = match (runtime.selection_interest, interest) {
+        (Some(previous), Some(current)) => {
+            previous.0.distance(current.0) >= RESELECT_DISTANCE_METRES
+        }
+        (None, None) => false,
+        _ => true,
+    };
+    let needs_selection = interest_changed
+        || runtime.selected_terrain_revision != runtime.terrain_revision
         || runtime.terrain_detail.selected != runtime.terrain_detail.steps
         || runtime
             .selection_focus
@@ -203,7 +221,7 @@ pub(super) fn update_terrain_selection(
                     &field,
                     &terrain,
                     focus,
-                    &[],
+                    &interest.into_iter().collect::<Vec<_>>(),
                     detail_scale,
                     &mut bounds_cache,
                 )
@@ -212,6 +230,7 @@ pub(super) fn update_terrain_selection(
                 selection,
                 bounds_cache,
                 focus,
+                interest,
                 terrain_revision,
                 detail_steps,
                 elapsed_ms: started.elapsed().as_secs_f64() * 1_000.0,
@@ -229,19 +248,28 @@ const TERRAIN_JOBS_PER_WORKER: usize = 6;
 pub(super) fn schedule_terrain_remeshes(
     mut commands: Commands,
     mut runtime: ResMut<WorldRuntime>,
-    focus_sources: (Res<PlayerState>, Res<EditorGraph>, Res<AppSimulation>),
+    focus_sources: (
+        Res<PlayerState>,
+        Res<EditorGraph>,
+        Res<AppSimulation>,
+        Option<Res<crate::dev_tools::DevTools>>,
+    ),
     list: Res<WorldListState>,
     tasks: Query<(Entity, &TerrainMeshTask)>,
     cameras: Query<(&GlobalTransform, &Projection), With<MainCamera>>,
     mut diagnostics: ResMut<WorldDiagnostics>,
 ) {
-    let (player, graph, simulation) = focus_sources;
-    let focus = terrain_streaming_focus(&player, &graph.0, &simulation, runtime.floating_origin);
+    let (player, graph, simulation, dev) = focus_sources;
+    let player_focus =
+        terrain_streaming_focus(&player, &graph.0, &simulation, runtime.floating_origin);
+    let (focus, interest) = dev.as_ref().map_or((player_focus, None), |dev| {
+        dev.streaming_focus(&player, player_focus, runtime.floating_origin)
+    });
     // A selection taken between two queued stroke batches is guaranteed to be
     // obsolete. Let the existing cut keep rendering/colliding and reconcile
     // once the ordered edit queue reaches a stable revision.
     if runtime.terrain_edit_task.is_none() && runtime.pending_terrain_edits.is_empty() {
-        update_terrain_selection(&mut runtime, &mut diagnostics, focus);
+        update_terrain_selection(&mut runtime, &mut diagnostics, focus, interest);
     }
     runtime.terrain_streamer.set_view(
         cameras

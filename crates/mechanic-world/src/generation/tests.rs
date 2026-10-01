@@ -1,5 +1,6 @@
 mod carves;
 mod water;
+mod water_materials;
 
 use bevy_math::{DVec3, IVec3};
 
@@ -114,10 +115,11 @@ fn lattice_densities_match_point_densities() {
 #[test]
 fn surface_is_painted_with_the_top_rule_and_rock_beneath() {
     let field = TerrainField::new(WorldSeed(99));
-    let surface = field.surface_height(30.0, 30.0);
+    let spawn = field.safe_spawn().0;
+    let surface = field.surface_height(spawn.x, spawn.z);
     let material_at_depth = |depth: f64| {
         field
-            .sample_position(WorldPosition(DVec3::new(30.0, surface - depth, 30.0)))
+            .sample_position(WorldPosition(DVec3::new(spawn.x, surface - depth, spawn.z)))
             .material
     };
     assert_eq!(material_at_depth(0.03), TerrainMaterial::SurfaceCover);

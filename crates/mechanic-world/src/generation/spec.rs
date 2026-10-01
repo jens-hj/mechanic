@@ -409,6 +409,9 @@ pub enum Cond {
     Always,
     /// Metres below the surface in `[min, max]`.
     Depth(f64, f64),
+    /// Signed metres below established local water at the estimated terrain surface.
+    /// Negative values are shore above water; absent or disconnected water never matches.
+    WaterDepth(f64, f64),
     /// Surface normal's y component in `[min, max]`; 1 is flat ground.
     Up(f64, f64),
     /// Surfaces facing downward: overhangs, arch undersides, cave roofs.

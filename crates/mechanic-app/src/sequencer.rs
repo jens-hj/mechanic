@@ -1068,6 +1068,7 @@ fn target_speed(target: DriveTarget) -> Option<f32> {
     reason = "bevy systems receive each independent resource explicitly"
 )]
 pub(crate) fn run_drive_sequencer(
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     controls: Res<crate::physical_controls::PhysicalControls>,
     pause: Res<crate::pause_menu::PauseMenuState>,
@@ -1115,10 +1116,12 @@ pub(crate) fn run_drive_sequencer(
     if pause.blocks_world_input() {
         return;
     }
-    let mut keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard());
+    let spectator = dev.is_some_and(|dev| dev.spectator());
+    let mut keys = DriveKeyState::from_keyboard(&keyboard, overlay.blocks_keyboard() || spectator);
     keys.routed = Some(controls.keys.clone());
     let keyboard_controller = player
         .seat
+        .filter(|_| !spectator)
         .filter(|seat| simulation.published_graph.seat_input(*seat).is_some())
         .and_then(|seat| simulation.published_graph.seat_controller(seat));
     step_drive_programs(

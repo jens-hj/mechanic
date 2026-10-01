@@ -71,6 +71,17 @@ Treat Mosaic as a first-party UI dependency, not a fixed limitation to work arou
 
 Mechanic is pre-production. Do not add backward-compatibility readers, migrations, legacy fallbacks, or backup formats unless explicitly requested. Replace formats directly and update fixtures and tests.
 
+## Versioning
+
+Mechanic is in alpha. Keep the major version at `0`; never increment it while this policy applies.
+
+- Bump the **minor** version for breaking changes, including incompatible public API, persisted format, or protocol changes. Reset patch to `0`, for example `0.1.4` → `0.2.0`.
+- Bump the **patch** version for everything else, including compatible features, fixes, refactors, documentation, and tooling changes, for example `0.1.4` → `0.1.5`.
+- Bump once per completed, coherent task that changes repository files, after its implementation and verification are complete and before committing or handing the work back. Do not wait for a release or an explicit request to bump.
+- A task may span several commits or review iterations; follow-up fixes within that task share its bump. A new, independent task gets a new bump. Read-only investigation and questions do not trigger a bump.
+- Choose the highest applicable level across the task: any breaking change requires a minor bump; otherwise use patch. If a task becomes breaking after a patch bump, replace that bump with a minor bump from the task's starting version.
+- Update `[workspace.package].version` in the root `Cargo.toml` and keep workspace package versions in `Cargo.lock` synchronized.
+
 ## Testing Guidelines
 
 Add focused regression tests beside the code being changed. Name tests after observable behavior, for example `off_centre_external_impulse_changes_linear_and_angular_motion`. Exercise both graph compilation and GPU behavior when a change crosses that boundary. Hardware-specific GPU tests may require a real adapter; report the adapter and command used. Mechanic is experimental: tests assert observable behaviour with tolerances suited to a game, not solver internals. Captured solver states, iteration counts, and storage bounds belong in bench reports, not `cargo test`. Do not claim scale-gate completion unless the exact body count, kernel coverage, failure flags, throughput, and p95 requirements in `README.md` are satisfied.

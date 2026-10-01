@@ -3,8 +3,8 @@
 //!
 //! This mirrors `mosaic::prelude` with the windowing items removed — `App`,
 //! `WindowConfig`, `AppContext` and friends belong to Mosaic's own runtime,
-//! which a Bevy app replaces. Skipping them is also what keeps `winit`,
-//! `arboard` and `accesskit_winit` out of the dependency graph.
+//! which a Bevy app replaces. The Bevy host installs its own system clipboard
+//! and window integration without pulling in Mosaic’s runtime.
 //!
 //! Glob import it in modules that build UI — under clippy's pedantic lints
 //! that needs an `#[allow(clippy::wildcard_imports)]` on the module, which is

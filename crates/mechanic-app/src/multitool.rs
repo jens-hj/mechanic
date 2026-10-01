@@ -4,6 +4,8 @@
 //! its native Bevy representation: the authored dimensions, hierarchy, folds,
 //! deployment beats, flip, and use states remain data-driven here.
 
+pub(crate) mod lighting;
+
 use core::f32::consts::{PI, TAU};
 
 use bevy::{
@@ -47,7 +49,8 @@ pub(crate) struct MultitoolPlugin;
 
 impl Plugin for MultitoolPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn.after(crate::schedule::StartupSet::Scene))
+        app.add_plugins(lighting::ViewmodelLightingPlugin)
+            .add_systems(Startup, spawn.after(crate::schedule::StartupSet::Scene))
             .add_systems(
                 Update,
                 update
@@ -211,6 +214,7 @@ enum Activation {
 
 #[derive(SystemParam)]
 struct MultitoolInput<'w> {
+    dev: Option<Res<'w, crate::dev_tools::DevTools>>,
     selection: Res<'w, SelectedTool>,
     actions: Res<'w, ButtonInput<GameAction>>,
     player: Res<'w, PlayerState>,
@@ -548,13 +552,13 @@ impl MultitoolMaterials {
 
 fn spawn(
     mut commands: Commands,
-    camera: Single<(Entity, &Projection, &GeneratedEnvironmentMapLight), With<MainCamera>>,
+    camera: Single<(Entity, &Projection), With<MainCamera>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let model_meshes = multitool_meshes(&mut meshes);
     let model_materials = multitool_materials(&mut materials);
-    let (camera_entity, projection, environment_map) = *camera;
+    let (camera_entity, projection) = *camera;
     let mut viewmodel_projection = projection.clone();
     if let Projection::Perspective(perspective) = &mut viewmodel_projection {
         perspective.near = 0.01;
@@ -563,6 +567,7 @@ fn spawn(
     commands.entity(camera_entity).with_children(|camera| {
         camera.spawn((
             Name::new("Multitool viewmodel camera"),
+            lighting::ViewmodelCamera,
             Camera3d::default(),
             Camera {
                 order: 1,
@@ -576,12 +581,12 @@ fn spawn(
             viewmodel_projection,
             garage::EXPOSURE,
             Tonemapping::SomewhatBoringDisplayTransform,
-            environment_map.clone(),
             RenderLayers::layer(VIEWMODEL_LAYER),
             FovCamera,
         ));
         camera.spawn((
             Name::new("Multitool key light"),
+            lighting::ViewmodelKeyLight,
             PointLight {
                 intensity: 1_800.0,
                 range: 4.0,
@@ -1417,7 +1422,9 @@ fn update(
     let interaction = interaction_frame(&input, selected);
     state.advance(time.delta_secs(), interaction);
     update_accent_lighting(&model_materials, &mut materials, &state, interaction);
-    *root.0 = if camera.current_pullback() < AVATAR_HIDDEN_PULLBACK {
+    *root.0 = if !input.dev.as_ref().is_some_and(|dev| dev.spectator())
+        && camera.current_pullback() < AVATAR_HIDDEN_PULLBACK
+    {
         Visibility::Inherited
     } else {
         Visibility::Hidden

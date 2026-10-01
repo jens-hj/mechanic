@@ -1,0 +1,34 @@
+{
+  "adapter": "WgpuWrapper(AdapterInfo { name: \"Apple M1 Pro\", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"\", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })",
+  "atmosphere": [
+    {
+      "mean_ms": 23.188609733333337,
+      "p95_ms": 26.866416,
+      "time": "sunrise"
+    },
+    {
+      "mean_ms": 26.46172086666667,
+      "p95_ms": 32.065749999999994,
+      "time": "noon"
+    },
+    {
+      "mean_ms": 24.894956966666665,
+      "p95_ms": 28.304792,
+      "time": "sunset"
+    },
+    {
+      "mean_ms": 25.23668681666667,
+      "p95_ms": 28.321833,
+      "time": "midnight"
+    }
+  ],
+  "baseline": {
+    "mean_ms": 16.85014585,
+    "p95_ms": 22.400750000000002
+  },
+  "measurement": "synchronized offscreen CPU+GPU frame latency, readback disabled; not interactive throughput or isolated GPU pass time",
+  "resolution": [
+    768,
+    512
+  ]
+}

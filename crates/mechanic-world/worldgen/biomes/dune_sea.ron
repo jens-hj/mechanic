@@ -28,6 +28,9 @@ Biome(
     carves: {"tunnels": 0.15, "entrances": 0, "ravines": 0},
 
     surface: [
+        // Established beds and the narrow bare shore precede vegetation.
+        (when: All([WaterDepth(-0.35, inf), Up(0.55, 1), Depth(0, 0.8)]), use: "pale_sand"),
+        (when: All([WaterDepth(-0.35, inf), Not(Up(0.55, 1)), Depth(0, 0.8)]), use: "buried_sandstone"),
         (when: All([Up(0.93, 1), Depth(0, 0.6)]), use: "pale_sand"),
         (when: Depth(0, 3.5), use: "dune_shadow"),
         (when: Always, use: "buried_sandstone"),

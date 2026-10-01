@@ -1,0 +1,74 @@
+{
+  "reflections": {
+    "changed_bbox": [
+      122,
+      315,
+      644,
+      354
+    ],
+    "sky": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "tool_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "matte_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "metal_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    }
+  },
+  "shadows": {
+    "changed_bbox": [
+      122,
+      315,
+      645,
+      354
+    ],
+    "sky": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "tool_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "matte_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "metal_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    }
+  },
+  "combined": {
+    "changed_bbox": [
+      122,
+      315,
+      645,
+      354
+    ],
+    "sky": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "tool_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "matte_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    },
+    "metal_center": {
+      "max_rgb_difference": 0,
+      "mean_rgb_difference": 0.0
+    }
+  }
+}

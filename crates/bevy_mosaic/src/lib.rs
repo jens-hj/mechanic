@@ -70,8 +70,7 @@
 //!
 //! # Not here yet
 //!
-//! One window per app; the OS clipboard (Mosaic's in-process one is installed,
-//! so copy and paste work within the app but not across it); accessibility,
+//! One window per app; accessibility,
 //! which Mosaic exposes as an AccessKit tree that nothing here forwards yet;
 //! and touch, which Mosaic's own runtime recognizes into pointer and pinch
 //! gestures. Backdrop filters sample Mosaic's own root rather than the Bevy
@@ -82,6 +81,7 @@
     reason = "bevy system parameters are value-typed wrappers"
 )]
 
+mod clipboard;
 mod context;
 mod frame;
 mod input;

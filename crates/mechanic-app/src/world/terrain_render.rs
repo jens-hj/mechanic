@@ -234,9 +234,10 @@ pub(super) fn spawn_world_terrain(
     ));
     commands.spawn((
         Name::new("World sun"),
+        crate::sky::Sun,
+        bevy::light::SunDisk::EARTH,
         DirectionalLight {
-            color: Color::srgb_u8(218, 204, 190),
-            illuminance: 18_000.0,
+            illuminance: bevy::light::light_consts::lux::RAW_SUNLIGHT,
             shadow_maps_enabled: true,
             ..default()
         },
@@ -401,9 +402,9 @@ pub(crate) fn advance_terrain_textures(
         }
     };
     build.layers[kind].push(chain);
-    if let Some(handle) = build.sources[layer][kind].take() {
-        images.remove(handle.id());
-    }
+    // Construction materials share some source maps and keep their handles
+    // across world entries. Let Bevy unload only images with no remaining users.
+    build.sources[layer][kind] = None;
     if build.layers[kind].len() == layer_count {
         let format = if kind == 0 {
             TextureFormat::Rgba8UnormSrgb
@@ -730,4 +731,45 @@ pub(super) fn terrain_chunk_mesh(
     );
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::render::render_resource::{Extent3d, TextureDimension};
+
+    #[test]
+    fn shared_terrain_source_can_be_used_again_after_leaving_world() {
+        let mut images = Assets::<Image>::default();
+        // Construction materials keep a strong handle to shared source maps
+        // across world transitions.
+        let construction_texture = images.add(Image::new_fill(
+            Extent3d {
+                width: TERRAIN_LAYER_EDGE,
+                height: TERRAIN_LAYER_EDGE,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[128, 128, 128, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::default(),
+        ));
+        for _ in 0..2 {
+            let mut build = TerrainTextureBuild {
+                sources: vec![[Some(construction_texture.clone()), None, None, None]],
+                layers: Default::default(),
+                targets: core::array::from_fn(|_| images.reserve_handle()),
+                luma: [0.5; TextureSet::ALL.len()],
+                surfaces: Handle::default(),
+            };
+            advance_terrain_textures(&mut build, &mut images).unwrap();
+            assert_eq!(build.layers[0].len(), 1, "source must produce a layer");
+            assert!(build.sources[0][0].is_none());
+            assert!(
+                images.get(&construction_texture).is_some(),
+                "terrain must release its handle without deleting a shared image"
+            );
+            // Leaving the world drops the build before the next entry.
+        }
+    }
 }

@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn consecutive_trackpad_frames_each_trigger_a_brush_size_action() {
+    let temporary = crate::testing::TempDir::created("trackpad-controls");
+    let mut app = bevy::prelude::App::new();
+    app.insert_resource(AppSettings::from_path(temporary.0.join("settings.ron")))
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .init_resource::<AccumulatedMouseScroll>()
+        .init_resource::<ButtonInput<GameAction>>()
+        .add_systems(bevy::prelude::Update, update_action_state);
+
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::KeyW);
+    for delta in [0.25, 0.5, 0.1, -0.25, -0.5] {
+        app.world_mut()
+            .resource_mut::<AccumulatedMouseScroll>()
+            .delta = Vec2::new(0.0, delta);
+        app.update();
+        let actions = app.world().resource::<ButtonInput<GameAction>>();
+        let (active, inactive) = if delta > 0.0 {
+            (GameAction::ZoomIn, GameAction::ZoomOut)
+        } else {
+            (GameAction::ZoomOut, GameAction::ZoomIn)
+        };
+        assert!(actions.just_pressed(active));
+        assert!(!actions.pressed(inactive));
+        assert!(actions.pressed(GameAction::MoveForward));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+    }
+
+    app.world_mut()
+        .resource_mut::<AccumulatedMouseScroll>()
+        .delta = Vec2::ZERO;
+    app.update();
+    let actions = app.world().resource::<ButtonInput<GameAction>>();
+    assert!(!actions.pressed(GameAction::ZoomOut));
+    assert!(!actions.just_pressed(GameAction::ZoomOut));
+    assert!(actions.pressed(GameAction::MoveForward));
+    assert!(!actions.just_pressed(GameAction::MoveForward));
+}
+
+#[test]
 fn hammer_bindings_only_apply_in_the_hammer_context() {
     use crate::hotbar::MainTool;
     let mut controls = Controls::default();
@@ -167,6 +211,7 @@ fn shift_wheel_exposes_contextual_free_range_and_zoom_actions() {
     keyboard.press(KeyCode::ShiftLeft);
     let mouse = ButtonInput::default();
     let input = ActionInput {
+        dev_tools: false,
         controls: &controls,
         keyboard: &keyboard,
         mouse: &mouse,
@@ -266,6 +311,7 @@ fn chords_dual_slots_mouse_wheel_and_duplicates_activate() {
     let mut mouse = ButtonInput::default();
     mouse.press(MouseButton::Middle);
     let input = ActionInput {
+        dev_tools: false,
         controls: &controls,
         keyboard: &keyboard,
         mouse: &mouse,
@@ -278,6 +324,7 @@ fn chords_dual_slots_mouse_wheel_and_duplicates_activate() {
     keyboard.press(KeyCode::ShiftLeft);
     keyboard.press(KeyCode::Space);
     let input = ActionInput {
+        dev_tools: false,
         controls: &controls,
         keyboard: &keyboard,
         mouse: &mouse,
@@ -290,6 +337,7 @@ fn chords_dual_slots_mouse_wheel_and_duplicates_activate() {
 
     mouse.press(MouseButton::Left);
     let input = ActionInput {
+        dev_tools: false,
         controls: &controls,
         keyboard: &keyboard,
         mouse: &mouse,
@@ -317,4 +365,34 @@ fn release_and_clear_semantics_follow_each_slot() {
     mouse.release(MouseButton::Back);
     let input = ActionInput::without_wheel(&controls, &keyboard, &mouse);
     assert!(input.just_released(GameAction::Interact));
+}
+
+#[test]
+fn dev_tools_bindings_are_persisted_but_inert_without_opt_in() {
+    let mut controls = Controls::default();
+    controls.set(
+        GameAction::DevNoclip,
+        0,
+        Some(InputChord::key(KeyCode::KeyW).with_shift()),
+    );
+    let saved = ron::to_string(&controls).unwrap();
+    let loaded: Controls = ron::from_str(&saved).unwrap();
+    assert_eq!(
+        loaded.binding(GameAction::DevNoclip),
+        controls.binding(GameAction::DevNoclip)
+    );
+    let mut keys = ButtonInput::default();
+    keys.press(KeyCode::KeyW);
+    keys.press(KeyCode::ShiftLeft);
+    let mouse = ButtonInput::default();
+    let mut input = ActionInput::without_wheel(&loaded, &keys, &mouse);
+    assert!(input.pressed(GameAction::MoveForward));
+    assert!(!input.just_pressed(GameAction::DevNoclip));
+    input.dev_tools = true;
+    assert!(input.just_pressed(GameAction::DevNoclip));
+    assert!(!input.pressed(GameAction::MoveForward));
+    for action in GameAction::ALL.into_iter().filter(|action| action.is_dev()) {
+        assert_eq!(action.group(), "Dev Tools");
+        assert!(action.instantaneous());
+    }
 }

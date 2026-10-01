@@ -1,5 +1,6 @@
 //! End-to-end physical interaction against the live construction raycast.
 
+mod dev_tools;
 mod dials;
 
 use crate::camera::{MainCamera, MaterialWheelState, PlayerCamera, PlayerState};

@@ -45,7 +45,9 @@ impl MosaicContext {
     /// Fonts go in before anything can create text, which is what
     /// [`Ui::set_fonts`] requires.
     pub(crate) fn new(window: Entity) -> Self {
-        Self::with_fonts(window, FontContext::new())
+        let context = Self::with_fonts(window, FontContext::new());
+        crate::clipboard::install(&context.ui);
+        context
     }
 
     /// Build a tree with a font context the caller chose. Tests use

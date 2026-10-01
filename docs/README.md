@@ -15,6 +15,7 @@ follows.
 
 ## Features
 
+- [Atmosphere and solar time](atmosphere.md)
 - [Independent suspension](suspension.md)
 - [Linear bearings](linear-bearings.md)
 - [Pistons](pistons.md)

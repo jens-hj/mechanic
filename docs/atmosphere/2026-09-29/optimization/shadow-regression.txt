@@ -1,0 +1,17 @@
+
+running 1 test
+2026-09-29T12:05:34.798214Z  INFO bevy_render::renderer: AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true }
+2026-09-29T12:05:34.901914Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+2026-09-29T12:05:34.901974Z  INFO bevy_render::batching::gpu_preprocessing: GPU preprocessing is fully supported on this device.
+Tool lighting adapter: WgpuWrapper(AdapterInfo { name: "Apple M1 Pro", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: "", driver: "", driver_info: "", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })
+ev100=13: world=[164, 154, 138, 255], tool=[164, 154, 138, 255]
+ev100=10.5: world=[241, 117, 16, 255], tool=[241, 117, 16, 255]
+ev100=1: world=[67, 62, 55, 255], tool=[67, 62, 55, 255]
+ev100=1: world=[0, 0, 0, 255], tool=[0, 0, 0, 255]
+World roof shadow: covered=0, uncovered=164
+2026-09-29T12:05:43.369870Z  WARN bevy_render::gpu_readback: Failed to send readback result: sending into a closed channel
+2026-09-29T12:05:43.370128Z  WARN bevy_render::gpu_readback: Failed to send readback result: sending into a closed channel
+test multitool::lighting::tests::gpu::tool_and_world_receive_matching_atmospheric_light ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 954 filtered out; finished in 9.66s
+

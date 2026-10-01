@@ -268,6 +268,7 @@ impl WorldStore {
     /// Reports the exact target file on encoding or I/O failure.
     pub fn save_world(&self, world: &WorldDocument) -> Result<PathBuf, WorldSaveError> {
         let path = self.directory_for(&world.name).join("world.ron");
+        document::validate_time(world, &path)?;
         validate_frozen_creation(world, &path)?;
         let text = ron::ser::to_string_pretty(world, ron::ser::PrettyConfig::default()).map_err(
             |source| WorldSaveError::Encode {
@@ -408,6 +409,7 @@ impl WorldStore {
         {
             return Err(WorldSaveError::UnsupportedVersion { path });
         }
+        document::validate_time(&world, &path)?;
         validate_frozen_creation(&world, &path)?;
         Ok(world)
     }

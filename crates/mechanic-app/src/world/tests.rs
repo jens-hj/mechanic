@@ -1,3 +1,4 @@
+mod dev_tools;
 mod render;
 mod terrain_shader;
 
@@ -2490,4 +2491,25 @@ fn a_settled_saved_clump_neither_blocks_loading_nor_waits_for_physics_to_settle(
             .bodies
             .is_empty()
     });
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact integral clock steps and lossless persistence"
+)]
+fn time_only_changes_are_dirty_and_survive_saving() {
+    let temporary = TempDir::new("solar-time");
+    let mut app = App::new();
+    app.init_resource::<WorldRuntime>();
+    let mut runtime = app.world_mut().resource_mut::<WorldRuntime>();
+    runtime.store = WorldStore::new(&temporary.0);
+    runtime.advance_day(24.0);
+    assert!(runtime.autosave.is_dirty());
+    super::saving::save_all(&mut runtime).unwrap();
+    let reloaded = runtime
+        .store
+        .load_world(&runtime.store.directory_for(&runtime.document.name))
+        .unwrap();
+    assert_eq!(reloaded.time_of_day_seconds, runtime.time_of_day_seconds());
 }

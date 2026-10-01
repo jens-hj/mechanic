@@ -29,6 +29,9 @@ Biome(
     carves: {"tunnels": 0, "entrances": 0, "ravines": 0, "trenches": 0},
 
     surface: [
+        // Established beds and the narrow bare shore precede vegetation.
+        (when: All([WaterDepth(-0.35, inf), Up(0.55, 1), Depth(0, 0.8)]), use: "reef_violet"),
+        (when: All([WaterDepth(-0.35, inf), Not(Up(0.55, 1)), Depth(0, 0.8)]), use: "reef_violet"),
         (when: Ceiling, use: "reef_violet_deep"),
         (when: All([Up(0.55, 1), Depth(0, 0.3)]), use: "reef_teal"),
         (when: Always, use: "reef_violet"),

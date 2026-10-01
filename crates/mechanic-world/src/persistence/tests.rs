@@ -402,3 +402,48 @@ fn dirty_leaf_save_and_hierarchy_reconstruction_are_deterministic() {
         terrain.brick_coordinates().collect::<Vec<_>>()
     );
 }
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact integral clock steps and lossless persistence"
+)]
+fn worlds_keep_independent_solar_times() {
+    let temporary = TempDir::new();
+    let store = WorldStore::new(&temporary.0);
+    for (name, seconds) in [("Morning", 32400.0), ("Night", 86399.75)] {
+        let mut world = WorldDocument::new(name, WorldSeed(42), WorldPosition::default());
+        assert_eq!(world.time_of_day_seconds, 32400.0);
+        world.time_of_day_seconds = seconds;
+        store.save_world(&world).unwrap();
+    }
+    for (name, seconds) in [("Morning", 32400.0), ("Night", 86399.75)] {
+        assert_eq!(
+            store
+                .load_world(&store.directory_for(name))
+                .unwrap()
+                .time_of_day_seconds,
+            seconds
+        );
+    }
+}
+
+#[test]
+fn invalid_solar_times_are_rejected_on_read_and_write() {
+    let temporary = TempDir::new();
+    let store = WorldStore::new(&temporary.0);
+    let mut world = WorldDocument::new("Invalid Time", WorldSeed(42), WorldPosition::default());
+    let path = store.save_world(&world).unwrap();
+    for seconds in [-1.0, 86400.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        world.time_of_day_seconds = seconds;
+        assert!(matches!(
+            store.save_world(&world),
+            Err(WorldSaveError::InvalidTimeOfDay { .. })
+        ));
+        fs::write(&path, ron::to_string(&world).unwrap()).unwrap();
+        assert!(matches!(
+            store.load_world(path.parent().unwrap()),
+            Err(WorldSaveError::InvalidTimeOfDay { .. })
+        ));
+    }
+}

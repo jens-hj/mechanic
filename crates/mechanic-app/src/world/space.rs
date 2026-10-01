@@ -7,9 +7,9 @@ use super::transfer::{TransferAttempt, transfer_active_assembly};
 use super::walking::reset_player_collision_publication;
 use super::{
     AppSpace, AssetServer, Assets, ButtonInput, ClearColor, Color, Commands, DistanceFog, Entity,
-    FogFalloff, Mesh, Name, NextState, Query, Res, ResMut, Result, Single, SpaceEditorState,
-    StandardMaterial, State, String, ToOwned, ToString, Visibility, With, Without,
-    WorldDiagnostics, WorldOwned, WorldRuntime, default, exposure_for_space, format,
+    Mesh, Name, NextState, Query, Res, ResMut, Result, Single, SpaceEditorState, StandardMaterial,
+    State, String, ToOwned, ToString, Visibility, With, Without, WorldDiagnostics, WorldOwned,
+    WorldRuntime, exposure_for_space, format,
 };
 use crate::camera::{MainCamera, PlayerState};
 use crate::controls::GameAction;
@@ -104,6 +104,12 @@ pub(super) fn load_space_editors(
 pub(super) fn application_world_store() -> WorldStore {
     crate::automation::world_store().map_or_else(
         || {
+            if crate::env::is_set(crate::env::SKY_TIME) {
+                return WorldStore::new(
+                    std::env::temp_dir()
+                        .join(format!("mechanic-sky-fixture-{}", std::process::id())),
+                );
+            }
             // Tests start from an empty store: a world left behind by a play
             // session would otherwise decide what every fixture contains.
             if cfg!(test) {
@@ -235,11 +241,8 @@ pub(super) fn enter_world(
     }
     clear.0 = Color::srgb_u8(69, 88, 102);
     let (mut fog, mut exposure) = camera.into_inner();
-    *fog = DistanceFog {
-        color: clear.0,
-        falloff: FogFalloff::Exponential { density: 0.0022 },
-        ..default()
-    };
+    fog.color = Color::NONE;
+    fog.falloff = bevy::prelude::FogFalloff::Exponential { density: 0.0 };
     *exposure = exposure_for_space(AppSpace::World);
     debug_assert!(runtime.garage_editor.is_none());
     runtime.garage_editor =
@@ -335,6 +338,7 @@ pub(super) fn leave_world(
     runtime.terrain_material = None;
     runtime.terrain_textures = None;
     runtime.selection_focus = None;
+    runtime.selection_interest = None;
     let garage_editor = runtime
         .garage_editor
         .take()

@@ -535,6 +535,7 @@ pub(crate) fn setup(
             render_diagnostics::ProfiledCamera,
             FovCamera,
         ))
+        .insert(crate::render::environment::StaticEnvironmentMap)
         .with_children(|camera| {
             camera.spawn((
                 Name::new("Joint x-ray camera"),

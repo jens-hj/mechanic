@@ -22,7 +22,7 @@ use mechanic_world::SavedWorldStatus;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Row {
     name: String,
-    seed: String,
+    seed: Option<String>,
     last_played: String,
     status: String,
     path: PathBuf,
@@ -59,9 +59,7 @@ pub(crate) fn capture(state: &WorldListState) -> Model {
                     .name
                     .clone()
                     .unwrap_or_else(|| "Unreadable world".to_owned()),
-                seed: entry
-                    .seed
-                    .map_or_else(|| "—".to_owned(), |seed| seed.0.to_string()),
+                seed: entry.seed.map(|seed| seed.0.to_string()),
                 last_played: entry.last_played_unix_seconds.map_or_else(
                     || "Unknown".to_owned(),
                     |value| format!("Last played {value}"),
@@ -244,6 +242,7 @@ fn WorldConsole(
 fn world_row(handles: &Handles, model: State<Model>, index: usize) -> Element {
     let open = handles.clone();
     let remove = handles.clone();
+    let copy = handles.clone();
     let row = move || model.with(|found| found.rows.get(index).cloned().unwrap_or_default());
     view! {
         row width:fill height:72px shrink:0 align:center gap:8px {
@@ -257,10 +256,24 @@ fn world_row(handles: &Handles, model: State<Model>, index: usize) -> Element {
                     }
                     col width:1fr height:min-content gap:4px {
                         text #mechanic.value { row().name }
-                        text #mechanic.caption { format!("SEED // {}   ·   {}", row().seed, row().last_played) }
+                        text #mechanic.caption { format!("SEED // {}   ·   {}", row().seed.as_deref().unwrap_or("—"), row().last_played) }
                     }
                     text font-size:text-size.tiny letter-spacing:text-tracking.label
                         font-color:{ row_status_color(&row().status) } { row().status }
+                }
+            }
+            if row().seed.is_some() {
+                Action label:"Copy seed"
+                    on-click:({
+                        let copy = copy.clone();
+                        move || {
+                            if let Some(seed) = row().seed {
+                                copy.ask(UiIntent::CopyText(seed));
+                            }
+                        }
+                    })
+                    width:80px height:32px shrink:0 {
+                    text #mechanic.caption "COPY SEED"
                 }
             }
             Action label:"Delete world"
@@ -298,4 +311,76 @@ fn loading_bar_width(resolved: usize, total: usize) -> Length {
         resolved as f32 / total as f32
     };
     Length::px(320.0 * fraction.clamp(0.0, 1.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mosaic_widgets::input::{
+        Modifiers, PointerButton, PointerEvent, PointerEventKind, PointerType,
+    };
+
+    #[test]
+    fn copy_seed_requests_only_the_exact_seed_without_opening_the_world() {
+        mosaic_core::builtins::install();
+        super::super::theme::install();
+        let ui = Ui::new();
+        let _ambient = ui.enter();
+        let handles = Handles::new(Model {
+            rows: vec![Row {
+                seed: Some(u64::MAX.to_string()),
+                ..Row::default()
+            }],
+            ..Model::default()
+        });
+        ui.mount(&world_row(&handles, handles.worlds, 0));
+        ui.frame(Size::new(900.0, 100.0), 1.0);
+        let button = ui
+            .inspection_snapshot()
+            .nodes
+            .into_iter()
+            .find(|node| node.label.as_deref() == Some("Copy seed"))
+            .expect("copy seed button");
+        let position = Vector2::new(
+            button.rect.origin.x + button.rect.size.width / 2.0,
+            button.rect.origin.y + button.rect.size.height / 2.0,
+        );
+        for kind in [
+            PointerEventKind::Move,
+            PointerEventKind::Down(PointerButton::Primary),
+            PointerEventKind::Up(PointerButton::Primary),
+        ] {
+            ui.dispatch_pointer(PointerEvent {
+                kind,
+                position,
+                pointer_type: PointerType::Mouse,
+                modifiers: Modifiers::default(),
+                timestamp: std::time::Duration::ZERO,
+            });
+        }
+        assert_eq!(
+            *handles.intents.borrow(),
+            vec![UiIntent::CopyText(u64::MAX.to_string())]
+        );
+    }
+
+    #[test]
+    fn unavailable_seed_has_no_copy_action() {
+        mosaic_core::builtins::install();
+        super::super::theme::install();
+        let ui = Ui::new();
+        let _ambient = ui.enter();
+        let handles = Handles::new(Model {
+            rows: vec![Row::default()],
+            ..Model::default()
+        });
+        ui.mount(&world_row(&handles, handles.worlds, 0));
+        ui.frame(Size::new(900.0, 100.0), 1.0);
+        assert!(
+            !ui.inspection_snapshot()
+                .nodes
+                .iter()
+                .any(|node| node.label.as_deref() == Some("Copy seed"))
+        );
+    }
 }

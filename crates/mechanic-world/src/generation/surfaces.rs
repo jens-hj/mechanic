@@ -149,6 +149,8 @@ pub(crate) struct SurfaceProbe {
     pub(crate) position: [f64; 3],
     /// Metres below the surface, zero at and above it.
     pub(crate) depth: f64,
+    /// Signed depth of the estimated surface below connected established water.
+    pub(crate) water_depth: Option<f64>,
     /// Outward normal's y component.
     pub(crate) up: f64,
     /// Horizontal distance to the nearest river centre line.
@@ -161,6 +163,7 @@ pub(crate) struct SurfaceProbe {
 enum CompiledCond {
     Always,
     Depth(f64, f64),
+    WaterDepth(f64, f64),
     Up(f64, f64),
     Altitude(f64, f64),
     Field(Tape, f64, f64),
@@ -178,6 +181,9 @@ impl CompiledCond {
         match self {
             Self::Always => true,
             Self::Depth(lo, hi) => within(probe.depth, *lo, *hi),
+            Self::WaterDepth(lo, hi) => probe
+                .water_depth
+                .is_some_and(|depth| within(depth, *lo, *hi)),
             Self::Up(lo, hi) => within(probe.up, *lo, *hi),
             Self::Altitude(lo, hi) => within(probe.position[1], *lo, *hi),
             Self::Field(tape, lo, hi) => within(tape.eval(probe.position, &[]), *lo, *hi),
@@ -252,6 +258,7 @@ fn compile_cond(
     Ok(match cond {
         Cond::Always => CompiledCond::Always,
         Cond::Depth(lo, hi) => CompiledCond::Depth(*lo, *hi),
+        Cond::WaterDepth(lo, hi) => CompiledCond::WaterDepth(*lo, *hi),
         Cond::Up(lo, hi) => CompiledCond::Up(*lo, *hi),
         Cond::Ceiling => CompiledCond::Up(-1.0, -0.2),
         Cond::Altitude(lo, hi) => CompiledCond::Altitude(*lo, *hi),
@@ -280,8 +287,33 @@ fn compile_cond(
 
 #[cfg(test)]
 mod tests {
-    use super::{SurfaceId, SurfacePalette, parse_tint};
+    use super::{CompiledCond, SurfaceId, SurfacePalette, SurfaceProbe, parse_tint};
     use crate::TerrainMaterial;
+
+    #[test]
+    fn water_depth_matches_beds_and_shores_but_not_dry_or_absent_water() {
+        let mut probe = SurfaceProbe {
+            position: [0.0; 3],
+            depth: 0.0,
+            water_depth: None,
+            up: 1.0,
+            river_distance: f64::INFINITY,
+            carved: 0,
+        };
+        let condition = CompiledCond::WaterDepth(-0.35, 3.0);
+        for (depth, expected) in [
+            (None, false),
+            (Some(-0.36), false),
+            (Some(-0.35), true),
+            (Some(0.0), true),
+            (Some(2.0), true),
+            (Some(3.0), true),
+            (Some(3.01), false),
+        ] {
+            probe.water_depth = depth;
+            assert_eq!(condition.holds(&probe), expected, "{depth:?}");
+        }
+    }
 
     #[test]
     fn plain_surfaces_follow_material_codes() {

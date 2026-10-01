@@ -138,7 +138,7 @@ impl PerformanceMetrics {
     }
 }
 
-/// F3 is deliberately a debug-only shortcut, like the existing F8 frame freeze.
+/// F3 is deliberately a debug-only shortcut, like the existing Shift+F8 frame freeze.
 pub(crate) fn toggle(
     keyboard: Res<ButtonInput<KeyCode>>,
     render_timings: Res<crate::render_diagnostics::RenderTimings>,

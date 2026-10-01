@@ -104,6 +104,18 @@ cargo run -p mechanic-app
 
 - Press `?` to show or hide the controls and status overlay. It starts hidden
   so the construction view stays unobstructed.
+- Developer navigation is opt-in: `MECHANIC_DEV_TOOLS=1 cargo run -p mechanic-app`
+  (also available in release builds). A **DEV TOOLS** overlay shows the mode,
+  speed, and current bindings. In Pause → Controls → Dev Tools, rebind
+  `F4` (player noclip), `F5` (detached camera), `−` / `=` (halve/double speed),
+  and `F7` (reset speed). Speed ranges from 0.125× to 32× and affects walking,
+  sprinting, crouching, and flight, not vehicles or simulation time.
+  Flight uses the movement bindings, Space to rise, C to descend, and Shift
+  to boost. Noclip allows building and returns to its starting position/view;
+  leave a seat before enabling it. Detached flight is view-only: simulation
+  continues and exiting returns to the player's current location, including
+  moving seats. Modes end on world/garage transitions. Only keybindings are
+  persisted; dev modes and speed are session-only.
 - Press `F3` to toggle the pointer-transparent performance overlay. It reports
   FPS, average and p95 frame time, render CPU/GPU time when the adapter exposes
   it, actual simulation tick rate, physics CPU/GPU time, individual collision
@@ -521,3 +533,17 @@ Capacities are fixed at 131,072 bodies and 262,144 bearings. Capacity overflow,
 invalid numeric state, device loss, and constraint non-convergence are terminal
 for the current simulation load. The runtime never adapts solver quality or
 publishes a failed tick.
+
+### Outdoor sky and time
+
+Worlds start at 09:00 and complete a day in 60 minutes of active outdoor play.
+Time is saved per world and stops in menus, while loading, in the garage, and
+during debug frame freeze. Machine simulation speed does not affect the sun.
+The outdoor view uses Bevy's Earth atmosphere, dynamic reflections, stars, and
+a full moon; the garage retains its authored lighting.
+
+With developer tools enabled, `[` / `]` move time by one hour and `F8` pauses
+or resumes the cycle. The developer overlay shows solar time and cycle status.
+`Shift+F8` freezes the entire debug frame; click to resume.
+See [environment controls](docs/environment.md) for fixed-time visual fixtures.
+World format 7 adds solar time; older formats are not migrated.

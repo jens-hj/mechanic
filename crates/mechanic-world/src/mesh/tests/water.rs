@@ -61,3 +61,63 @@ fn a_dry_tile_has_no_sheet() {
             .all(|vertex| f64::from(vertex[1]) < spawn.y - 0.4)
     }));
 }
+
+#[test]
+fn submerged_regular_and_transition_meshes_keep_bare_bed_materials() {
+    use super::super::{TerrainMeshRequest, mesh_chunk};
+    use crate::{TerrainMaterial, TerrainNodeId, TerrainTransitionMask, WorldPosition};
+    use bevy_math::DVec3;
+
+    let field = TerrainField::new(WorldSeed(42));
+    let edits = TerrainOctree::default().snapshot();
+    let (x, z) = deep_lake(&field);
+    let y = field.topmost_surface(x, z).unwrap();
+    let brick = WorldPosition(DVec3::new(x, y, z)).cell().unwrap().brick();
+    for level in [0, 3, 5] {
+        let chunk = mesh_chunk(
+            &field,
+            &edits,
+            TerrainMeshRequest {
+                node: TerrainNodeId::containing(brick, level).unwrap(),
+                generation: 1,
+                transition_mask: TerrainTransitionMask::from_bits(63),
+            },
+        );
+        let mut checked = [0; 2];
+        for (kind, indices) in [
+            (0, chunk.index_groups.regular.clone()),
+            (
+                1,
+                chunk
+                    .index_groups
+                    .transitions
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect(),
+            ),
+        ] {
+            for index in indices {
+                let index = index as usize;
+                let point =
+                    chunk.origin.0 + DVec3::from_array(chunk.vertices[index].map(f64::from));
+                let Some(water) = field.water_surface(point.x, point.z) else {
+                    continue;
+                };
+                if point.y >= water.level - 2.0 {
+                    continue;
+                }
+                assert_eq!(
+                    chunk.material_weights[index][TerrainMaterial::SurfaceCover.code() as usize],
+                    0.0,
+                    "L{level} at {point}"
+                );
+                checked[kind] += 1;
+            }
+        }
+        assert!(
+            checked.iter().all(|&count| count > 0),
+            "L{level}: {checked:?}"
+        );
+    }
+}

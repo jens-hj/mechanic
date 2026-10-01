@@ -19,6 +19,7 @@ use mechanic_core::{ConstructionGraph, FaceOwner, PartId, PartSpec};
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn handle_seat_interaction(
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     actions: Res<ButtonInput<GameAction>>,
     overlay: Res<ui::UiInput>,
     wheel: Res<MaterialWheelState>,
@@ -38,7 +39,10 @@ pub(crate) fn handle_seat_interaction(
     mut player: ResMut<PlayerState>,
     mut state: ResMut<EditorState>,
 ) {
-    if actions.just_pressed(GameAction::Interact)
+    if !dev
+        .as_ref()
+        .is_some_and(|dev| dev.spectator() || dev.noclip())
+        && actions.just_pressed(GameAction::Interact)
         && player.world_input_active()
         && !overlay.blocks_keyboard()
         && !wheel.open
@@ -85,6 +89,9 @@ pub(crate) fn handle_seat_interaction(
         player.seat = None;
         return;
     };
+    if dev.is_some_and(|dev| dev.spectator()) {
+        return;
+    }
     let (_, view, transform, global) = &mut *camera;
     let rotation = seated_view_rotation(seat_rotation, view.yaw, view.pitch);
     **transform = view.apply_pullback(

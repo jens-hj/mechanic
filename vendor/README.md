@@ -7,6 +7,7 @@ them. CI runs the wgpu fence regression test separately.
 
 | Crate | Note | Change |
 |---|---|---|
+| `bevy_pbr` | [`MECHANIC-PATCH.md`](bevy_pbr/MECHANIC-PATCH.md) | Environment refresh control, shared overlay shadows, atmosphere timing spans |
 | `bevy_core_pipeline` | [`MECHANIC-PATCH.md`](bevy_core_pipeline/MECHANIC-PATCH.md) | `OpaquePassPartition` |
 | `bevy_render` | [`MECHANIC-PATCH.md`](bevy_render/MECHANIC-PATCH.md) | Render-pass timestamp hook |
 | `mosaic-macros` | [`MECHANIC-PATCH.md`](mosaic-macros/MECHANIC-PATCH.md) | Reactive shape geometry with static appearance |

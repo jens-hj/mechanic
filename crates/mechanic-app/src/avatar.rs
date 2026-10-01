@@ -272,6 +272,7 @@ pub(crate) fn spawn_player_avatar(
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn sync_player_avatar(
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     player: Res<PlayerState>,
     view: Single<&PlayerCamera, With<MainCamera>>,
     graph: Res<EditorGraph>,
@@ -281,7 +282,11 @@ pub(crate) fn sync_player_avatar(
     mut root: Single<(&mut Transform, &mut Visibility), With<PlayerAvatar>>,
     mut parts: Query<(&AvatarPart, &mut Transform), Without<PlayerAvatar>>,
 ) {
-    let alpha = camera::avatar_alpha(view.current_pullback());
+    let alpha = if dev.is_some_and(|dev| dev.spectator()) {
+        1.0
+    } else {
+        camera::avatar_alpha(view.current_pullback())
+    };
     *root.1 = if alpha > 0.0 {
         Visibility::Visible
     } else {

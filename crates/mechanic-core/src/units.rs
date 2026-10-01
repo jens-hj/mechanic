@@ -18,6 +18,9 @@ pub const MIN_PROGRAMMED_TRAVEL_METERS: f32 = 0.0025;
 /// Shortest editable controller dwell, in seconds.
 pub const MIN_DWELL_SECONDS: f32 = 0.1;
 
+/// Seconds in one solar day.
+pub const SECONDS_PER_DAY: f64 = 86_400.0;
+
 /// Fixed physics frequency, in ticks per second.
 pub const TICK_RATE_HZ: u32 = 60;
 

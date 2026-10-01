@@ -9,6 +9,12 @@ use std::ffi::OsString;
 #[cfg(debug_assertions)]
 use std::path::PathBuf;
 
+/// `1` enables developer navigation and its rebindable controls.
+pub(crate) const DEV_TOOLS: &str = "MECHANIC_DEV_TOOLS";
+
+/// Render-only fixed solar hour in [0, 24); stops clock advancement without editing saves.
+pub(crate) const SKY_TIME: &str = "MECHANIC_SKY_TIME";
+
 /// `gpu` runs published ticks on the GPU runtime; anything else runs the CPU solver.
 pub(crate) const PHYSICS: &str = "MECHANIC_PHYSICS";
 /// `off` disables soil accumulation on the CPU route.

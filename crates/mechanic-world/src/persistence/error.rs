@@ -60,6 +60,12 @@ pub enum WorldSaveError {
         /// Invalid frozen-state invariant.
         message: &'static str,
     },
+    /// Solar time is nonfinite or outside the day.
+    #[error("world file {path} has invalid time of day", path = path.display())]
+    InvalidTimeOfDay {
+        /// Exact affected manifest.
+        path: PathBuf,
+    },
     /// Deletion target was not a direct child of this store.
     #[error("refusing world path outside the store: {path}", path = path.display())]
     OutsideStore {

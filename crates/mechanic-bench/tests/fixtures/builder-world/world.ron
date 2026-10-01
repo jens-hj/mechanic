@@ -1,7 +1,9 @@
 (
-    version: 6,
+    version: 7,
+    time_of_day_seconds: 32400.0,
     name: "builder",
-    generator_version: 1,
+    generator_version: 2,
+    worldgen: 1705583693936553939,
     seed: 13775900870976056167,
     last_played_unix_seconds: 1789395370,
     player_pose: (

@@ -7,6 +7,7 @@ Everything below is an environment variable read at startup. Unset means off.
 
 | Variable | Effect |
 |---|---|
+| `MECHANIC_DEV_TOOLS` | `1` enables developer noclip, detached camera, and adjustable movement speed in debug and release builds. Controls are rebindable under Dev Tools; mode and speed are never persisted. |
 | `MECHANIC_PHYSICS` | `gpu` runs published ticks on the GPU runtime. Anything else, or unset, runs the CPU solver. See [CPU physics](physics-cpu.md). |
 | `MECHANIC_SOIL` | `off` disables soil accumulation on the CPU route; it is on otherwise. See [terrain response status](terrain-response-status.md). |
 | `MECHANIC_WATER` | `off` removes the sea, lakes and rivers: they are neither drawn nor felt by the CPU route. See [water](water.md). |
@@ -74,3 +75,5 @@ Flags are on when set to `1`.
 |---|---|
 | `CARGO_TARGET_DIR` | `nix run .` defaults it to `$XDG_CACHE_HOME/mechanic/target`. |
 | `VK_DRIVER_FILES` | Point at the lavapipe ICD to run GPU tests on the CPU, off the display GPU. |
+
+`MECHANIC_SKY_TIME` fixes the rendered solar hour in `[0, 24)` (fractional hours allowed) and freezes automatic clock advancement. It does not replace the world’s saved time. By default, fixed-time launches use a temporary world store named `mechanic-sky-fixture-<pid>`, leaving player saves untouched. Automated runs may supply an explicit disposable store through `MECHANIC_AUTO_WORLD_STORE`.

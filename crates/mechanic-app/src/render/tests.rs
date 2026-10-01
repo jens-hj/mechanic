@@ -1242,12 +1242,25 @@ fn completed_generation_keeps_the_filtered_map_and_removes_its_generator() {
     let entity = app
         .world_mut()
         .spawn((
+            crate::render::environment::StaticEnvironmentMap,
             GeneratedEnvironmentMapLight::default(),
             EnvironmentMapLight::default(),
         ))
         .id();
 
+    let dynamic = app
+        .world_mut()
+        .spawn((
+            GeneratedEnvironmentMapLight::default(),
+            EnvironmentMapLight::default(),
+        ))
+        .id();
     app.update();
+    assert!(
+        app.world()
+            .entity(dynamic)
+            .contains::<GeneratedEnvironmentMapLight>()
+    );
 
     let entity = app.world().entity(entity);
     assert!(!entity.contains::<GeneratedEnvironmentMapLight>());

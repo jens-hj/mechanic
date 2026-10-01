@@ -127,8 +127,12 @@ pub(crate) fn interact(
     player: Res<PlayerState>,
     camera: Single<&GlobalTransform, With<MainCamera>>,
     windows: Query<&Window>,
-    frozen: Res<crate::freeze::DimensionFreeze>,
+    dev_frozen: (
+        Option<Res<crate::dev_tools::DevTools>>,
+        Res<crate::freeze::DimensionFreeze>,
+    ),
 ) {
+    let (dev, frozen) = dev_frozen;
     if !simulation.is_running() {
         controls.keys.reset();
         controls.momentary = None;
@@ -136,7 +140,8 @@ pub(crate) fn interact(
         controls.feedback.clear();
         return;
     }
-    let active = player.world_input_active()
+    let active = !dev.is_some_and(|dev| dev.spectator())
+        && player.world_input_active()
         && windows.iter().any(|window| window.focused)
         && !overlay.blocks_keyboard()
         && !config.capturing

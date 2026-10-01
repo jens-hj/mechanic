@@ -22,6 +22,7 @@ use crate::{
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Model {
     pub(crate) open: bool,
+    pub(crate) dev_tools: bool,
     pub(crate) page: PausePage,
     pub(crate) camera_fov_degrees: f32,
     pub(crate) controls: Controls,
@@ -73,7 +74,7 @@ fn PauseControls(handles: Handles, model: State<Model>) -> Element {
             col width:fill height:520px {
                 scroll {
                     col width:fill height:min-content gap:6px pad:(right:12px bottom:8px) {
-                        for (action, ()) in { GameAction::ALL.map(|action| (action, ())) } {
+                        for (action, ()) in { GameAction::ALL.into_iter().filter(move |action| !action.is_dev() || model.with(|model| model.dev_tools)).map(|action| (action, ())) } {
                             (binding_entry(&handles, model, *action))
                         }
                     }
@@ -270,6 +271,7 @@ mod tests {
     fn showing(page: PausePage) -> Overlay {
         let overlay = Overlay::mount();
         overlay.handles.pause.set(Model {
+            dev_tools: false,
             open: true,
             page,
             camera_fov_degrees: 65.0,
@@ -376,6 +378,35 @@ mod tests {
                 .iter()
                 .any(|rect| (rect.size.height - 30.0).abs() < 0.5),
             "at least one binding chip is visible and reachable in the scroll viewport"
+        );
+    }
+    #[test]
+    fn dev_tools_controls_are_only_listed_when_enabled() {
+        let overlay = showing(PausePage::Controls);
+        assert!(
+            !overlay
+                .labels()
+                .iter()
+                .any(|label| label.contains("Dev Noclip"))
+        );
+        overlay.handles.pause.update(|model| model.dev_tools = true);
+        overlay.settle();
+        assert!(
+            overlay
+                .labels()
+                .iter()
+                .any(|label| label.contains("Dev Noclip"))
+        );
+        overlay
+            .handles
+            .pause
+            .update(|model| model.dev_tools = false);
+        overlay.settle();
+        assert!(
+            !overlay
+                .labels()
+                .iter()
+                .any(|label| label.contains("Dev Noclip"))
         );
     }
 }

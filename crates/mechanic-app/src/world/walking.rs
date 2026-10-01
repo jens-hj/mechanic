@@ -32,6 +32,7 @@ pub(super) struct PlayerCollisionBuild {
 
 #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(super) fn walk_world(
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     time: Res<Time>,
     actions: Res<ButtonInput<GameAction>>,
     mut camera: Single<&mut PlayerCamera, With<MainCamera>>,
@@ -55,6 +56,16 @@ pub(super) fn walk_world(
         player.crouch = 0.0;
         return;
     }
+    if dev.as_ref().is_some_and(|dev| dev.noclip()) {
+        runtime.reset_dev_motion();
+        player.crouch = 0.0;
+        return;
+    }
+    let speed = dev.as_ref().map_or(1.0, |dev| f64::from(dev.multiplier()));
+    let baseline = mechanic_world::KinematicCapsuleConfig::default();
+    runtime.capsule.config.walk_speed = baseline.walk_speed * speed;
+    runtime.capsule.config.sprint_speed = baseline.sprint_speed * speed;
+    runtime.capsule.config.crouch_speed = baseline.crouch_speed * speed;
     let reactions_are_authoritative = simulation.is_running()
         && runtime.collision_revision == simulation.world_revision
         && runtime.collision_editor_revision == Some(history.current_revision);

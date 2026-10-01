@@ -22,6 +22,7 @@ mod chroma;
 mod components;
 mod control_block;
 mod creations;
+pub(crate) mod dev_tools;
 pub(crate) mod dials;
 mod dimensions;
 mod driving;
@@ -74,6 +75,7 @@ use mosaic_macros::{component, view};
 use chroma::{ChromaPanel, ChromaPanelProps, ChromaStatus, ChromaStatusProps};
 use control_block::{ControlPanel, ControlPanelProps};
 use creations::{CreationPicker, CreationPickerProps};
+use dev_tools::{DevOverlay, DevOverlayProps};
 use dimensions::{DimensionOverlay, DimensionOverlayProps};
 use driving::{DrivingOverlay, DrivingOverlayProps};
 use help::{HelpPanel, HelpPanelProps};
@@ -97,6 +99,8 @@ use worlds::{WorldList, WorldListProps};
 /// overlay is allowed to touch the world.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum UiIntent {
+    /// Copy text through the host clipboard.
+    CopyText(String),
     /// Pick up a tool.
     Tool(MainTool),
     /// Pick a Matter Manipulator mode, activating the tool if necessary.
@@ -215,6 +219,7 @@ pub(crate) struct Handles {
     suspension: MosaicState<suspension::Model>,
     suspension_layout: suspension::Layout,
     /// Opt-in frame, renderer, and physics diagnostics.
+    dev_tools: MosaicState<dev_tools::Model>,
     performance: MosaicState<performance::Model>,
     /// Speed and transmission instruments for the occupied vehicle.
     driving: MosaicState<driving::Model>,
@@ -248,6 +253,7 @@ impl Handles {
             dimensions: MosaicState::new(dimensions::Model::default()),
             pause: MosaicState::new(pause::Model::default()),
             pause_fov: MosaicState::new(crate::settings::DEFAULT_CAMERA_FOV_DEGREES),
+            dev_tools: MosaicState::new(dev_tools::Model::default()),
             performance: MosaicState::new(performance::Model::default()),
             driving: MosaicState::new(driving::Model::default()),
             physical_controls: MosaicState::new(Vec::new()),
@@ -406,6 +412,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let worlds_panel = handles.clone();
     let pause_model = handles.pause;
     let pause_panel = handles.clone();
+    let dev_model = handles.dev_tools;
+    let dev_viewport = handles.viewport;
     let performance_model = handles.performance;
     let performance_viewport = handles.viewport;
     let driving_model = handles.driving;
@@ -423,7 +431,7 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             if material_wheel_model.with(|model| !model.open)
                 && !pause_model.with(|model| model.open)
                 && !worlds_model.with(|model| model.open) {
-                WorldReticle
+                if !dev_model.with(|model| model.spectator) { WorldReticle }
             }
             if $help_open && !worlds_model.with(|model| model.open) {
                 HelpPanel handles:(help_panel.clone())
@@ -436,7 +444,7 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
                 }) {
                 ChromaStatus handles:(chroma_status.clone())
             }
-            if !worlds_model.with(|model| model.open) {
+            if !worlds_model.with(|model| model.open) && !dev_model.with(|model| model.spectator) {
                 Hotbar handles:(hotbar_panel.clone())
             }
             if material_wheel_model.with(|model| model.open && !model.chroma_config)
@@ -475,6 +483,9 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             }
             if worlds_model.with(|model| model.open) {
                 WorldList handles:(worlds_panel.clone())
+            }
+            if dev_model.with(|model| model.enabled) {
+                DevOverlay model:(dev_model) viewport:(dev_viewport)
             }
             if performance_model.with(performance::Model::is_open)
                 && !worlds_model.with(|model| model.open) {
@@ -536,6 +547,7 @@ pub(crate) struct ToolSelection<'w> {
 #[expect(clippy::needless_pass_by_value, clippy::too_many_arguments)]
 // Bevy system parameters are value-typed wrappers and independent resources.
 pub(crate) fn drain(
+    mosaic: Option<NonSend<MosaicContext>>,
     mut ui: Option<NonSendMut<AppUi>>,
     mut panel: ResMut<ControlPanelState>,
     mut menu: ResMut<CreationMenuState>,
@@ -544,6 +556,7 @@ pub(crate) fn drain(
     mut selection: ToolSelection,
     mut chroma: ResMut<ChromaBrush>,
     mut target: EditTarget,
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     actions: Res<ButtonInput<GameAction>>,
 ) {
@@ -563,7 +576,20 @@ pub(crate) fn drain(
     }
     let intents: Vec<UiIntent> = ui.handles.intents.borrow_mut().drain(..).collect();
     for intent in intents {
+        if dev.as_ref().is_some_and(|dev| dev.spectator())
+            && !matches!(
+                intent,
+                UiIntent::Pause(_) | UiIntent::Worlds(_) | UiIntent::CopyText(_)
+            )
+        {
+            continue;
+        }
         match intent {
+            UiIntent::CopyText(text) => {
+                if let Some(mosaic) = &mosaic {
+                    mosaic.ui().set_clipboard_text(text);
+                }
+            }
             UiIntent::Tool(tool) => selection.tool.select_tool(tool),
             UiIntent::MatterMode(mode) => selection.tool.select_mode(mode),
             UiIntent::MaterialMode(next, mode) => {
@@ -606,11 +632,12 @@ pub(crate) fn push(
     inputs: (
         Res<crate::sequencer::GearboxRuntime>,
         Res<crate::physical_controls::PhysicalControls>,
+        Option<Res<crate::dev_tools::DevTools>>,
     ),
     mut located: ResMut<LocatedJoint>,
 ) {
     let (graph, simulation) = graphs;
-    let (gearboxes, physical_controls) = inputs;
+    let (gearboxes, physical_controls, dev) = inputs;
     let Some(mut ui) = ui else {
         return;
     };
@@ -676,6 +703,7 @@ pub(crate) fn push(
         ui.pushed.worlds = worlds;
     }
     let pause_model = pause::Model {
+        dev_tools: dev.is_some_and(|dev| dev.enabled),
         open: pause.is_open(),
         page: pause.page(),
         camera_fov_degrees: settings.camera_fov_degrees(),

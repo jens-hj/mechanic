@@ -44,10 +44,40 @@ contract they always did.
    a little noise dithering the choice along borders. It uses the first
    `surface` rule that matches the point's depth below the surface, the
    normal's up component, its altitude, how near a river it is, which carve
-   layer opened it (`Carved`), or the value of any expression. The rule names
+   layer opened it (`Carved`), local established water depth (`WaterDepth`),
+   or the value of any expression. The rule names
    a palette surface. That surface decides the physical `TerrainMaterial`
    (how the ground digs and compacts) and the look: texture family, tint,
    recolour, roughness and repeat.
+
+## Water-aware surfaces
+
+`WaterDepth(min, max)` matches inclusive signed metres below the local established
+sea, lake or river level. Negative depths are shore above water. It fails outside
+the body's existing coverage and in sealed caves; surface-breaking sea trenches
+qualify. The shared cell and mesh painter estimates the terrain surface from
+signed density and gradient before comparing heights, so empty coarse samples
+above water still paint submerged ground consistently through LOD transitions.
+
+Bed rules precede vegetation and snow. Sediment is 0.8 m thick on faces whose
+upward normal component is at least 0.55, and extends 0.35 m vertically above
+the waterline. Steeper wet faces expose biome rock. Existing material blending
+handles transitions; the palette supplies both appearance and physical material.
+
+| Biome | Bed and bare shore |
+|---|---|
+| Verdant hills | Mire mud under standing water, existing gravel near river centres, loam above water |
+| Shelf mire | Mire mud |
+| Sunken coast | Sand through 3 m depth, silt below it |
+| Dune sea / arch steppe | Existing biome sand |
+| Titan crags | Gravel and granite |
+| Karst needles | Silt and limestone |
+| Gyroid reef / drift isles | Violet or dark rock |
+
+These rules use seed-established water, including elevated lakes, rather than
+runtime water levels: draining a lake exposes its existing bed. New pools,
+erosion, vegetation regrowth and player-authored materials are unaffected.
+Deep mineral and unrelated dry-land and underground rules remain in place.
 
 ## Expressions
 

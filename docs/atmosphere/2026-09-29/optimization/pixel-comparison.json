@@ -1,0 +1,17 @@
+{
+  "reflections": {
+    "max_rgb_difference": 44,
+    "mean_rgb_difference": 0.07124498155381945,
+    "changed_channels": 11214
+  },
+  "shadows": {
+    "max_rgb_difference": 65,
+    "mean_rgb_difference": 0.1541468302408854,
+    "changed_channels": 11784
+  },
+  "combined": {
+    "max_rgb_difference": 71,
+    "mean_rgb_difference": 0.1766120062934028,
+    "changed_channels": 11845
+  }
+}

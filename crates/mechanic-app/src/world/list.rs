@@ -292,6 +292,7 @@ pub(super) fn install_world(
     runtime.removed_cells = [0; TerrainMaterial::COUNT];
     runtime.selected_terrain_revision = u64::MAX;
     runtime.selection_focus = None;
+    runtime.selection_interest = None;
     runtime.terrain_streamer = TerrainStreamer::default();
     runtime.terrain_bounds_cache = TerrainBoundsCache::default();
     runtime.terrain_selection_task = None;

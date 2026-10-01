@@ -1,4 +1,4 @@
-//! Rebindable gameplay actions shared by input systems, HUD text, and settings.
+//! Rebindable gameplay and opt-in developer actions shared by input systems and UI.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -11,9 +11,18 @@ use serde::{Deserialize, Serialize};
 use crate::settings::AppSettings;
 use mechanic_core::{ConstructionGraph, EngineKind, GearKey, GearKeyChord};
 
-/// A gameplay action whose bindings can be changed independently of vehicle programs.
+/// A rebindable action independent of vehicle programs; `Dev*` actions require launch opt-in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum GameAction {
+    DevNoclip,
+    DevSpectator,
+    DevSpeedDecrease,
+    DevSpeedIncrease,
+    DevSpeedReset,
+    DevTimeEarlier,
+    DevTimeLater,
+    DevTimePause,
+
     MoveForward,
     MoveBackward,
     MoveLeft,
@@ -93,7 +102,29 @@ pub(crate) enum GameAction {
 }
 
 impl GameAction {
-    pub(crate) const ALL: [Self; 74] = [
+    pub(crate) const fn is_dev(self) -> bool {
+        matches!(
+            self,
+            Self::DevNoclip
+                | Self::DevSpectator
+                | Self::DevSpeedDecrease
+                | Self::DevSpeedIncrease
+                | Self::DevSpeedReset
+                | Self::DevTimeEarlier
+                | Self::DevTimeLater
+                | Self::DevTimePause
+        )
+    }
+
+    pub(crate) const ALL: [Self; 82] = [
+        Self::DevNoclip,
+        Self::DevSpectator,
+        Self::DevSpeedDecrease,
+        Self::DevSpeedIncrease,
+        Self::DevSpeedReset,
+        Self::DevTimeEarlier,
+        Self::DevTimeLater,
+        Self::DevTimePause,
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -220,6 +251,14 @@ impl GameAction {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
+            Self::DevNoclip => "Dev Noclip",
+            Self::DevSpectator => "Dev Detached Camera",
+            Self::DevSpeedDecrease => "Dev Speed −",
+            Self::DevSpeedIncrease => "Dev Speed +",
+            Self::DevSpeedReset => "Dev Speed Reset",
+            Self::DevTimeEarlier => "Dev Time Earlier",
+            Self::DevTimeLater => "Dev Time Later",
+            Self::DevTimePause => "Dev Day Cycle Pause",
             Self::MoveForward => "Move Forward",
             Self::MoveBackward => "Move Backward",
             Self::MoveLeft => "Move Left",
@@ -302,6 +341,14 @@ impl GameAction {
 
     pub(crate) const fn group(self) -> &'static str {
         match self {
+            Self::DevNoclip
+            | Self::DevSpectator
+            | Self::DevSpeedDecrease
+            | Self::DevSpeedIncrease
+            | Self::DevSpeedReset
+            | Self::DevTimeEarlier
+            | Self::DevTimeLater
+            | Self::DevTimePause => "Dev Tools",
             Self::MoveForward
             | Self::MoveBackward
             | Self::MoveLeft
@@ -701,6 +748,22 @@ impl Default for Controls {
         let mut set = |action, first, second| {
             bindings.insert(action, ActionBinding([first, second]));
         };
+        set(A::DevNoclip, Some(InputChord::key(K::F4)), None);
+        set(A::DevSpectator, Some(InputChord::key(K::F5)), None);
+        set(A::DevSpeedDecrease, Some(InputChord::key(K::Minus)), None);
+        set(A::DevSpeedIncrease, Some(InputChord::key(K::Equal)), None);
+        set(A::DevSpeedReset, Some(InputChord::key(K::F7)), None);
+        set(
+            A::DevTimeEarlier,
+            Some(InputChord::key(K::BracketLeft)),
+            None,
+        );
+        set(
+            A::DevTimeLater,
+            Some(InputChord::key(K::BracketRight)),
+            None,
+        );
+        set(A::DevTimePause, Some(InputChord::key(K::F8)), None);
         set(A::MoveForward, Some(InputChord::key(K::KeyW)), None);
         set(A::MoveBackward, Some(InputChord::key(K::KeyS)), None);
         set(A::MoveLeft, Some(InputChord::key(K::KeyA)), None);
@@ -1087,6 +1150,7 @@ pub(crate) struct ActionInput<'a> {
     pub(crate) keyboard: &'a ButtonInput<KeyCode>,
     pub(crate) mouse: &'a ButtonInput<MouseButton>,
     pub(crate) scroll: Vec2,
+    pub(crate) dev_tools: bool,
 }
 
 impl<'a> ActionInput<'a> {
@@ -1101,6 +1165,7 @@ impl<'a> ActionInput<'a> {
             keyboard,
             mouse,
             scroll: scroll.delta,
+            dev_tools: false,
         }
     }
     #[cfg(test)]
@@ -1114,6 +1179,7 @@ impl<'a> ActionInput<'a> {
             keyboard,
             mouse,
             scroll: Vec2::ZERO,
+            dev_tools: false,
         }
     }
     pub(crate) fn pressed(&self, action: GameAction) -> bool {
@@ -1149,7 +1215,7 @@ impl<'a> ActionInput<'a> {
         kind: MatchKind,
         tool: Option<crate::hotbar::MainTool>,
     ) -> bool {
-        if !action.available_for_tool(tool) {
+        if (action.is_dev() && !self.dev_tools) || !action.available_for_tool(tool) {
             return false;
         }
         self.controls[action].0.into_iter().flatten().any(|chord| {
@@ -1178,7 +1244,8 @@ impl<'a> ActionInput<'a> {
             // This keeps Shift+Space from also pausing while still allowing
             // Shift+left mouse and Shift+W when no such chord is configured.
             let shadowed = GameAction::ALL.into_iter().any(|candidate| {
-                if !candidate.available_for_tool(tool)
+                if (candidate.is_dev() && !self.dev_tools)
+                    || !candidate.available_for_tool(tool)
                     || action.intentionally_shares_binding_with(candidate)
                 {
                     return false;
@@ -1232,6 +1299,7 @@ enum MatchKind {
 
 /// Rebuilds the action-level button state from raw device inputs once per frame.
 pub(crate) fn update_action_state(
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     settings: Res<AppSettings>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -1239,10 +1307,17 @@ pub(crate) fn update_action_state(
     mut actions: ResMut<ButtonInput<GameAction>>,
 ) {
     actions.clear();
-    let input = ActionInput::new(settings.controls(), &keyboard, &mouse, &scroll);
+    let mut input = ActionInput::new(settings.controls(), &keyboard, &mouse, &scroll);
+    input.dev_tools = dev.is_some_and(|dev| dev.enabled);
     for action in GameAction::ALL {
-        let active = input.pressed(action) || input.just_pressed(action);
+        let held = input.pressed(action);
+        let active = held || input.just_pressed(action);
         if active {
+            // Wheel input is a pulse each frame, even throughout one continuous
+            // trackpad gesture. Only keys and mouse buttons stay held.
+            if !held {
+                actions.reset(action);
+            }
             actions.press(action);
         } else {
             actions.release(action);

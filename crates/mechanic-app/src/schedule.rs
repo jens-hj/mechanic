@@ -63,14 +63,26 @@ pub(crate) enum FrameSet {
     PerformanceToggle,
     /// Raw input becomes game actions.
     Input,
+    /// Developer mode and input ownership.
+    DevInput,
     /// Actions that change modes, settings, menus, and pause state.
     Commands,
+    /// Space transitions after developer input.
+    WorldCommands,
+    /// World selection requests.
+    WorldList,
+    /// Restore dev navigation before leaving a world.
+    DevLifecycle,
+    /// Outdoor solar clock, after menu and world selection changes.
+    SkyClock,
     /// Panels receive this frame's snapshot; history and creation requests apply.
     Interface,
     /// Field of view, the material wheel, and the player camera.
     Camera,
     /// Completed physics ticks and the dimension freeze are read back.
     Readback,
+    /// Walking after physics readback, before interactions.
+    WorldMovement,
     /// Live-edit context, seats, and tool shortcuts.
     Interaction,
     /// Bearing, linear-bearing, and cylinder dimension adjustments.
@@ -87,6 +99,10 @@ pub(crate) enum FrameSet {
     Simulation,
     /// Tool previews, placed after the simulation has moved its bodies.
     Previews,
+    /// Outdoor atmosphere follows the final camera and floating origin.
+    Sky,
+    /// First-person tools inherit the completed scene lighting.
+    ViewmodelLighting,
     /// Frame metrics, captures, and the panels that show them.
     Metrics,
 }
@@ -104,6 +120,7 @@ impl Plugin for FramePlugin {
         reason = "the frame is kept in one visible execution order"
     )]
     fn build(&self, app: &mut App) {
+        app.init_resource::<crate::dev_tools::DevTools>();
         app.init_resource::<crate::dial_assignment::DialAssignments>();
         app.init_resource::<crate::button_config::ButtonConfiguration>();
         app.init_resource::<crate::input_parts::InputParts>();
@@ -111,14 +128,22 @@ impl Plugin for FramePlugin {
         app.configure_sets(
             Update,
             (
-                FrameSet::DebugFreeze,
-                FrameSet::Assets,
-                FrameSet::PerformanceToggle,
-                FrameSet::Input,
+                (
+                    FrameSet::DebugFreeze,
+                    FrameSet::Assets,
+                    FrameSet::PerformanceToggle,
+                    FrameSet::Input,
+                )
+                    .chain(),
+                FrameSet::DevInput,
                 FrameSet::Commands,
+                FrameSet::WorldCommands,
+                FrameSet::WorldList,
+                (FrameSet::DevLifecycle, FrameSet::SkyClock).chain(),
                 FrameSet::Interface,
                 FrameSet::Camera,
                 FrameSet::Readback,
+                FrameSet::WorldMovement,
                 FrameSet::Interaction,
                 FrameSet::Dimensions,
                 FrameSet::Hover,
@@ -127,7 +152,12 @@ impl Plugin for FramePlugin {
                 FrameSet::Visuals,
                 FrameSet::Simulation,
                 FrameSet::Previews,
-                FrameSet::Metrics,
+                (
+                    FrameSet::Sky,
+                    FrameSet::ViewmodelLighting,
+                    FrameSet::Metrics,
+                )
+                    .chain(),
             )
                 .chain(),
         )
@@ -135,10 +165,15 @@ impl Plugin for FramePlugin {
             Update,
             (
                 FrameSet::Input,
+                FrameSet::DevInput,
                 FrameSet::Commands,
+                FrameSet::WorldCommands,
+                FrameSet::WorldList,
+                (FrameSet::DevLifecycle, FrameSet::SkyClock).chain(),
                 FrameSet::Interface,
                 FrameSet::Camera,
                 FrameSet::Readback,
+                FrameSet::WorldMovement,
                 FrameSet::Interaction,
                 FrameSet::Dimensions,
                 FrameSet::Hover,
@@ -147,7 +182,12 @@ impl Plugin for FramePlugin {
                 FrameSet::Visuals,
                 FrameSet::Simulation,
                 FrameSet::Previews,
-                FrameSet::Metrics,
+                (
+                    FrameSet::Sky,
+                    FrameSet::ViewmodelLighting,
+                    FrameSet::Metrics,
+                )
+                    .chain(),
             )
                 .in_set(Freezable),
         )
@@ -160,6 +200,8 @@ impl Plugin for FramePlugin {
             Update,
             (
                 update_debug_frame_freeze.in_set(FrameSet::DebugFreeze),
+                crate::dev_tools::input.in_set(FrameSet::DevInput),
+                crate::dev_tools::leave_for_world_selector.in_set(FrameSet::DevLifecycle),
                 prepare_bearing_texture_mips.in_set(FrameSet::Assets),
                 (
                     crate::button_config::capture,
@@ -225,14 +267,16 @@ impl Plugin for FramePlugin {
                     handle_cylinder_dimension_shortcuts,
                 )
                     .chain()
-                    .in_set(FrameSet::Dimensions),
+                    .in_set(FrameSet::Dimensions)
+                    .run_if(crate::dev_tools::gameplay_enabled),
                 (
                     handle_tool_change,
                     rebuild_placement_snap_index,
                     update_hover,
                 )
                     .chain()
-                    .in_set(FrameSet::Hover),
+                    .in_set(FrameSet::Hover)
+                    .run_if(crate::dev_tools::gameplay_enabled),
                 (
                     tool_fx::capture_gesture,
                     ui::push_suspension,
@@ -241,7 +285,8 @@ impl Plugin for FramePlugin {
                     crate::input_parts::update_input_placement,
                 )
                     .chain()
-                    .in_set(FrameSet::Build),
+                    .in_set(FrameSet::Build)
+                    .run_if(crate::dev_tools::gameplay_enabled),
                 (
                     tool_fx::finish_gesture,
                     handle_shape_actions,
@@ -249,7 +294,8 @@ impl Plugin for FramePlugin {
                     handle_hammer_actions,
                 )
                     .chain()
-                    .in_set(FrameSet::Shape),
+                    .in_set(FrameSet::Shape)
+                    .run_if(crate::dev_tools::gameplay_enabled),
             ),
         )
         .add_systems(
@@ -289,6 +335,7 @@ impl Plugin for FramePlugin {
                     performance_capture::sample,
                     ui::push_performance,
                     ui::push_driving,
+                    ui::dev_tools::push,
                 )
                     .chain()
                     .in_set(FrameSet::Metrics),

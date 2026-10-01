@@ -1199,7 +1199,7 @@ impl CompiledWorld {
     }
 
     /// Bounds on every biome's blend weight over a box, following
-    /// [`Self::weights`] step by step in interval arithmetic and intersected
+    /// [`Self::weights_in`] step by step in interval arithmetic and intersected
     /// with the drainage-grid bounds.
     fn blend_weight_bounds(
         &self,
@@ -1533,13 +1533,16 @@ impl CompiledWorld {
         if density > 0.0 {
             return false;
         }
+        Self::open_to_water(column, position.y, carved, blended, surface.body)
+    }
+
+    /// Shared connectivity for water occupancy and established bed materials.
+    fn open_to_water(column: &Column, y: f64, carved: u8, blended: f64, body: WaterBody) -> bool {
         let Some(layer) = carved.checked_sub(1) else {
             return true;
         };
-        let y = position.y;
         let uncarved = blended.min(column.valley - y).max(column.water.floor - y);
-        uncarved <= 0.0
-            || (surface.body == WaterBody::Sea && column.carves[usize::from(layer)].roof <= 0.0)
+        uncarved <= 0.0 || (body == WaterBody::Sea && column.carves[usize::from(layer)].roof <= 0.0)
     }
 
     /// Densities over a lattice, with its columns and the carve layer that
@@ -1797,9 +1800,28 @@ impl CompiledWorld {
         } else {
             (1.0, density.max(0.0))
         };
+        // Project to the tangent surface, retaining this column's coverage.
+        // In particular, an empty coarse lattice point above water can still
+        // represent a submerged bed. Use signed density, not clamped depth.
+        let surface_y = if slope > 1.0e-9 {
+            position.y - density * gradient[1] / (slope * slope)
+        } else {
+            position.y + density
+        };
+        let water_depth = column.water.surface.and_then(|water| {
+            if carved != 0 {
+                let surface_position = DVec3::new(position.x, surface_y, position.z);
+                let (_, surface_carve, blended) = self.density_parts(column, surface_position);
+                if !Self::open_to_water(column, surface_y, surface_carve, blended, water.body) {
+                    return None;
+                }
+            }
+            Some(water.level - surface_y)
+        });
         let probe = SurfaceProbe {
             position: position.to_array(),
             depth,
+            water_depth,
             up,
             river_distance: column.river_distance,
             carved,

@@ -14,7 +14,7 @@ mod saving;
 mod space;
 mod spoil;
 pub(crate) mod streaming;
-mod terrain_render;
+pub(crate) mod terrain_render;
 mod transfer;
 mod walking;
 mod water;
@@ -199,6 +199,7 @@ pub(crate) struct WorldRuntime {
     /// Mean base-colour luminance of each terrain texture layer.
     terrain_layer_luma: [f32; mechanic_world::TextureSet::ALL.len()],
     selection_focus: Option<WorldPosition>,
+    selection_interest: Option<WorldPosition>,
     /// Detail scale the triangle budget asks selection for, and when it
     /// last changed.
     terrain_detail: streaming::TerrainDetail,
@@ -230,6 +231,32 @@ pub(crate) struct WorldRuntime {
 }
 
 impl WorldRuntime {
+    pub(crate) fn time_of_day_seconds(&self) -> f64 {
+        self.document.time_of_day_seconds
+    }
+
+    pub(crate) fn advance_day(&mut self, seconds: f64) {
+        if seconds != 0.0 {
+            self.document.time_of_day_seconds = (self.document.time_of_day_seconds + seconds)
+                .rem_euclid(mechanic_core::SECONDS_PER_DAY);
+            self.autosave.mutate(self.clock);
+        }
+    }
+
+    pub(crate) fn origin(&self) -> FloatingOrigin {
+        self.floating_origin
+    }
+
+    /// Clear transient controller state when entering or returning from dev noclip.
+    pub(crate) fn reset_dev_motion(&mut self) {
+        self.capsule.reset_motion();
+        self.controller_accumulator = 0.0;
+        self.jump_queued = false;
+        self.step_visual_offset = 0.0;
+        self.pending_player_reactions.clear();
+        self.walking_suspended = false;
+    }
+
     /// The water bodies float in, unless water is switched off.
     pub(crate) fn water_surfaces(&self) -> Option<Arc<mechanic_world::WaterSurfaces>> {
         water::water_enabled().then(|| self.water_surfaces.clone())
@@ -714,6 +741,7 @@ impl FromWorld for WorldRuntime {
             terrain_textures: None,
             terrain_layer_luma: [0.5; mechanic_world::TextureSet::ALL.len()],
             selection_focus: None,
+            selection_interest: None,
             terrain_detail: streaming::TerrainDetail::default(),
             selected_terrain_revision: u64::MAX,
             construction_collision: None,
@@ -763,8 +791,10 @@ impl Plugin for WorldPrototypePlugin {
                 Update,
                 (
                     select_and_size_brush.after(FrameSet::Input),
-                    walk_world.after(FrameSet::Readback),
-                    use_brush.after(walk_world),
+                    walk_world.in_set(FrameSet::WorldMovement),
+                    use_brush
+                        .after(FrameSet::WorldMovement)
+                        .run_if(crate::dev_tools::gameplay_enabled),
                     coordinate_terrain_edits.after(use_brush),
                     prepare_terrain_textures,
                     schedule_terrain_remeshes.after(coordinate_terrain_edits),
@@ -783,7 +813,9 @@ impl Plugin for WorldPrototypePlugin {
                         .after(integrate_terrain_remeshes)
                         .after(FrameSet::Build)
                         .before(FrameSet::Simulation),
-                    autosave_world.after(integrate_terrain_remeshes),
+                    autosave_world
+                        .after(integrate_terrain_remeshes)
+                        .after(FrameSet::SkyClock),
                     save_on_exit.after(autosave_world),
                 )
                     .run_if(in_state(AppSpace::World)),
@@ -791,10 +823,10 @@ impl Plugin for WorldPrototypePlugin {
             .add_systems(
                 Update,
                 toggle_space
-                    .after(FrameSet::Input)
+                    .in_set(FrameSet::WorldCommands)
                     .run_if(world_list_closed),
             )
-            .add_systems(Update, handle_world_list.after(FrameSet::Commands));
+            .add_systems(Update, handle_world_list.in_set(FrameSet::WorldList));
         #[cfg(debug_assertions)]
         app.init_resource::<worldgen_watch::WorldgenWatch>()
             .add_systems(

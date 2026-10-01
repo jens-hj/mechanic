@@ -19,6 +19,7 @@ mod cpu_physics;
 mod creation_menu;
 mod creation_store;
 mod debug_freeze;
+mod dev_tools;
 mod dial_assignment;
 mod editor;
 mod env;
@@ -55,6 +56,7 @@ mod settings;
 mod shape_tool;
 mod showcase;
 mod simulation;
+mod sky;
 mod suspension_capture;
 mod suspension_controls;
 mod suspension_editor;
@@ -209,6 +211,7 @@ fn main() {
         ))
         .add_plugins(StreamingMeshAllocatorPlugin)
         .add_plugins(OneShotEnvironmentMapPlugin)
+        .add_plugins(sky::SkyPlugin)
         .add_plugins(MaterialPlugin::<world::TerrainRenderMaterial>::default())
         .add_plugins(MaterialPlugin::<world::WaterRenderMaterial>::default())
         .add_plugins(MaterialPlugin::<ConstructionRenderMaterial>::default())
@@ -222,6 +225,7 @@ fn main() {
         .init_resource::<CreationStore>()
         .init_resource::<CurrentCreation>()
         .init_resource::<DebugFrameFreeze>()
+        .insert_resource(dev_tools::DevTools::from_env())
         .init_resource::<PauseMenuState>()
         .init_resource::<PerformanceMetrics>()
         .init_resource::<performance_capture::Recorder>()

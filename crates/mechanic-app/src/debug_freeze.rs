@@ -55,7 +55,8 @@ pub(crate) fn update_debug_frame_freeze(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
 ) {
     match freeze.advance(
-        keyboard.just_pressed(DEBUG_FRAME_FREEZE_KEY),
+        keyboard.just_pressed(DEBUG_FRAME_FREEZE_KEY)
+            && (keyboard.pressed(KeyCode::ShiftLeft) || keyboard.pressed(KeyCode::ShiftRight)),
         mouse.just_pressed(MouseButton::Left),
     ) {
         DebugFrameFreezeEffect::PauseTime => virtual_time.pause(),

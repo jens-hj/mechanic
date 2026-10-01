@@ -521,6 +521,7 @@ pub(crate) struct ChromaPreviewParams<'w> {
     clippy::too_many_lines
 )]
 pub(crate) fn update_previews(
+    dev: Option<Res<crate::dev_tools::DevTools>>,
     mut graph: ResMut<EditorGraph>,
     mut state: ResMut<EditorState>,
     simulation: Res<AppSimulation>,
@@ -573,6 +574,12 @@ pub(crate) fn update_previews(
         ),
     >,
 ) {
+    if dev.is_some_and(|dev| dev.spectator()) {
+        hide_preview(&mut action.2);
+        hide_preview(&mut selection.2);
+        hide_preview(&mut delete.2);
+        return;
+    }
     if selected_tool.active_editor_tool() == Some(Tool::Weld) {
         hide_preview(&mut action.2);
         hide_preview(&mut selection.2);

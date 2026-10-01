@@ -2,9 +2,10 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::prelude::{
-    App, Commands, Entity, EnvironmentMapLight, GeneratedEnvironmentMapLight, Image,
+    App, Commands, Component, Entity, EnvironmentMapLight, GeneratedEnvironmentMapLight, Image,
     IntoScheduleConfigs, Plugin, Query, Res, Resource, Update, Vec3, With, default,
 };
+use bevy::render::extract_component::{ExtractComponent, ExtractComponentPlugin};
 use bevy::render::mesh::allocator::MeshAllocatorSettings;
 use bevy::render::render_resource::{
     Extent3d, PipelineCache, TextureDimension, TextureFormat, TextureViewDescriptor,
@@ -14,6 +15,10 @@ use bevy::render::slab_allocator::SlabAllocatorSettings;
 use bevy::render::{Render, RenderApp};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Only explicitly static maps may stop generating after their first filter pass.
+#[derive(Component, Clone, ExtractComponent)]
+pub(crate) struct StaticEnvironmentMap;
 
 /// Shared signal from the render world once Bevy has populated both filtered
 /// environment maps.
@@ -47,7 +52,8 @@ impl Plugin for StreamingMeshAllocatorPlugin {
 impl Plugin for OneShotEnvironmentMapPlugin {
     fn build(&self, app: &mut App) {
         let ready = EnvironmentMapGenerationReady::default();
-        app.insert_resource(ready.clone())
+        app.add_plugins(ExtractComponentPlugin::<StaticEnvironmentMap>::default())
+            .insert_resource(ready.clone())
             .add_systems(Update, retain_generated_environment_map);
 
         app.get_sub_app_mut(RenderApp)
@@ -62,7 +68,13 @@ impl Plugin for OneShotEnvironmentMapPlugin {
 
 pub(crate) fn mark_environment_map_generated(
     ready: Res<EnvironmentMapGenerationReady>,
-    maps: Query<(), With<bevy::pbr::generate::GeneratorBindGroups>>,
+    maps: Query<
+        (),
+        (
+            With<bevy::pbr::generate::GeneratorBindGroups>,
+            With<StaticEnvironmentMap>,
+        ),
+    >,
     pipelines: Option<Res<bevy::pbr::generate::GeneratorPipelines>>,
     pipeline_cache: Res<PipelineCache>,
 ) {
@@ -87,6 +99,10 @@ pub(crate) fn mark_environment_map_generated(
     }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "only completed explicitly static maps stop generating"
+)]
 pub(crate) fn retain_generated_environment_map(
     ready: Res<EnvironmentMapGenerationReady>,
     mut commands: Commands,
@@ -95,6 +111,7 @@ pub(crate) fn retain_generated_environment_map(
         (
             With<GeneratedEnvironmentMapLight>,
             With<EnvironmentMapLight>,
+            With<StaticEnvironmentMap>,
         ),
     >,
 ) {
@@ -104,7 +121,12 @@ pub(crate) fn retain_generated_environment_map(
     for entity in &maps {
         commands
             .entity(entity)
-            .remove::<GeneratedEnvironmentMapLight>();
+            .queue(|mut entity: bevy::ecs::world::EntityWorldMut| {
+                // A space transition may have replaced this map since the query.
+                if entity.contains::<StaticEnvironmentMap>() {
+                    entity.remove::<GeneratedEnvironmentMapLight>();
+                }
+            });
     }
 }
 

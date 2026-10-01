@@ -481,7 +481,11 @@ pub(crate) fn update_material_wheel(
 
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn update_player_camera(
-    input_time: (Res<Time>, Res<crate::physical_controls::PhysicalControls>),
+    input_time: (
+        Res<Time>,
+        Res<crate::physical_controls::PhysicalControls>,
+        Option<ResMut<crate::dev_tools::DevTools>>,
+    ),
     actions: Res<ButtonInput<GameAction>>,
     motion: Res<AccumulatedMouseMotion>,
     menu: Res<CreationMenuState>,
@@ -496,7 +500,9 @@ pub(crate) fn update_player_camera(
     mut cursor: Single<&mut CursorOptions, With<PrimaryWindow>>,
     mut camera: Single<(&mut PlayerCamera, &mut Transform, &mut GlobalTransform), With<MainCamera>>,
 ) {
-    let (time, physical) = input_time;
+    let (time, physical, mut dev) = input_time;
+    let spectator = dev.as_ref().is_some_and(|dev| dev.spectator());
+    let noclip = dev.as_ref().is_some_and(|dev| dev.noclip());
     let panel_open = crate::automation::enabled()
         || wheel.chroma_config
         || player_controls_blocked([
@@ -510,7 +516,9 @@ pub(crate) fn update_player_camera(
 
     let (view, transform, global) = &mut *camera;
     let world_active = player.input_captured && !wheel.open;
+    player.input_captured &= !spectator;
     if world_active
+        && !spectator
         && !physical.captures_pointer()
         && editor.suspension.controls.gesture.is_none()
         && !(editor.suspension.controls.aim.is_some() && actions.just_pressed(GameAction::Primary))
@@ -535,7 +543,7 @@ pub(crate) fn update_player_camera(
     }
     view.damp_pullback(player.seat.is_some(), time.delta_secs());
     if player.seat.is_none() {
-        if world_active && space.get().uses_garage_flight() {
+        if world_active && !spectator && !noclip && space.get().uses_garage_flight() {
             let vertical = f32::from(actions.pressed(GameAction::Jump))
                 - f32::from(actions.pressed(GameAction::Descend));
             player.position += flight_step(
@@ -544,12 +552,23 @@ pub(crate) fn update_player_camera(
                 vertical,
                 time.delta_secs(),
                 actions.pressed(GameAction::Sprint),
-            );
+            ) * dev.as_ref().map_or(1.0, |dev| dev.multiplier());
             player.position = clamp_to_garage(player.position);
         }
         **transform = view.apply_pullback(
             player.position + Vec3::Y * eye_height(player.crouch),
             view.look_rotation(),
+        );
+        **global = GlobalTransform::from(**transform);
+    }
+    if let Some(dev) = dev.as_mut() {
+        dev.update_camera(
+            &mut player,
+            view,
+            transform,
+            motion.delta,
+            time.delta_secs(),
+            world_active,
         );
         **global = GlobalTransform::from(**transform);
     }

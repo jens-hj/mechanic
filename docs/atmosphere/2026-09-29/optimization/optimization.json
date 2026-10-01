@@ -1,0 +1,94 @@
+{
+  "frames_per_sample": 60,
+  "measurement": "synchronized CPU+GPU frame latency, no readback, fixed noon, no streaming",
+  "resolution": [
+    768,
+    512
+  ],
+  "samples": [
+    {
+      "mean_ms": 44.71734514999999,
+      "p95_ms": 49.19925,
+      "round": 0,
+      "tool_shadow_views": 4,
+      "variant": "before"
+    },
+    {
+      "mean_ms": 38.34830696666666,
+      "p95_ms": 46.298208,
+      "round": 0,
+      "tool_shadow_views": 4,
+      "variant": "reflections"
+    },
+    {
+      "mean_ms": 41.824826400000006,
+      "p95_ms": 46.704,
+      "round": 0,
+      "tool_shadow_views": 0,
+      "variant": "shadows"
+    },
+    {
+      "mean_ms": 36.75181881666667,
+      "p95_ms": 44.936291000000004,
+      "round": 0,
+      "tool_shadow_views": 0,
+      "variant": "combined"
+    },
+    {
+      "mean_ms": 35.625222916666665,
+      "p95_ms": 44.124458,
+      "round": 1,
+      "tool_shadow_views": 0,
+      "variant": "combined"
+    },
+    {
+      "mean_ms": 41.19839725,
+      "p95_ms": 47.481792,
+      "round": 1,
+      "tool_shadow_views": 0,
+      "variant": "shadows"
+    },
+    {
+      "mean_ms": 39.58924641666667,
+      "p95_ms": 49.154291,
+      "round": 1,
+      "tool_shadow_views": 4,
+      "variant": "reflections"
+    },
+    {
+      "mean_ms": 45.27321171666666,
+      "p95_ms": 50.472958,
+      "round": 1,
+      "tool_shadow_views": 4,
+      "variant": "before"
+    },
+    {
+      "mean_ms": 44.769638883333315,
+      "p95_ms": 47.794416999999996,
+      "round": 2,
+      "tool_shadow_views": 4,
+      "variant": "before"
+    },
+    {
+      "mean_ms": 38.12956661666667,
+      "p95_ms": 44.649209,
+      "round": 2,
+      "tool_shadow_views": 4,
+      "variant": "reflections"
+    },
+    {
+      "mean_ms": 41.17198756666666,
+      "p95_ms": 46.635792,
+      "round": 2,
+      "tool_shadow_views": 0,
+      "variant": "shadows"
+    },
+    {
+      "mean_ms": 35.35259510000001,
+      "p95_ms": 43.070917,
+      "round": 2,
+      "tool_shadow_views": 0,
+      "variant": "combined"
+    }
+  ]
+}
