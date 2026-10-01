@@ -28,6 +28,9 @@ pub struct TerrainEditOutcome {
     pub pressed_out: Vec<(WorldCell, TerrainMaterial, u32)>,
     /// Cells of spoil laid down, in the order they were laid.
     pub laid_cells: Vec<WorldCell>,
+    /// Cells running water took sediment from or laid it on: shrunk, grown,
+    /// emptied or begun.
+    pub sediment_cells: Vec<WorldCell>,
     /// Material the ground gave up to clumps, in quanta.
     pub quanta_given_up: u64,
     /// Material the ground took back from clumps, in quanta.

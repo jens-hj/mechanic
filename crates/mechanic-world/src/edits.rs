@@ -6,6 +6,7 @@ mod batch;
 mod brick;
 mod node;
 mod repose;
+mod sediment;
 mod walk;
 
 pub use batch::{
@@ -19,6 +20,7 @@ use node::TerrainNode;
 pub use node::{TerrainDensityClass, TerrainNodeId, TerrainNodeSummary};
 pub(crate) use repose::SLIDING_LOOSENESS;
 pub use repose::{Repose, SPOIL_LOOSENESS, SpoilSlump};
+pub use sediment::{SedimentApplied, SedimentChange};
 use walk::{
     classify_node, collect_bricks, collect_bricks_between, collect_nodes_between, find_brick,
     find_node, insert_brick_node, latest_revision_between, minimum_promoted_density_between,

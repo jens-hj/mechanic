@@ -152,6 +152,40 @@ impl TerrainBrick {
         }
         true
     }
+
+    /// Changes how much a solid cell holds and where its surface lies,
+    /// keeping it solid. Returns whether the cell was solid.
+    pub(super) fn reshape(&mut self, local: IVec3, looseness: u8, density: f32) -> bool {
+        let Some(index) = local_index(local) else {
+            return false;
+        };
+        let sample = &mut self.cells[index];
+        if !sample.is_solid() || density <= 0.0 {
+            return false;
+        }
+        let before = sample.density;
+        sample.looseness = looseness;
+        sample.density = density;
+        if density > self.maximum_density {
+            self.maximum_density = density;
+        } else if before >= self.maximum_density && density < before {
+            self.maximum_density = self
+                .cells
+                .iter()
+                .map(|cell| cell.density)
+                .fold(f32::NEG_INFINITY, f32::max);
+        }
+        if density < self.minimum_density {
+            self.minimum_density = density;
+        } else if before <= self.minimum_density && density > before {
+            self.minimum_density = self
+                .cells
+                .iter()
+                .map(|cell| cell.density)
+                .fold(f32::INFINITY, f32::min);
+        }
+        true
+    }
 }
 
 /// Corrupt or unsupported edited-brick payload.

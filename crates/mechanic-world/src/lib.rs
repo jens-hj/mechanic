@@ -37,9 +37,9 @@ pub use coordinates::{
 };
 pub use edits::{
     BrickDecodeError, REMOVED_CELL_CUBIC_METERS, REMOVED_CELL_LITRES, Repose, SPOIL_LOOSENESS,
-    SpoilSlump, TerrainBrick, TerrainDensityClass, TerrainEditBatch, TerrainEditError,
-    TerrainEditOutcome, TerrainNodeId, TerrainNodeSummary, TerrainOctree, TerrainOctreeSnapshot,
-    TerrainSource, decode_brick, encode_brick,
+    SedimentApplied, SedimentChange, SpoilSlump, TerrainBrick, TerrainDensityClass,
+    TerrainEditBatch, TerrainEditError, TerrainEditOutcome, TerrainNodeId, TerrainNodeSummary,
+    TerrainOctree, TerrainOctreeSnapshot, TerrainSource, decode_brick, encode_brick,
 };
 pub use footprint::LoadFootprint;
 pub use generation::{
