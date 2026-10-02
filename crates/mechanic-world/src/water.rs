@@ -313,8 +313,8 @@ pub struct PoolView {
     pub surface_cells: Vec<WaterCell>,
     /// Depth of water in each of those columns, in metres.
     pub depths: Vec<f64>,
-    /// How cloudy with sediment it is, from 0 to 1.
-    pub murk: f64,
+    /// Sediment it carries, in kg per m³ of water.
+    pub silt: f64,
 }
 
 /// One stored pool in a saved world.
@@ -726,7 +726,7 @@ impl WaterWorld {
                 volume_m3: pool.volume,
                 surface_cells,
                 depths,
-                murk: sediment::murk(pool.load, pool.volume),
+                silt: sediment::silt(pool.load, pool.volume),
             }
         })
     }

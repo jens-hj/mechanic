@@ -39,7 +39,8 @@ use super::{
     WaterWorld,
 };
 use crate::{
-    CELL_QUANTA, MATERIAL_QUANTUM_M3, SedimentApplied, SedimentChange, TerrainMaterial, WorldCell,
+    BreakageResponse, CELL_QUANTA, MATERIAL_QUANTUM_M3, SedimentApplied, SedimentChange,
+    TerrainMaterial, WorldCell,
 };
 
 /// Horizontal area of one water cell, in square metres.
@@ -167,14 +168,16 @@ impl SedimentLoad {
     }
 }
 
-/// How cloudy water holding `volume` m³ is with what it carries, from 0 to
-/// 1: a hundredth of its volume in sediment is thick mud.
-pub(super) fn murk(load: SedimentLoad, volume: f64) -> f64 {
+/// Sediment water holding `volume` m³ carries, in kg per m³ of water:
+/// fines weigh as the soil they came from.
+pub(super) fn silt(load: SedimentLoad, volume: f64) -> f64 {
     if volume <= 0.0 {
         return 0.0;
     }
-    let carried = load.total() * MATERIAL_QUANTUM_M3 / volume;
-    1.0 - (-carried / 0.01).exp()
+    let weight = |material| BreakageResponse::for_material(material).density_kg_m3;
+    MATERIAL_QUANTUM_M3
+        * (load.sand * weight(TerrainMaterial::Sand) + load.fines * weight(TerrainMaterial::Soil))
+        / volume
 }
 
 /// One column's sediment waiting on the ground.

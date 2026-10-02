@@ -236,9 +236,14 @@ then measures again only the cells that changed.
 No material is made or lost: what the ground lost, less what it got back, is
 what the water carries and what waits to be laid
 (`WaterWorld::sediment_ledger`). Saves keep what each sheet and pool carries
-and what waits on each bed. Stored water carries its murk to the water
-shader, which turns water thick with silt brown and hides the ground under
-it; lakes and rivers run clear. `ErosionConfig::speed` hurries erosion for
+and what waits on each bed. Stored water hands the water shader the
+sediment it carries, in kg per m³, and the shader hides the ground under it
+and turns it brown by how much silt lies in the light's path: the silt times
+the water's depth, at about 0.06 m² per gram (Kirk), so the ground fades from
+sight about as deep as a Secchi disc does. Water carrying a gram a litre,
+muddy runoff, hides its bed 2–3 cm down; a tenth of that clouds a stream
+10 cm deep; a clear stream's 10 mg/L does not show. Films thinner than the
+water's 12 mm edge fade show little either way. Lakes and rivers run clear. `ErosionConfig::speed` hurries erosion for
 tests and benchmarks, and the dev tools' `F10` steps it through 1×, 10×, 100×
 and 1000× in play. It scales only how fast running water wears its bed: the
 water still runs and settles at its own pace and carries at most its capacity,

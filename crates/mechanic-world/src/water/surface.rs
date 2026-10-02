@@ -49,8 +49,8 @@ struct Column {
     /// so the water fades out across it along its depth rather than
     /// stopping at a column's edge.
     edge: bool,
-    /// How cloudy with sediment its water is, from 0 to 1.
-    murk: f64,
+    /// Sediment its water carries, in kg per m³.
+    silt: f64,
     /// How white the falls landing on it churn its water, from 0 to 1.
     churn: f64,
 }
@@ -101,8 +101,8 @@ pub struct SurfaceTile {
     pub positions: Vec<[f32; 3]>,
     /// Upward vertex normals of the surface.
     pub normals: Vec<[f32; 3]>,
-    /// Depth of water under each vertex, its current along x and z, how
-    /// cloudy with sediment it is, and how white it churns, each from 0
+    /// Depth of water under each vertex, its current along x and z, the
+    /// sediment it carries in kg per m³, and how white it churns, from 0
     /// to 1.
     pub attributes: Vec<[f32; 5]>,
     /// Upward-facing triangles.
@@ -263,7 +263,7 @@ impl WaterWorld {
                     flow: view.flow,
                     anchor: false,
                     edge: false,
-                    murk: view.murk,
+                    silt: view.silt,
                     churn: 0.0,
                 },
             );
@@ -289,7 +289,7 @@ impl WaterWorld {
                         flow: DVec2::ZERO,
                         anchor: false,
                         edge: false,
-                        murk: pool.murk,
+                        silt: pool.silt,
                         churn: 0.0,
                     },
                 );
@@ -323,7 +323,7 @@ impl WaterWorld {
                         flow: DVec2::ZERO,
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -379,7 +379,7 @@ impl WaterWorld {
                                 flow: drawn.flow,
                                 anchor: true,
                                 edge: false,
-                                murk: 0.0,
+                                silt: 0.0,
                                 churn: 0.0,
                             },
                         );
@@ -406,7 +406,7 @@ fn add_edges(columns: &mut CellMap<(i32, i32), Column>) {
                 let edge = edges.entry(key).or_insert(Column {
                     depth: 0.0,
                     edge: true,
-                    murk: 0.0,
+                    silt: 0.0,
                     ..*column
                 });
                 if column.level > edge.level {
@@ -433,12 +433,27 @@ fn fingerprint(columns: &CellMap<(i32, i32), Column>, members: &[(i32, i32)]) ->
         ((column.depth * 500.0).round() as i64).hash(&mut hasher);
         ((column.flow.x * 10.0).round() as i64).hash(&mut hasher);
         ((column.flow.y * 10.0).round() as i64).hash(&mut hasher);
-        // Sediment clouds or clears the water, and falls churn it, in
-        // eighths.
-        ((column.murk * 8.0).round() as i64).hash(&mut hasher);
+        // Sediment clouds or clears the water, in quarter octaves of what
+        // it carries; falls churn it, in eighths.
+        silt_steps(column.silt).hash(&mut hasher);
         ((column.churn * 8.0).round() as i64).hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// Sediment water carries, in kg per m³, below which it is as good as
+/// clear: 10 mg/L, a clear stream's.
+const CLEAR_SILT: f64 = 0.01;
+
+/// Which quarter octave of sediment water carries, 0 for clear water: water
+/// draws visibly cloudier with each.
+#[expect(clippy::cast_possible_truncation, reason = "a few dozen steps")]
+fn silt_steps(silt: f64) -> i64 {
+    if silt < CLEAR_SILT {
+        0
+    } else {
+        1 + (4.0 * (silt / CLEAR_SILT).log2()).round() as i64
+    }
 }
 
 /// Meshes one tile: a quad per column, its corners shared with every
@@ -493,7 +508,7 @@ fn mesh_tile(
                         corner.depth as f32,
                         corner.flow.x as f32,
                         corner.flow.y as f32,
-                        corner.murk as f32,
+                        corner.silt as f32,
                         corner.churn as f32,
                     ]);
                     index
@@ -506,13 +521,14 @@ fn mesh_tile(
 }
 
 /// One quad corner: its level, the depth it shows, the water's current,
-/// the surface's normal there, and how cloudy and how churned the water is.
+/// the surface's normal there, the sediment the water carries and how
+/// churned it is.
 struct Corner {
     level: f64,
     depth: f64,
     flow: DVec2,
     normal: DVec3,
-    murk: f64,
+    silt: f64,
     churn: f64,
 }
 
@@ -535,14 +551,14 @@ fn corner(
     // of its own around it.
     let same = |column: &Column| !column.edge && (column.level - own.level).abs() <= JOINS_METRES;
     let (mut level, mut weight, mut depth, mut flow) = (0.0, 0.0, 0.0, DVec2::ZERO);
-    let mut murk = 0.0;
+    let mut silt = 0.0;
     for column in around.iter().flatten().filter(|column| same(column)) {
         let w = weighs(column);
         level += column.level * w;
         weight += w;
         depth += column.depth;
         flow += column.flow * w;
-        murk += column.murk * w;
+        silt += column.silt * w;
     }
     if weight == 0.0 {
         return beyond(x, z, own, top);
@@ -572,7 +588,7 @@ fn corner(
         depth: depth / shared,
         flow,
         normal: DVec3::new(-dx, 1.0, -dz).normalize(),
-        murk: murk / weight,
+        silt: silt / weight,
         churn: churn(&around, &same, DVec2::new(dx, dz), flow),
     };
     drape(
@@ -610,7 +626,7 @@ fn beyond(
         depth: 0.0,
         flow: own.flow,
         normal: DVec3::Y,
-        murk: own.murk,
+        silt: own.silt,
         churn: own.churn,
     }
 }
@@ -797,7 +813,7 @@ mod tests {
                         flow: DVec2::new(1.0, 0.0),
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -844,7 +860,7 @@ mod tests {
                     flow: DVec2::ZERO,
                     anchor: false,
                     edge: false,
-                    murk: 0.0,
+                    silt: 0.0,
                     churn: 0.0,
                 },
             );
@@ -875,7 +891,7 @@ mod tests {
                 flow: DVec2::ZERO,
                 anchor: false,
                 edge: false,
-                murk: 0.0,
+                silt: 0.0,
                 churn: 0.0,
             },
         );
@@ -887,7 +903,7 @@ mod tests {
                 flow: DVec2::ZERO,
                 anchor: true,
                 edge: false,
-                murk: 0.0,
+                silt: 0.0,
                 churn: 0.0,
             },
         );
@@ -927,7 +943,7 @@ mod tests {
                         flow: DVec2::new(0.5, 0.0),
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -988,7 +1004,7 @@ mod tests {
                         flow: DVec2::ZERO,
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -1027,7 +1043,7 @@ mod tests {
                         flow: DVec2::ZERO,
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -1111,7 +1127,7 @@ mod tests {
                         flow: DVec2::ZERO,
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -1170,7 +1186,7 @@ mod tests {
                         flow,
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -1219,7 +1235,7 @@ mod tests {
                         flow: DVec2::new(1.0, 0.0),
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -1251,7 +1267,7 @@ mod tests {
                 flow: DVec2::new(1.0, 0.0),
                 anchor: false,
                 edge: false,
-                murk: 0.0,
+                silt: 0.0,
                 churn: 0.0,
             },
         );
@@ -1263,7 +1279,7 @@ mod tests {
                 flow: DVec2::ZERO,
                 anchor: true,
                 edge: false,
-                murk: 0.0,
+                silt: 0.0,
                 churn: 0.0,
             },
         );
@@ -1308,7 +1324,7 @@ mod tests {
                         flow: DVec2::ZERO,
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );
@@ -1344,7 +1360,7 @@ mod tests {
                         flow: DVec2::new(if stream { speed } else { 0.0 }, 0.0),
                         anchor: false,
                         edge: false,
-                        murk: 0.0,
+                        silt: 0.0,
                         churn: 0.0,
                     },
                 );

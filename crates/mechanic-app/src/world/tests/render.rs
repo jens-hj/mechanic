@@ -215,8 +215,9 @@ struct WaterScene {
     turn: f32,
     /// Where in the world the water lies.
     origin: Vec3,
-    /// How cloudy with sediment it is, or none for water that carries none.
-    murk: Option<f32>,
+    /// Sediment it carries, in kg per m³, or none for water that carries
+    /// none.
+    silt: Option<f32>,
     /// How white it churns, or none for water that carries no churn.
     churn: Option<f32>,
     /// Pixels along each edge of the picture.
@@ -230,18 +231,19 @@ impl Default for WaterScene {
             flow: [0.3, 0.0],
             turn: 0.0,
             origin: Vec3::ZERO,
-            murk: None,
+            silt: None,
             churn: None,
             size: 64,
         }
     }
 }
 
-/// The pixel at the middle of water two metres deep over pale ground, as
-/// cloudy with sediment as `murk` says, or clear without it.
-fn water_pixel(murk: Option<f32>) -> Vec<u8> {
+/// The pixel at the middle of water `depth` metres deep over pale ground,
+/// carrying `silt` kg of sediment in each m³, or none.
+fn water_pixel(depth: f32, silt: Option<f32>) -> Vec<u8> {
     let pixels = water_frame(WaterScene {
-        murk,
+        depth,
+        silt,
         ..WaterScene::default()
     });
     let center = (32 * 64 + 32) * 4;
@@ -289,7 +291,7 @@ fn grain(scene: WaterScene) -> f32 {
 
 /// The water surface of `scene`: a flat 8 m square.
 fn water_plane(scene: WaterScene) -> Mesh {
-    use crate::world::water_render::{ATTRIBUTE_CHURN, ATTRIBUTE_MURK, ATTRIBUTE_WATER};
+    use crate::world::water_render::{ATTRIBUTE_CHURN, ATTRIBUTE_SILT, ATTRIBUTE_WATER};
 
     let mut water = Mesh::from(Plane3d::default().mesh().size(8.0, 8.0));
     let count = water.count_vertices();
@@ -311,10 +313,10 @@ fn water_plane(scene: WaterScene) -> Mesh {
         ATTRIBUTE_WATER,
         bevy::mesh::VertexAttributeValues::Float32x3(currents),
     );
-    if let Some(murk) = scene.murk {
+    if let Some(silt) = scene.silt {
         water.insert_attribute(
-            ATTRIBUTE_MURK,
-            bevy::mesh::VertexAttributeValues::Float32(vec![murk; count]),
+            ATTRIBUTE_SILT,
+            bevy::mesh::VertexAttributeValues::Float32(vec![silt; count]),
         );
     }
     if let Some(churn) = scene.churn {
@@ -420,7 +422,7 @@ fn water_frame(scene: WaterScene) -> Vec<u8> {
 #[test]
 #[ignore = "requires a real GPU"]
 fn water_draws_a_translucent_blue_surface_over_the_ground() {
-    let pixel = water_pixel(None);
+    let pixel = water_pixel(2.0, None);
     eprintln!("Water pixel: {pixel:?}");
     assert!(pixel[1] > 8, "water is still the magenta error material");
     assert!(
@@ -432,8 +434,8 @@ fn water_draws_a_translucent_blue_surface_over_the_ground() {
 #[test]
 #[ignore = "requires a real GPU"]
 fn water_thick_with_sediment_draws_silty_brown() {
-    let clear = water_pixel(Some(0.0));
-    let muddy = water_pixel(Some(1.0));
+    let clear = water_pixel(2.0, Some(0.0));
+    let muddy = water_pixel(2.0, Some(1.0));
     eprintln!("Clear {clear:?}, muddy {muddy:?}");
     assert!(
         clear[2] > clear[0],
@@ -442,6 +444,53 @@ fn water_thick_with_sediment_draws_silty_brown() {
     assert!(
         muddy[0] > muddy[2] && muddy[1] > muddy[2],
         "muddy water should read brown: {muddy:?}"
+    );
+}
+
+/// How far a pixel's colour lies from another's, from 0 to about 440.
+fn colour_distance(a: &[u8], b: &[u8]) -> f32 {
+    a.iter()
+        .zip(b)
+        .take(3)
+        .map(|(&a, &b)| (f32::from(a) - f32::from(b)).powi(2))
+        .sum::<f32>()
+        .sqrt()
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn silt_clouds_water_as_deep_as_real_muddy_water() {
+    // A stream 10 cm deep carrying a gram a litre, muddy runoff, hides its
+    // bed; a tenth of a gram a litre clouds it; a clear stream's 10 mg/L
+    // leaves it as clear as clean water.
+    let clean = water_pixel(0.1, Some(0.0));
+    let faint = water_pixel(0.1, Some(0.01));
+    let cloudy = water_pixel(0.1, Some(0.1));
+    let muddy = water_pixel(0.1, Some(1.0));
+    // The same muddy water as a film 5 mm deep still shows its bed.
+    let film = water_pixel(0.005, Some(1.0));
+    let clean_film = water_pixel(0.005, Some(0.0));
+    eprintln!(
+        "10 cm: clean {clean:?}, 10 mg/L {faint:?}, 100 mg/L {cloudy:?}, 1 g/L {muddy:?}; \
+         5 mm: clean {clean_film:?}, 1 g/L {film:?}"
+    );
+    assert!(
+        muddy[0] > muddy[2] && muddy[1] > muddy[2],
+        "muddy runoff should read brown: {muddy:?}"
+    );
+    assert!(
+        colour_distance(&faint, &clean) < 6.0,
+        "a clear stream's silt should not show: {faint:?} against {clean:?}"
+    );
+    let cloudiness = colour_distance(&cloudy, &clean);
+    let muddiness = colour_distance(&muddy, &clean);
+    assert!(
+        cloudiness > 10.0 && cloudiness < muddiness,
+        "100 mg/L should cloud the water short of mud: {cloudy:?} between {clean:?} and {muddy:?}"
+    );
+    assert!(
+        colour_distance(&film, &clean_film) < muddiness,
+        "a thin film of muddy water should hide less than a stream of it: {film:?}"
     );
 }
 

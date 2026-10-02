@@ -18,9 +18,9 @@ struct WaterVertex {
     @location(1) normal: vec3<f32>,
     // Depth of water under the vertex, then its current along x and z.
     @location(8) water: vec3<f32>,
-#ifdef WATER_MURK
-    // How cloudy with sediment the water is, from 0 to 1.
-    @location(9) murk: f32,
+#ifdef WATER_SILT
+    // Sediment the water carries, in kg per m³.
+    @location(9) silt: f32,
 #endif
 #ifdef WATER_CHURN
     // How white the water churns where it collides, tumbles or takes a
@@ -37,7 +37,7 @@ struct WaterVaryings {
     @location(6) @interpolate(flat) instance_index: u32,
 #endif
     @location(8) water: vec3<f32>,
-    @location(9) mud: f32,
+    @location(9) silt: f32,
     @location(10) churn: f32,
 }
 
@@ -58,10 +58,10 @@ fn vertex(vertex: WaterVertex) -> WaterVaryings {
     out.instance_index = vertex.instance_index;
 #endif
     out.water = vertex.water;
-#ifdef WATER_MURK
-    out.mud = vertex.murk;
+#ifdef WATER_SILT
+    out.silt = vertex.silt;
 #else
-    out.mud = 0.0;
+    out.silt = 0.0;
 #endif
 #ifdef WATER_CHURN
     out.churn = vertex.churn;
@@ -125,7 +125,14 @@ fn resolved(texel: f32, cycles_per_metre: f32) -> f32 {
 }
 
 // Linear colour of water thick with silt.
-const SILT: vec3<f32> = vec3<f32>(0.16, 0.1, 0.045);
+const MUDDY: vec3<f32> = vec3<f32>(0.16, 0.1, 0.045);
+
+// How fast silt hides what lies under it, per kg of it in each m³ of water
+// and per metre of water: suspended mud dims light by about 0.06 m² for
+// each gram (Kirk), so the ground fades from sight about as deep as a
+// Secchi disc does, 2–3 cm into water carrying a gram a litre and 25 cm
+// into water carrying a tenth of that.
+const SILT_CLOUDING: f32 = 100.0;
 
 // Linear colour of foam, and of water white with air.
 const FOAM: vec3<f32> = vec3<f32>(0.85, 0.9, 0.9);
@@ -348,9 +355,9 @@ fn fragment(
     let edge = smoothstep(0.003, 0.012, depth);
     // Sediment turns water silty brown and hides the ground under it; air
     // turns it pale and hides the ground too.
-    let mud = clamp(varyings.mud, 0.0, 1.0);
+    let mud = 1.0 - exp(-SILT_CLOUDING * max(varyings.silt, 0.0) * depth);
     let clear = mix(mix(shallow.rgb, deep.rgb, murk), AERATED, 0.35 * white);
-    let colour = mix(clear, SILT, mud);
+    let colour = mix(clear, MUDDY, mud);
     let opacity = max(max(mix(0.35, 0.9, 1.0 - exp(-depth / 1.2)), 0.95 * mud), 0.85 * white);
     pbr_input.material.base_color = vec4<f32>(
         mix(colour, FOAM, foam),

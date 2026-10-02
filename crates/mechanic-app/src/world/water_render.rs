@@ -49,10 +49,10 @@ const TILES_IN_FLIGHT: usize = 8;
 pub(crate) const ATTRIBUTE_WATER: MeshVertexAttribute =
     MeshVertexAttribute::new("Water", 0x6d65_6368_0010, VertexFormat::Float32x3);
 
-/// How cloudy with sediment the water over a vertex is, from 0 to 1. Only
-/// stored water carries it: seed-derived water runs clear.
-pub(crate) const ATTRIBUTE_MURK: MeshVertexAttribute =
-    MeshVertexAttribute::new("Murk", 0x6d65_6368_0011, VertexFormat::Float32);
+/// Sediment the water over a vertex carries, in kg per m³. Only stored
+/// water carries it: seed-derived water runs clear.
+pub(crate) const ATTRIBUTE_SILT: MeshVertexAttribute =
+    MeshVertexAttribute::new("Silt", 0x6d65_6368_0011, VertexFormat::Float32);
 
 /// How white the water over a vertex churns where it collides, tumbles or
 /// takes a fall, from 0 to 1. Only stored water carries it.
@@ -238,9 +238,9 @@ impl Material for WaterRenderMaterial {
             Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
             ATTRIBUTE_WATER.at_shader_location(8),
         ];
-        if layout.0.contains(ATTRIBUTE_MURK) {
-            attributes.push(ATTRIBUTE_MURK.at_shader_location(9));
-            descriptor.vertex.shader_defs.push("WATER_MURK".into());
+        if layout.0.contains(ATTRIBUTE_SILT) {
+            attributes.push(ATTRIBUTE_SILT.at_shader_location(9));
+            descriptor.vertex.shader_defs.push("WATER_SILT".into());
         }
         if layout.0.contains(ATTRIBUTE_CHURN) {
             attributes.push(ATTRIBUTE_CHURN.at_shader_location(10));
@@ -593,7 +593,7 @@ fn surface_mesh(
         ),
     );
     mesh.insert_attribute(
-        ATTRIBUTE_MURK,
+        ATTRIBUTE_SILT,
         VertexAttributeValues::Float32(attributes.iter().map(|attribute| attribute[3]).collect()),
     );
     mesh.insert_attribute(
