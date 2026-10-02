@@ -48,7 +48,7 @@ const TERRAIN_LAYER_EDGE: u32 = 1_536;
 /// Edge of one tint-mask layer; masks are soft and need less detail.
 const TERRAIN_MASK_EDGE: u32 = 768;
 
-#[derive(Asset, AsBindGroup, Reflect, Debug, Clone)]
+#[derive(Asset, AsBindGroup, Reflect, Debug, Clone, PartialEq)]
 pub(crate) struct TerrainRenderMaterial {
     #[texture(0, dimension = "2d_array")]
     #[sampler(4)]
@@ -71,6 +71,13 @@ pub(crate) struct TerrainRenderMaterial {
     /// against the floating origin.
     #[uniform(8)]
     pub(crate) wet_window: Vec4,
+    /// Diagnostic transfer amounts and bed height, sampled without filtering.
+    #[texture(9, filterable = false)]
+    pub(crate) erosion_map: Handle<Image>,
+    /// Lower x/z corner, edge length, and base height relative to the origin.
+    /// A zero edge disables diagnostics.
+    #[uniform(10)]
+    pub(crate) erosion_window: Vec4,
 }
 
 /// A wetness map of dry ground, for terrain drawn before water has run.
@@ -322,6 +329,8 @@ pub(crate) fn terrain_render_material(
         surfaces: surfaces.clone(),
         wetness: dry_ground(images),
         wet_window: Vec4::ZERO,
+        erosion_map: super::erosion_overlay::empty_map(images),
+        erosion_window: Vec4::ZERO,
     };
     (
         material,

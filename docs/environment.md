@@ -7,7 +7,7 @@ Everything below is an environment variable read at startup. Unset means off.
 
 | Variable | Effect |
 |---|---|
-| `MECHANIC_DEV_TOOLS` | `1` enables developer noclip, detached camera, and adjustable movement speed in debug and release builds. Controls are rebindable under Dev Tools; mode and speed are never persisted. |
+| `MECHANIC_DEV_TOOLS` | `1` enables developer navigation, day controls, erosion speed, and the [erosion heatmap](water.md#developer-erosion-heatmap) in debug and release builds. Controls are rebindable under Dev Tools; modes, speed, and diagnostic history are never persisted. |
 | `MECHANIC_PHYSICS` | `gpu` runs published ticks on the GPU runtime. Anything else, or unset, runs the CPU solver. See [CPU physics](physics-cpu.md). |
 | `MECHANIC_SOIL` | `off` disables soil accumulation on the CPU route; it is on otherwise. See [terrain response status](terrain-response-status.md). |
 | `MECHANIC_WATER` | `off` removes the sea, lakes and rivers: they are neither drawn nor felt by the CPU route. See [water](water.md). |

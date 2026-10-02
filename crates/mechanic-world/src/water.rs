@@ -37,7 +37,10 @@ use grid::SheetGrid;
 use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
 pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
-pub use sediment::{BedDoc, ErosionConfig, SedimentDoc, SedimentLedger, SedimentLoad};
+pub use sediment::{
+    BedDoc, ErosionConfig, SedimentDiagnosticColumn, SedimentDiagnostics, SedimentDoc,
+    SedimentLedger, SedimentLoad,
+};
 use sediment::{Placed, Sediment};
 pub use sheet::{RunningView, SheetDoc};
 pub use soil::{SoilDoc, WetGround};
@@ -1119,6 +1122,7 @@ impl WaterWorld {
 
     /// Runs the water for `dt` seconds.
     pub fn step(&mut self, ground: &impl WaterGround, dt: f64) -> WaterStep {
+        self.advance_sediment_diagnostics(dt);
         let mut clock = PhaseClock::new();
         let mut phases = WaterPhases::default();
         let ids = self.pools.keys().copied().collect::<Vec<_>>();

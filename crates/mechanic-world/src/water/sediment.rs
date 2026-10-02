@@ -29,6 +29,10 @@
 //! what the ground lost, less what it got back, is what the water carries
 //! and what waits to be laid.
 
+mod diagnostics;
+
+pub use diagnostics::{SedimentDiagnosticColumn, SedimentDiagnostics};
+
 use bevy_math::DVec3;
 use mechanic_core::WATER_DENSITY_KG_M3;
 use serde::{Deserialize, Serialize};
@@ -260,6 +264,7 @@ pub struct SedimentDoc {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Sediment {
     beds: CellMap<(i32, i32), Bed>,
+    diagnostics: Option<diagnostics::Recorder>,
     config: ErosionConfig,
     /// Seconds since the ground was last asked.
     since: f64,
@@ -556,6 +561,7 @@ impl WaterWorld {
         let asked = std::mem::take(&mut self.sediment.asked);
         for (index, (column, ask)) in asked.into_iter().enumerate() {
             let done = applied.get(index).copied().unwrap_or_default();
+            self.record_sediment(column, done);
             match ask {
                 Ask::Take => {
                     let sand = done.taken[TerrainMaterial::Sand.code() as usize];

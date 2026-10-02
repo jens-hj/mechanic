@@ -44,6 +44,7 @@ fn matter_is_conserved_while_water_erodes_and_lays_sediment() {
         ..lake_bank_and_field()
     };
     let mut water = WaterWorld::new();
+    water.set_sediment_diagnostics(true);
     // An hour's wear in six seconds.
     water.set_erosion(ErosionConfig { speed: 600.0 });
     water.terrain_changed(&ground, ground.bricks());
@@ -62,6 +63,27 @@ fn matter_is_conserved_while_water_erodes_and_lays_sediment() {
     assert!(asked > 0, "the ground was never asked");
     assert!(books.eroded > 1_000.0, "the breach wore nothing: {books:?}");
     assert!(books.laid > 0.0, "nothing was laid down: {books:?}");
+    let diagnostics = water.sediment_diagnostics().expect("capture enabled");
+    let sum = |index: usize| {
+        diagnostics
+            .columns
+            .iter()
+            .map(|column| column.accumulated[index])
+            .sum::<f64>()
+    };
+    assert!((sum(0) - books.eroded).abs() < 1.0e-6);
+    assert!((sum(1) - books.laid).abs() < 1.0e-6);
+    assert!(
+        (diagnostics
+            .columns
+            .iter()
+            .map(|column| column.pending)
+            .sum::<f64>()
+            - books.settled)
+            .abs()
+            < 1.0e-6
+    );
+    assert!((diagnostics.seconds - 60.0).abs() < 1.0e-6);
 }
 
 #[test]

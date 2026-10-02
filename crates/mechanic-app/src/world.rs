@@ -8,6 +8,7 @@
 
 mod brush;
 mod clumps;
+mod erosion_overlay;
 mod foundations;
 mod list;
 mod saving;
@@ -784,6 +785,12 @@ impl Plugin for WorldPrototypePlugin {
             .init_resource::<WorldListState>()
             .init_resource::<WorldDiagnostics>()
             .init_resource::<WaterTiles>()
+            .init_resource::<erosion_overlay::ErosionOverlay>()
+            .add_systems(
+                Update,
+                erosion_overlay::draw.in_set(FrameSet::WorldDiagnostics),
+            )
+            .add_systems(OnExit(AppSpace::World), erosion_overlay::clear)
             .add_systems(Startup, restore_initial_garage)
             .add_systems(OnEnter(AppSpace::World), enter_world)
             .add_systems(OnExit(AppSpace::World), (leave_world, clear_water_tiles))
@@ -818,6 +825,7 @@ impl Plugin for WorldPrototypePlugin {
                         .after(FrameSet::SkyClock),
                     save_on_exit.after(autosave_world),
                 )
+                    .before(FrameSet::WorldDiagnostics)
                     .run_if(in_state(AppSpace::World)),
             )
             .add_systems(

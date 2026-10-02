@@ -249,6 +249,35 @@ and 1000× in play. It scales only how fast running water wears its bed: the
 water still runs and settles at its own pace and carries at most its capacity,
 so faster erosion leaves murkier water and quicker cuts, never made material.
 
+### Developer erosion heatmap
+
+With dev tools enabled, **F9** cycles Off → Accumulated → Recent, and
+**Shift+F9** clears recorded activity. Both actions can be rebound. Recording
+continues while the map is hidden; loading a world starts a new session, and
+history is never saved. The existing **F10** erosion-speed control is unchanged.
+
+Orange marks material actually removed, blue marks material actually deposited,
+and purple marks both in the same water column. Yellow hatching shows the
+**current** settled sediment waiting to be deposited, including requests whose
+terrain response is still pending. A refused edit adds no completed activity.
+Resetting history never clears actual sediment or cancels a terrain edit.
+
+Accumulated shows transfers since reset. Recent fades completed transfers with a
+10-second half-life in water simulation time; the erosion-speed multiplier does
+not speed this clock up. Pending sediment does not fade in either view. Strength
+uses a fixed logarithmic scale at 1, 10 and 100+ mm of equivalent material depth
+(volume divided by the 20 cm water cell's area), **not** mesh elevation change.
+
+The map covers 102.4 m around the camera and follows floating-origin rebases.
+Marks are restricted to the recorded bed height so they do not color cave floors
+below. Water surfaces are hidden while the map is active, but water and erosion
+keep running. Turning it off restores normal terrain and water rendering.
+Brush edits, mining and subsequent terrain slumping are not counted as erosion.
+
+The worker publishes diagnostics alongside its water view, so new transfers can
+appear one water batch after the terrain edit commits. Reset generations prevent
+older in-flight snapshots from restoring cleared history.
+
 ## Drops
 
 Water pouring over a lip, from a pool at its weir rate or from a sheet at

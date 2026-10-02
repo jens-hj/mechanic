@@ -99,6 +99,8 @@ pub(crate) enum FrameSet {
     Simulation,
     /// Tool previews, placed after the simulation has moved its bodies.
     Previews,
+    /// Diagnostic terrain materials follow world and water publication.
+    WorldDiagnostics,
     /// Outdoor atmosphere follows the final camera and floating origin.
     Sky,
     /// First-person tools inherit the completed scene lighting.
@@ -153,6 +155,7 @@ impl Plugin for FramePlugin {
                 FrameSet::Simulation,
                 FrameSet::Previews,
                 (
+                    FrameSet::WorldDiagnostics,
                     FrameSet::Sky,
                     FrameSet::ViewmodelLighting,
                     FrameSet::Metrics,
@@ -183,6 +186,7 @@ impl Plugin for FramePlugin {
                 FrameSet::Simulation,
                 FrameSet::Previews,
                 (
+                    FrameSet::WorldDiagnostics,
                     FrameSet::Sky,
                     FrameSet::ViewmodelLighting,
                     FrameSet::Metrics,

@@ -79,8 +79,8 @@ pub use streaming::{
 };
 pub use water::{
     BedDoc, ErosionConfig, JoinedCellDoc, PoolDoc, PoolView, RunningView, SURFACE_TILE_COLUMNS,
-    SedimentDoc, SedimentLedger, SedimentLoad, SheetDoc, SoilDoc, StoredSurface, StoredWaterDoc,
-    SurfaceTile, SurplusDoc, TerrainWater, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell,
-    WaterGround, WaterLedger, WaterNetwork, WaterPhases, WaterShift, WaterStep, WaterSurfaces,
-    WaterWorld, WetGround,
+    SedimentDiagnosticColumn, SedimentDiagnostics, SedimentDoc, SedimentLedger, SedimentLoad,
+    SheetDoc, SoilDoc, StoredSurface, StoredWaterDoc, SurfaceTile, SurplusDoc, TerrainWater,
+    WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterGround, WaterLedger, WaterNetwork,
+    WaterPhases, WaterShift, WaterStep, WaterSurfaces, WaterWorld, WetGround,
 };

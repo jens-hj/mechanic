@@ -31,6 +31,32 @@ struct Surface {
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var wetness_sampler: sampler;
 // Lower x and z corner and edge of the wetness map, and its base height.
 @group(#{MATERIAL_BIND_GROUP}) @binding(8) var<uniform> wet_window: vec4<f32>;
+// Independent removal, deposition, pending amount, and relative bed height.
+@group(#{MATERIAL_BIND_GROUP}) @binding(9) var erosion_map: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(10) var<uniform> erosion_window: vec4<f32>;
+
+fn sediment_heatmap(position: vec3<f32>, lit: vec3<f32>) -> vec3<f32> {
+    if erosion_window.z <= 0.0 { return lit; }
+    let uv = (position.xz - erosion_window.xy) / erosion_window.z;
+    if any(uv < vec2<f32>(0.0)) || any(uv >= vec2<f32>(1.0)) { return lit; }
+    let cell = uv * vec2<f32>(textureDimensions(erosion_map));
+    let sample = textureLoad(erosion_map, vec2<i32>(cell), 0);
+    let neutral = vec3<f32>(clamp(dot(lit, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.08, 0.6) * 0.45);
+    let near = 1.0 - smoothstep(0.15, 0.4, abs(position.y - (sample.a + erosion_window.w)));
+    let activity = sample.rgb * near;
+    let total = activity.r + activity.g;
+    let blue_share = activity.g / max(total, 0.00001);
+    let mixed = 4.0 * blue_share * (1.0 - blue_share);
+    let hue = mix(mix(vec3<f32>(1.0, 0.24, 0.015), vec3<f32>(0.02, 0.32, 1.0), blue_share),
+        vec3<f32>(0.65, 0.08, 0.95), mixed);
+    var color = mix(neutral, hue, max(activity.r, activity.g));
+    // Hatching remains spatially anchored as the map recentres by whole cells.
+    if fract((cell.x + cell.y) * 2.0) < 0.4 {
+        color = mix(color, vec3<f32>(1.0, 0.9, 0.015), activity.b);
+    }
+    return color;
+}
+
 
 // Every chunk names up to eight palette surfaces; each vertex is one-hot over
 // those slots. The slot table is the same for all of a chunk's vertices, so
@@ -434,6 +460,7 @@ fn fragment(
     );
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr_input);
+    out.color = vec4<f32>(sediment_heatmap(varyings.world_position.xyz, out.color.rgb), out.color.a);
     out.color = main_pass_post_lighting_processing(pbr_input, out.color);
     return out;
 }

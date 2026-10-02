@@ -14,6 +14,8 @@ use bevy::{
     window::ExitCondition,
 };
 
+mod erosion;
+
 use crate::world::TerrainRenderMaterial;
 
 #[derive(Resource, Default)]
@@ -83,7 +85,7 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             clear_color: ClearColorConfig::Custom(Color::BLACK),
             ..default()
         },
-        RenderTarget::Image(target.into()),
+        RenderTarget::Image(target.clone().into()),
         mode.msaa(),
         Transform::from_xyz(0.0, 0.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
@@ -135,6 +137,9 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     let wetness = crate::world::terrain_render::dry_ground(
         &mut app.world_mut().resource_mut::<Assets<Image>>(),
     );
+    let erosion_map = crate::world::erosion_overlay::empty_map(
+        &mut app.world_mut().resource_mut::<Assets<Image>>(),
+    );
     let material = TerrainRenderMaterial {
         base_color,
         normal,
@@ -143,6 +148,8 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
         surfaces,
         wetness,
         wet_window: Vec4::ZERO,
+        erosion_map,
+        erosion_window: Vec4::ZERO,
     };
     let material = app
         .world_mut()
@@ -168,7 +175,7 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     );
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     app.world_mut()
-        .spawn((Mesh3d(mesh), MeshMaterial3d(material)));
+        .spawn((Mesh3d(mesh), MeshMaterial3d(material.clone())));
     app.world_mut().spawn((
         DirectionalLight {
             illuminance: 18_000.0,
@@ -200,6 +207,9 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             pixel[1] > pixel[0] && pixel[0] > pixel[2],
             "expected the diagnostic green terrain material"
         );
+    }
+    if mode == crate::render_experiments::RenderExperiment::Baseline {
+        erosion::verify(&mut app, material, target);
     }
 }
 

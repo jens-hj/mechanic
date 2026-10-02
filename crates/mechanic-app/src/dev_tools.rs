@@ -19,6 +19,33 @@ pub(crate) enum DevMode {
     Spectator,
 }
 
+/// Which sediment history the terrain shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ErosionMap {
+    #[default]
+    Off,
+    Accumulated,
+    Recent,
+}
+
+impl ErosionMap {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Accumulated => "Accumulated",
+            Self::Recent => "Recent · 10 s half-life",
+        }
+    }
+
+    fn cycle(&mut self) {
+        *self = match self {
+            Self::Off => Self::Accumulated,
+            Self::Accumulated => Self::Recent,
+            Self::Recent => Self::Off,
+        };
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct ReturnPose {
     position: Vec3,
@@ -36,6 +63,8 @@ pub(crate) struct DevTools {
     pub(crate) speed: f32,
     /// Erosion's rate over the game's own.
     pub(crate) erosion: f64,
+    pub(crate) erosion_map: ErosionMap,
+    pub(crate) erosion_generation: u64,
     pub(crate) cycle_paused: bool,
     pub(crate) notice: &'static str,
     return_pose: Option<ReturnPose>,
@@ -54,6 +83,8 @@ impl Default for DevTools {
             mode: DevMode::Normal,
             speed: 1.0,
             erosion: 1.0,
+            erosion_map: ErosionMap::Off,
+            erosion_generation: 0,
             cycle_paused: false,
             notice: "",
             return_pose: None,
@@ -280,6 +311,13 @@ pub(crate) fn input(
             let hours = i32::from(actions.just_pressed(GameAction::DevTimeLater))
                 - i32::from(actions.just_pressed(GameAction::DevTimeEarlier));
             runtime.advance_day(f64::from(hours) * 3600.0);
+            if actions.just_pressed(GameAction::DevErosionMap) {
+                dev.erosion_map.cycle();
+            }
+            if actions.just_pressed(GameAction::DevErosionReset) {
+                dev.erosion_generation = dev.erosion_generation.wrapping_add(1);
+                runtime.reset_sediment_diagnostics(dev.erosion_generation);
+            }
             if actions.just_pressed(GameAction::DevErosion) {
                 dev.cycle_erosion();
             }
