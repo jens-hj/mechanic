@@ -484,7 +484,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             if worlds_model.with(|model| model.open) {
                 WorldList handles:(worlds_panel.clone())
             }
-            if dev_model.with(|model| model.enabled) {
+            if dev_model.with(|model| model.enabled)
+                && !worlds_model.with(|model| model.open) {
                 DevOverlay model:(dev_model) viewport:(dev_viewport)
             }
             if performance_model.with(performance::Model::is_open)

@@ -119,6 +119,31 @@ mod tests {
     use mosaic_core::Vector2;
 
     #[test]
+    fn dev_status_is_hidden_in_world_selection_and_returns_in_world() {
+        let overlay = Overlay::mount();
+        let mut dev = DevTools::default();
+        dev.enabled = true;
+        overlay
+            .handles
+            .dev_tools
+            .set(capture(&dev, &Controls::default()));
+        for world_selection_open in [true, false, true, false] {
+            overlay
+                .handles
+                .worlds
+                .update(|model| model.open = world_selection_open);
+            overlay.settle();
+            assert_eq!(
+                overlay
+                    .labels()
+                    .iter()
+                    .any(|label| label.contains("DEV TOOLS")),
+                !world_selection_open,
+            );
+        }
+    }
+
+    #[test]
     fn dev_status_uses_rebound_labels_and_is_pointer_transparent_without_help() {
         let overlay = Overlay::mount();
         let hidden = overlay.element_count();
