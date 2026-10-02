@@ -239,7 +239,10 @@ what the water carries and what waits to be laid
 and what waits on each bed. Stored water carries its murk to the water
 shader, which turns water thick with silt brown and hides the ground under
 it; lakes and rivers run clear. `ErosionConfig::speed` hurries erosion for
-tests and benchmarks.
+tests and benchmarks, and the dev tools' `F10` steps it through 1×, 10×, 100×
+and 1000× in play. It scales only how fast running water wears its bed: the
+water still runs and settles at its own pace and carries at most its capacity,
+so faster erosion leaves murkier water and quicker cuts, never made material.
 
 ## Drops
 

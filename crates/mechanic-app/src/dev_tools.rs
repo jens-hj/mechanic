@@ -8,6 +8,9 @@ use crate::camera::{MainCamera, PlayerCamera, PlayerState};
 use crate::controls::GameAction;
 use crate::world::{AppSpace, WorldListState, WorldRuntime};
 
+/// Fastest erosion the dev tools run, over the game's own rate.
+const FASTEST_EROSION: f64 = 1000.0;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum DevMode {
     #[default]
@@ -31,6 +34,8 @@ pub(crate) struct DevTools {
     pub(crate) enabled: bool,
     pub(crate) mode: DevMode,
     pub(crate) speed: f32,
+    /// Erosion's rate over the game's own.
+    pub(crate) erosion: f64,
     pub(crate) cycle_paused: bool,
     pub(crate) notice: &'static str,
     return_pose: Option<ReturnPose>,
@@ -48,6 +53,7 @@ impl Default for DevTools {
             enabled: false,
             mode: DevMode::Normal,
             speed: 1.0,
+            erosion: 1.0,
             cycle_paused: false,
             notice: "",
             return_pose: None,
@@ -79,6 +85,11 @@ impl DevTools {
 
     pub(crate) fn multiplier(&self) -> f32 {
         if self.enabled { self.speed } else { 1.0 }
+    }
+
+    /// How much faster than in play erosion runs: only while dev tools are on.
+    pub(crate) fn erosion_speed(&self) -> f64 {
+        if self.enabled { self.erosion } else { 1.0 }
     }
 
     pub(crate) fn focus(&self, player: &PlayerState) -> Option<Vec3> {
@@ -124,6 +135,15 @@ impl DevTools {
         } else if decrease != increase {
             self.speed = (self.speed * if increase { 2.0 } else { 0.5 }).clamp(0.125, 32.0);
         }
+    }
+
+    /// Steps erosion through 1×, 10×, 100× and 1000×, then back to 1×.
+    fn cycle_erosion(&mut self) {
+        self.erosion = if self.erosion >= FASTEST_EROSION {
+            1.0
+        } else {
+            self.erosion * 10.0
+        };
     }
 
     /// Restore the player before saving or replacing a space. Spectator never moves it.
@@ -260,6 +280,9 @@ pub(crate) fn input(
             let hours = i32::from(actions.just_pressed(GameAction::DevTimeLater))
                 - i32::from(actions.just_pressed(GameAction::DevTimeEarlier));
             runtime.advance_day(f64::from(hours) * 3600.0);
+            if actions.just_pressed(GameAction::DevErosion) {
+                dev.cycle_erosion();
+            }
         }
         dev.adjust_speed(
             actions.just_pressed(GameAction::DevSpeedDecrease),

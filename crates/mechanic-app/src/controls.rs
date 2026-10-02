@@ -22,6 +22,7 @@ pub(crate) enum GameAction {
     DevTimeEarlier,
     DevTimeLater,
     DevTimePause,
+    DevErosion,
 
     MoveForward,
     MoveBackward,
@@ -113,10 +114,11 @@ impl GameAction {
                 | Self::DevTimeEarlier
                 | Self::DevTimeLater
                 | Self::DevTimePause
+                | Self::DevErosion
         )
     }
 
-    pub(crate) const ALL: [Self; 82] = [
+    pub(crate) const ALL: [Self; 83] = [
         Self::DevNoclip,
         Self::DevSpectator,
         Self::DevSpeedDecrease,
@@ -125,6 +127,7 @@ impl GameAction {
         Self::DevTimeEarlier,
         Self::DevTimeLater,
         Self::DevTimePause,
+        Self::DevErosion,
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -259,6 +262,7 @@ impl GameAction {
             Self::DevTimeEarlier => "Dev Time Earlier",
             Self::DevTimeLater => "Dev Time Later",
             Self::DevTimePause => "Dev Day Cycle Pause",
+            Self::DevErosion => "Dev Erosion Speed",
             Self::MoveForward => "Move Forward",
             Self::MoveBackward => "Move Backward",
             Self::MoveLeft => "Move Left",
@@ -348,7 +352,8 @@ impl GameAction {
             | Self::DevSpeedReset
             | Self::DevTimeEarlier
             | Self::DevTimeLater
-            | Self::DevTimePause => "Dev Tools",
+            | Self::DevTimePause
+            | Self::DevErosion => "Dev Tools",
             Self::MoveForward
             | Self::MoveBackward
             | Self::MoveLeft
@@ -764,6 +769,7 @@ impl Default for Controls {
             None,
         );
         set(A::DevTimePause, Some(InputChord::key(K::F8)), None);
+        set(A::DevErosion, Some(InputChord::key(K::F10)), None);
         set(A::MoveForward, Some(InputChord::key(K::KeyW)), None);
         set(A::MoveBackward, Some(InputChord::key(K::KeyS)), None);
         set(A::MoveLeft, Some(InputChord::key(K::KeyA)), None);

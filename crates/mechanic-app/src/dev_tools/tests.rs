@@ -335,3 +335,16 @@ fn time_controls_obey_developer_focus_menu_and_space_gates() {
         assert_eq!(app.world().resource::<DevTools>().cycle_paused, gate == 4);
     }
 }
+
+#[test]
+#[expect(clippy::float_cmp, reason = "exact powers of ten")]
+fn erosion_cycles_up_to_a_thousandfold_and_runs_fast_only_with_dev_tools() {
+    let mut app = input_app();
+    for expected in [10.0, 100.0, 1000.0, 1.0, 10.0] {
+        press(&mut app, &[GameAction::DevErosion]);
+        app.update();
+        assert_eq!(app.world().resource::<DevTools>().erosion_speed(), expected);
+    }
+    app.world_mut().resource_mut::<DevTools>().enabled = false;
+    assert_eq!(app.world().resource::<DevTools>().erosion_speed(), 1.0);
+}

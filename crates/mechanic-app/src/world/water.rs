@@ -8,9 +8,10 @@ use bevy::prelude::*;
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, SedimentApplied, SedimentChange, SurfaceTile, TerrainBrick, TerrainEditOutcome,
-    TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterCell, WaterLedger, WaterShift,
-    WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldCell, WorldStore,
+    BrickCoord, ErosionConfig, SedimentApplied, SedimentChange, SurfaceTile, TerrainBrick,
+    TerrainEditOutcome, TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterCell,
+    WaterLedger, WaterShift, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround,
+    WorldCell, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -230,6 +231,7 @@ pub(super) fn step_water(
     mut runtime: ResMut<WorldRuntime>,
     list: Res<WorldListState>,
     time: Res<Time>,
+    dev: Option<Res<crate::dev_tools::DevTools>>,
 ) {
     if list.phase() != WorldListPhase::Playing || !water_enabled() {
         return;
@@ -268,11 +270,15 @@ pub(super) fn step_water(
     let bricks = std::mem::take(&mut runtime.water.pending);
     let cells = std::mem::take(&mut runtime.water.sediment_cells);
     let drawn = runtime.water.drawn.clone();
+    let erosion = ErosionConfig {
+        speed: dev.as_ref().map_or(1.0, |dev| dev.erosion_speed()),
+    };
     runtime.water.task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let ground = TerrainWater {
             field: &field,
             edits: &edits,
         };
+        world.set_erosion(erosion);
         world.terrain_changed(&ground, bricks);
         world.ground_cells_changed(&ground, &cells);
         let mut done = Vec::with_capacity(steps as usize);

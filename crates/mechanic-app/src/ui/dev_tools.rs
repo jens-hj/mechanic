@@ -18,6 +18,7 @@ pub(crate) struct Model {
     title: String,
     modes: String,
     speed: String,
+    erosion: String,
     notice: String,
     time: String,
 }
@@ -45,6 +46,11 @@ fn capture(dev: &DevTools, controls: &Controls) -> Model {
             controls.label(GameAction::DevSpeedDecrease),
             controls.label(GameAction::DevSpeedIncrease),
             controls.label(GameAction::DevSpeedReset)
+        ),
+        erosion: format!(
+            "Erosion {}× · {} cycle",
+            dev.erosion,
+            controls.label(GameAction::DevErosion)
         ),
         notice: dev.notice.to_owned(),
         time: String::new(),
@@ -97,6 +103,7 @@ pub(crate) fn DevOverlay(model: State<Model>, viewport: State<Size>) -> Element 
                 text #mechanic.caption { model.get().modes }
                 text #mechanic.caption { model.get().speed }
                 text #mechanic.caption { model.get().time }
+                text #mechanic.caption { model.get().erosion }
                 if model.with(|model| !model.notice.is_empty()) {
                     text #mechanic.caption { model.get().notice }
                 }
