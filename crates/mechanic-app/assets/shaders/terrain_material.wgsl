@@ -24,9 +24,9 @@ struct Surface {
 @group(#{MATERIAL_BIND_GROUP}) @binding(3) var tint_masks: texture_2d_array<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(4) var terrain_sampler: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(5) var<storage, read> surfaces: array<Surface>;
-// How wet the ground is around the camera: fill, then the height of the
-// ground it was measured at over `wet_window.w`. Mirrors
-// `TerrainRenderMaterial::wetness` in world/terrain_render.rs.
+// How wet the ground is around the camera: fill, the height of the ground
+// it was measured at over `wet_window.w`, and how far its grass has wilted.
+// Mirrors `TerrainRenderMaterial::wetness` in world/terrain_render.rs.
 @group(#{MATERIAL_BIND_GROUP}) @binding(6) var wetness_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(7) var wetness_sampler: sampler;
 // Lower x and z corner and edge of the wetness map, and its base height.
@@ -153,6 +153,12 @@ const BOUNDARY_NOISE_STRENGTH: f32 = 0.3;
 const BOUNDARY_BLEND_DEPTH: f32 = 0.1;
 const SLOTS: u32 = 8u;
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+// The grass texture's layer: `TextureSet::Grass.layer()`.
+const GRASS_LAYER: i32 = 0;
+
+// Hue of dead grass, straw, as a multiple of its luminance.
+const STRAW: vec3<f32> = vec3<f32>(1.3, 1.0, 0.45);
 
 fn hash_corner(corner: vec3<f32>) -> f32 {
     // The odd multipliers are the collision kernel's cell hash, mixing three
@@ -405,6 +411,17 @@ fn fragment(
         }
     }
 
+    // The wetness map where the fragment lies on it, near the ground it was
+    // measured at: a cave under a wet field stays dry.
+    let wet_uv = (varyings.world_position.xz - wet_window.xy) / max(wet_window.z, 1.0e-3);
+    var wet = vec4<f32>(0.0);
+    var near = 0.0;
+    if all(wet_uv > vec2<f32>(0.0)) && all(wet_uv < vec2<f32>(1.0)) {
+        wet = sample_wetness(wet_uv);
+        near = 1.0 - smoothstep(0.15, 0.4, abs(varyings.world_position.y - (wet.g + wet_window.w)));
+    }
+    let wilt = clamp(wet.b, 0.0, 1.0) * near;
+
     var base_color = vec4<f32>(0.0);
     var surface = vec3<f32>(0.0);
     var mapped_normal = vec3<f32>(0.0);
@@ -416,7 +433,7 @@ fn fragment(
             continue;
         }
         let look = surfaces[slot_surface(varyings.slots, slot)];
-        let sampled = shade_surface(
+        var sampled = shade_surface(
             sample_layer(
                 i32(look.params.x),
                 look.params.y > 0.5 && any(look.tint.rgb != vec3<f32>(1.0)),
@@ -426,18 +443,19 @@ fn fragment(
             ),
             look,
         );
+        if i32(look.params.x) == GRASS_LAYER && wilt > 0.0 {
+            // Wilting grass yellows to straw, keeping its light and shade.
+            let straw = dot(sampled.color.rgb, LUMA) * STRAW;
+            sampled.color = vec4<f32>(mix(sampled.color.rgb, straw, wilt), sampled.color.a);
+        }
         base_color += sampled.color * weight;
         surface += sampled.surface * weight;
         mapped_normal += sampled.normal * weight;
     }
     // Wet ground is darker and glossier, where water has soaked in or runs
-    // over it, but only near the ground it was measured at: a cave under a
-    // wet field stays dry.
+    // over it.
     var roughness = surface.g;
-    let wet_uv = (varyings.world_position.xz - wet_window.xy) / max(wet_window.z, 1.0e-3);
-    if all(wet_uv > vec2<f32>(0.0)) && all(wet_uv < vec2<f32>(1.0)) {
-        let wet = sample_wetness(wet_uv);
-        let near = 1.0 - smoothstep(0.15, 0.4, abs(varyings.world_position.y - (wet.g + wet_window.w)));
+    if near > 0.0 {
         // Noise moves the fringe in and out, most where it is half wet.
         let shown = clamp(wet.r, 0.0, 1.0);
         let point = coordinates * (TEXTURE_REPEAT_METRES / WET_EDGE_FEATURE_METRES);

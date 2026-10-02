@@ -582,3 +582,168 @@ fn streaks_hold_their_grain_far_from_the_origin() {
         "a bending current should draw the same streaks anywhere: {far:.4} against {near:.4}"
     );
 }
+
+/// The middle pixel of a grey grass cube under a wetness map whose grass has
+/// wilted by `wilt`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep offscreen setup and the grass's look in one fixture"
+)]
+fn grass_pixel(wilt: f32) -> Vec<u8> {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                file_path: format!("{}/assets", env!("CARGO_MANIFEST_DIR")),
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<PipelinedRenderingPlugin>(),
+    )
+    .add_plugins(MaterialPlugin::<TerrainRenderMaterial>::default())
+    .init_resource::<Pixels>();
+    app.finish();
+    app.cleanup();
+    let mut target = Image::new_target_texture(64, 64, TextureFormat::Rgba8UnormSrgb, None);
+    target.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    let target = app.world_mut().resource_mut::<Assets<Image>>().add(target);
+    app.world_mut()
+        .spawn(Readback::texture(target.clone()))
+        .observe(|event: On<ReadbackComplete>, mut pixels: ResMut<Pixels>| {
+            pixels.0.clone_from(&event.data);
+        });
+    app.world_mut().spawn((
+        Camera3d::default(),
+        bevy::core_pipeline::tonemapping::Tonemapping::SomewhatBoringDisplayTransform,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::BLACK),
+            ..default()
+        },
+        RenderTarget::Image(target.into()),
+        Transform::from_xyz(0.0, 0.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    let mut layer = |pixel: [u8; 4]| {
+        let mut image = Image::new_fill(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 7,
+            },
+            TextureDimension::D2,
+            &pixel,
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        );
+        image.texture_view_descriptor =
+            Some(bevy::render::render_resource::TextureViewDescriptor {
+                dimension: Some(bevy::render::render_resource::TextureViewDimension::D2Array),
+                ..default()
+            });
+        app.world_mut().resource_mut::<Assets<Image>>().add(image)
+    };
+    let (base_color, normal, orm, tint_mask) = (
+        layer([128, 128, 128, 255]),
+        layer([128, 128, 255, 255]),
+        layer([255, 200, 0, 255]),
+        layer([255, 255, 255, 255]),
+    );
+    let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(1))
+        .palette()
+        .clone();
+    let surfaces = app
+        .world_mut()
+        .resource_mut::<Assets<bevy::render::storage::ShaderBuffer>>()
+        .add(crate::world::terrain_render::terrain_surface_buffer(
+            &palette,
+            &[0.5; mechanic_world::TextureSet::ALL.len()],
+        ));
+    // One texel over the whole cube: dry ground at the cube's middle height,
+    // its grass wilted by `wilt`.
+    let wetness = app.world_mut().resource_mut::<Assets<Image>>().add(
+        crate::world::water_render::wetness_image(1, vec![0.0, 0.0, wilt]),
+    );
+    let erosion_map = crate::world::erosion_overlay::empty_map(
+        &mut app.world_mut().resource_mut::<Assets<Image>>(),
+    );
+    let material = TerrainRenderMaterial {
+        base_color,
+        normal,
+        orm,
+        tint_mask,
+        surfaces,
+        wetness,
+        wet_window: Vec4::new(-10.0, -10.0, 20.0, 0.0),
+        erosion_map,
+        erosion_window: Vec4::ZERO,
+    };
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<TerrainRenderMaterial>>()
+        .add(material);
+    let mut mesh = Mesh::from(Cuboid::default());
+    let count = mesh.count_vertices();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.0, 0.0]; count]);
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(vec![[255, 0, 0, 0]; count]),
+    );
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_WEIGHTS_HIGH,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(vec![[0; 4]; count]),
+    );
+    // Slot 0 is plain grass, surface 0.
+    let grass = mechanic_world::SurfaceId::plain(mechanic_world::TerrainMaterial::SurfaceCover);
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_SLOTS,
+        bevy::mesh::VertexAttributeValues::Uint32x4(vec![
+            [
+                u32::from(grass.0),
+                u32::MAX,
+                u32::MAX,
+                u32::MAX
+            ];
+            count
+        ]),
+    );
+    let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+    app.world_mut()
+        .spawn((Mesh3d(mesh), MeshMaterial3d(material)));
+    app.world_mut().spawn((
+        DirectionalLight {
+            illuminance: 18_000.0,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 1.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    for _ in 0..60 {
+        render_frame(&mut app);
+    }
+    let center = (32 * 64 + 32) * 4;
+    app.world().resource::<Pixels>().0[center..center + 4].to_vec()
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn wilting_grass_draws_straw() {
+    let green = grass_pixel(0.0);
+    let wilted = grass_pixel(1.0);
+    eprintln!("Grass {green:?}, wilted {wilted:?}");
+    assert!(
+        green[1] > 8,
+        "the terrain is still the magenta error material"
+    );
+    let warmth = |pixel: &[u8]| i32::from(pixel[0]) - i32::from(pixel[2]);
+    assert!(
+        warmth(&wilted) > warmth(&green) + 20,
+        "wilted grass should read straw: {wilted:?} against {green:?}"
+    );
+}

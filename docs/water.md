@@ -248,6 +248,39 @@ tests and benchmarks, and the dev tools' `F10` steps it through 1×, 10×, 100×
 and 1000× in play. It scales only how fast running water wears its bed: the
 water still runs and settles at its own pace and carries at most its capacity,
 so faster erosion leaves murkier water and quicker cuts, never made material.
+Grass keeps pace with it (below).
+
+## Grass
+
+Grass drowns under standing water, wears under a current and is smothered by
+silt, and grows back where the world grows grass once the water leaves
+(`water/grass.rs`). It changes at the world's own pace, as erosion does, from
+real turf: grass under 5 cm of water or more dies in about two weeks, and
+under a film, or in waterlogged ground, four times slower. A current dragging
+at it wears it through in `50 h · (60 Pa / τ)²` (Hewlett et al., CIRIA 116):
+a flood half a metre deep at 3 m/s in about ten hours, a sheet over a meadow
+in months. Each 5 cm of silt laid on it costs half its life. Harmed grass
+recovers in two weeks once the water leaves, grass buried alive grows up
+through silt in a week, and bare ground where the seed grows grass grows it
+again in six. `ErosionConfig::speed`, and so the dev tools' `F10`, hurries
+grass as it hurries erosion: at 1000× grass drowns in about twenty minutes.
+
+Each column of grass water has harmed keeps how alive it is, beside the water
+and saved with it (`StoredWaterDoc::grass`); grass water never harmed keeps
+nothing. Weakened turf holds against a current from 80 Pa down to soil's 1 Pa
+as it dies, so turf a flood has weakened is then cut like soil: the grass
+dies first and the gully follows. Grass with no life left asks the ground, in
+the same ask as sediment, to turn its top into what the seed laid under its
+grass, the biome's loam where it laid any: its cells are relabelled and move
+no material. Grass is a skin of roots, so the grass cells under a top that
+dies or is torn away turn with it, 25 cm down; a cut into a meadow shows soil,
+not more grass. Grass grows back where the seed's own surface, within 30 cm
+of the ground's top, is grass, as that grass.
+
+Wilting shows before death: the wetness map's third channel carries how far
+each column's grass has wilted, and the terrain shader turns its grass toward
+straw, keeping its light and shade. The map covers 51 m around the camera;
+grass that died shows as soil at any distance.
 
 ### Developer erosion heatmap
 
@@ -607,6 +640,9 @@ surface crosses sample the field's density.
   with the world. A violent flood promotes every brick it wears or silts.
 - Lakes and rivers neither erode nor carry sediment; what reaches them settles
   at their edge.
+- Grass changes only where stored water has reached: nothing harms or grows
+  grass under a lake or river, and ground the player bares stays bare.
+- Grass that grows back turns a whole 20 cm column at once.
 - Foam is drawn where water churns, not carried: a fall's foam does not trail
   downstream, and only the drifting flecks hint at it.
 - Currents change from one water batch to the next, and a tile's current is

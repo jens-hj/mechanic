@@ -702,11 +702,15 @@ const WET_TEXELS: u32 = 256;
 /// map moves with it, in metres.
 const WET_RECENTRE_METRES: f64 = 10.0;
 
-/// A wetness map: texels of fill, then ground height, `edge` along a side.
+/// Values each wetness texel holds: fill, ground height, wilt.
+const WET_CHANNELS: usize = 3;
+
+/// A wetness map: texels of fill, ground height and wilt, `edge` along a
+/// side.
 pub(crate) fn wetness_image(edge: u32, texels: Vec<f32>) -> Image {
     let data = texels
-        .chunks(2)
-        .flat_map(|texel| [texel[0], texel[1], 0.0, 1.0])
+        .chunks(WET_CHANNELS)
+        .flat_map(|texel| [texel[0], texel[1], texel[2], 1.0])
         .flat_map(|value| half_bits(value).to_le_bytes())
         .collect::<Vec<_>>();
     let mut image = Image::new(
@@ -742,13 +746,14 @@ fn half_bits(value: f32) -> u16 {
 }
 
 /// The wetness map's texels, `edge` along a side from the column `first`:
-/// how wet each column shows, then the height of its ground over `base`.
+/// how wet each column shows, the height of its ground over `base`, and
+/// how far its grass has wilted.
 ///
 /// Dry texels within two of wet ground take the mean height of the wet or
 /// filled texels beside them, so the shader's filter fades the wetness out
 /// over the ground beside it rather than against a height metres off.
 fn wet_texels(wet: &[WetGround], first: (i32, i32), base: f64, edge: usize) -> Vec<f32> {
-    let mut texels = vec![0.0_f32; edge * edge * 2];
+    let mut texels = vec![0.0_f32; edge * edge * WET_CHANNELS];
     let mut known = vec![false; edge * edge];
     let mut front = Vec::new();
     for wet in wet {
@@ -763,8 +768,9 @@ fn wet_texels(wet: &[WetGround], first: (i32, i32), base: f64, edge: usize) -> V
         // A few millimetres soaked in already darken the ground.
         #[expect(clippy::cast_possible_truncation, reason = "shader data is f32")]
         {
-            texels[texel * 2] = (1.0 - (-wet.soaked / 0.003).exp()) as f32;
-            texels[texel * 2 + 1] = (wet.top - base) as f32;
+            texels[texel * WET_CHANNELS] = (1.0 - (-wet.soaked / 0.003).exp()) as f32;
+            texels[texel * WET_CHANNELS + 1] = (wet.top - base) as f32;
+            texels[texel * WET_CHANNELS + 2] = wet.wilt as f32;
         }
         if !known[texel] {
             known[texel] = true;
@@ -786,13 +792,13 @@ fn wet_texels(wet: &[WetGround], first: (i32, i32), base: f64, edge: usize) -> V
                     if sums[beside].1 == 0.0 {
                         ring.push(beside);
                     }
-                    sums[beside].0 += texels[texel * 2 + 1];
+                    sums[beside].0 += texels[texel * WET_CHANNELS + 1];
                     sums[beside].1 += 1.0;
                 }
             }
         }
         for &texel in &ring {
-            texels[texel * 2 + 1] = sums[texel].0 / sums[texel].1;
+            texels[texel * WET_CHANNELS + 1] = sums[texel].0 / sums[texel].1;
             known[texel] = true;
         }
         front = ring;
@@ -917,8 +923,8 @@ mod tests {
     use mechanic_world::WetGround;
 
     use super::{
-        FINEST_LEVEL, NOISE_CELLS, TileKey, WATER_REACH_METRES, gradient_noise, half_bits,
-        wanted_tiles, wet_texels,
+        FINEST_LEVEL, NOISE_CELLS, TileKey, WATER_REACH_METRES, WET_CHANNELS, gradient_noise,
+        half_bits, wanted_tiles, wet_texels,
     };
 
     fn wet(column: (i32, i32), top: f64, soaked: f64) -> WetGround {
@@ -927,13 +933,30 @@ mod tests {
             top,
             fill: 1.0,
             soaked,
+            wilt: 0.0,
         }
+    }
+
+    #[test]
+    fn wilting_grass_rides_in_the_wetness_maps_third_channel() {
+        let wilting = WetGround {
+            wilt: 0.75,
+            ..wet((12, 7), 8.5, 0.0)
+        };
+        let texels = wet_texels(&[wilting], (10, 5), 10.0, 8);
+        let texel = (2 + 2 * 8) * WET_CHANNELS;
+        assert!((texels[texel + 2] - 0.75).abs() < f32::EPSILON);
+        // The terrain shader knows grass by its texture layer.
+        assert_eq!(mechanic_world::TextureSet::Grass.layer(), 0);
     }
 
     #[test]
     fn dry_texels_beside_wet_ground_carry_its_height() {
         let texels = wet_texels(&[wet((12, 7), 8.5, f64::INFINITY)], (10, 5), 10.0, 8);
-        let at = |x: usize, z: usize| (texels[(x + z * 8) * 2], texels[(x + z * 8) * 2 + 1]);
+        let at = |x: usize, z: usize| {
+            let texel = (x + z * 8) * WET_CHANNELS;
+            (texels[texel], texels[texel + 1])
+        };
         assert_eq!(at(2, 2), (1.0, -1.5));
         // Two rings around the wet column fade out over its ground, dry.
         for (x, z) in [(1, 1), (3, 2), (2, 4), (0, 0), (4, 4)] {

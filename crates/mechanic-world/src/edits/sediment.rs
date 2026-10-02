@@ -6,12 +6,17 @@
 //! one above it once that is as full as laid ground gets. So the bed lowers
 //! and rises smoothly rather than a cell at a time, and the quanta taken and
 //! laid are exactly those the ground lost and gained.
+//!
+//! Grass dying or growing back changes what the ground's top is made of and
+//! moves no material: its cells are relabelled. Grass is a skin of roots:
+//! when the top grass cell of a column dies or is torn away, the grass under
+//! it within reach of its roots turns to soil with it.
 
 use std::collections::BTreeMap;
 
 use super::{EMPTY_DENSITY, SLIDING_LOOSENESS, TerrainBrick, TerrainNodeId, TerrainOctree};
 use crate::{
-    BreakageResponse, BrickCoord, CELL_QUANTA, TERRAIN_CELL_METERS, TerrainEditOutcome,
+    BreakageResponse, BrickCoord, CELL_QUANTA, SurfaceId, TERRAIN_CELL_METERS, TerrainEditOutcome,
     TerrainField, TerrainMaterial, TerrainSample, WorldCell,
 };
 
@@ -35,6 +40,10 @@ const STEP_QUANTA: u32 = 32;
 /// Cells above and below the given height searched for a column's top.
 const SEARCH_CELLS: i32 = 6;
 
+/// Cells under a column's top that grass roots reach, and so die with it:
+/// about 25 cm.
+const ROOT_CELLS: i32 = 5;
+
 /// Sediment to take from or lay on the ground's top across a square of
 /// terrain-cell columns.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,10 +57,17 @@ pub struct SedimentChange {
     /// Height near which the ground's top lies, in metres: the top within
     /// 30 cm of it is the one changed, not a cave's floor below.
     pub height: f64,
-    /// Quanta to lay, or to take where negative.
+    /// Quanta to lay, or to take where negative. None moves no material and
+    /// relabels the top instead, as [`Self::look`] says.
     pub quanta: i64,
     /// Material to lay; what is taken is whatever soft ground is there.
+    /// Grass a take lays bare, and a column relabelled, become this.
     pub material: TerrainMaterial,
+    /// How grass a take lays bare looks once it turns to [`Self::material`],
+    /// its plain look where none. With no quanta, the look the top of each
+    /// column takes with the material: grass dies to its soil, or grows
+    /// back over it.
+    pub look: Option<SurfaceId>,
 }
 
 impl SedimentChange {
@@ -83,6 +99,10 @@ pub struct SedimentApplied {
     pub taken: [u64; TerrainMaterial::COUNT],
     /// Quanta laid.
     pub laid: u64,
+    /// Cells relabelled.
+    pub relabelled: u64,
+    /// Whether a cell of grass was taken whole, tearing its turf away.
+    pub stripped: bool,
 }
 
 impl SedimentApplied {
@@ -179,10 +199,10 @@ impl TerrainOctree {
                 .collect(),
         };
         for change in changes {
-            let done = if change.quanta < 0 {
-                take(&mut working, change, &mut outcome)
-            } else {
-                lay(&mut working, change, &mut outcome)
+            let done = match change.quanta {
+                0 => relabel(&mut working, change),
+                ..0 => take(&mut working, change, &mut outcome),
+                _ => lay(&mut working, change, &mut outcome),
             };
             applied.push(done);
         }
@@ -284,6 +304,15 @@ fn take(
             outcome.removed_cells[code] += 1;
             done.taken[code] += u64::from(held);
             owed = owed.saturating_sub(u64::from(held));
+            if sample.material == TerrainMaterial::SurfaceCover {
+                // Torn turf takes its roots with it: what lies under it is
+                // soil.
+                done.stripped = true;
+                let look = change
+                    .look
+                    .unwrap_or_else(|| SurfaceId::plain(change.material));
+                done.relabelled += kill_roots(working, cell, change.material, look);
+            }
             let below = WorldCell::new(cell.x, cell.y - 1, cell.z);
             tops[index] = working
                 .sample(below)
@@ -294,6 +323,58 @@ fn take(
     outcome.sediment_cells.extend(changed);
     outcome.quanta_given_up += done.total_taken();
     done
+}
+
+/// Relabels the top of each column of a change's square, and the grass its
+/// roots reach under it unless it turns to grass itself.
+fn relabel(working: &mut Working<'_>, change: &SedimentChange) -> SedimentApplied {
+    let mut done = SedimentApplied::default();
+    let Some(look) = change.look else {
+        return done;
+    };
+    let material = change.material;
+    for top in tops(working, change).into_iter().flatten() {
+        let cell = top.cell;
+        if !cell.is_editable() || !BreakageResponse::for_material(top.sample.material).soft {
+            continue;
+        }
+        if working
+            .brick(cell)
+            .relabel(cell.local_in_brick(), material, look)
+        {
+            done.relabelled += 1;
+        }
+        if material != TerrainMaterial::SurfaceCover {
+            done.relabelled += kill_roots(working, cell, material, look);
+        }
+    }
+    done
+}
+
+/// Turns the grass under `cell`, as far as roots reach, into `material`
+/// with `look`. Returns the cells it turned.
+fn kill_roots(
+    working: &mut Working<'_>,
+    cell: WorldCell,
+    material: TerrainMaterial,
+    look: SurfaceId,
+) -> u64 {
+    let mut turned = 0;
+    for depth in 1..=ROOT_CELLS {
+        let below = WorldCell::new(cell.x, cell.y - depth, cell.z);
+        let sample = working.sample(below);
+        if !sample.is_solid() || sample.material != TerrainMaterial::SurfaceCover {
+            break;
+        }
+        if below.is_editable()
+            && working
+                .brick(below)
+                .relabel(below.local_in_brick(), material, look)
+        {
+            turned += 1;
+        }
+    }
+    turned
 }
 
 fn lay(
@@ -387,12 +468,22 @@ mod tests {
     /// Flat ground of one material high in the sky, whose top cells are at
     /// y 32016, its surface at 1600.85 m.
     fn flat(material: TerrainMaterial) -> (TerrainField, TerrainOctree) {
+        layered(material, 0, material)
+    }
+
+    /// Flat ground as [`flat`] makes it: `cells` of `top` over `under`.
+    fn layered(
+        top: TerrainMaterial,
+        cells: i32,
+        under: TerrainMaterial,
+    ) -> (TerrainField, TerrainOctree) {
         let field = TerrainField::new(WorldSeed(8));
         let coordinate = BrickCoord::new(0, 1000, 0);
         let mut brick = TerrainBrick::promote(&field, coordinate);
         for z in 0..32 {
             for y in 0..32 {
                 for x in 0..32 {
+                    let material = if y > 16 - cells { top } else { under };
                     brick.cells[local_index(IVec3::new(x, y, z)).unwrap()] = TerrainSample {
                         density: if y <= 16 {
                             -EMPTY_DENSITY
@@ -422,6 +513,7 @@ mod tests {
             height: 1600.85,
             quanta,
             material,
+            look: None,
         }
     }
 
@@ -528,5 +620,81 @@ mod tests {
         let (_, applied) = terrain.exchange_sediment(&field, &[far], Vec::new());
         assert_eq!(applied[0].total_taken(), 0);
         assert_eq!(held(&terrain, &field).0, before);
+    }
+
+    /// The material of each cell of the column at (9, 9) from its top down,
+    /// `cells` deep.
+    fn column(terrain: &TerrainOctree, field: &TerrainField, cells: i32) -> Vec<TerrainMaterial> {
+        (0..cells)
+            .map(|depth| {
+                terrain
+                    .sample_cell(field, WorldCell::new(9, 32016 - depth, 9))
+                    .material
+            })
+            .collect()
+    }
+
+    #[test]
+    fn relabelling_grass_keeps_every_quantum_and_reaches_its_roots() {
+        use TerrainMaterial::{Soil, SurfaceCover};
+        // Grass 35 cm deep, deeper than its roots reach.
+        let (field, mut terrain) = layered(SurfaceCover, 7, Soil);
+        let (before, _) = held(&terrain, &field);
+        let loam = SurfaceId(40);
+        let dies = SedimentChange {
+            quanta: 0,
+            look: Some(loam),
+            ..change(0, Soil)
+        };
+        let (outcome, applied) = terrain.exchange_sediment(&field, &[dies], Vec::new());
+        // The top and the five cells its roots reach, in each of 16 columns.
+        assert_eq!(applied[0].relabelled, 16 * 6);
+        assert_eq!(applied[0].total_taken() + applied[0].laid, 0);
+        assert!(outcome.changed_bricks > 0, "the ground is drawn again");
+        assert_eq!(
+            column(&terrain, &field, 8),
+            [Soil, Soil, Soil, Soil, Soil, Soil, SurfaceCover, Soil]
+        );
+        let top = terrain.sample_cell(&field, WorldCell::new(9, 32016, 9));
+        assert_eq!(top.surface, loam);
+        assert_eq!(held(&terrain, &field).0, before, "material made or lost");
+        // Grass growing back covers the top alone.
+        let grows = SedimentChange {
+            quanta: 0,
+            look: Some(SurfaceId::plain(SurfaceCover)),
+            ..change(0, SurfaceCover)
+        };
+        let (_, applied) = terrain.exchange_sediment(&field, &[grows], Vec::new());
+        assert_eq!(applied[0].relabelled, 16);
+        assert_eq!(column(&terrain, &field, 3), [SurfaceCover, Soil, Soil]);
+        assert_eq!(held(&terrain, &field).0, before, "material made or lost");
+    }
+
+    #[test]
+    fn turf_torn_away_exposes_soil_not_more_grass() {
+        use TerrainMaterial::{Soil, SurfaceCover};
+        let (field, mut terrain) = layered(SurfaceCover, 4, Soil);
+        let (before, _) = held(&terrain, &field);
+        let mut taken = 0;
+        let mut stripped = false;
+        // Until the top layer of turf is gone.
+        for _ in 0..1_000 {
+            let (_, applied) = terrain.exchange_sediment(&field, &[change(-40, Soil)], Vec::new());
+            taken += applied[0].total_taken();
+            stripped |= applied[0].stripped;
+            if !terrain
+                .sample_cell(&field, WorldCell::new(9, 32016, 9))
+                .is_solid()
+            {
+                break;
+            }
+        }
+        assert!(stripped, "the turf was torn away");
+        assert_eq!(column(&terrain, &field, 4)[1..], [Soil, Soil, Soil]);
+        assert_eq!(
+            held(&terrain, &field).0 + taken,
+            before,
+            "material made or lost"
+        );
     }
 }

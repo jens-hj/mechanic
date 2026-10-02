@@ -15,8 +15,9 @@ use super::cycle::WaterNetwork;
 use super::{WATER_CELL_METRES, WaterCell};
 use crate::generation::Lattice;
 use crate::{
-    BRICK_EDGE_CELLS, BrickCoord, LakeBasin, RiverReach, TerrainDensityClass, TerrainField,
-    TerrainMaterial, TerrainSource, WaterSurface,
+    BRICK_EDGE_CELLS, BreakageResponse, BrickCoord, LakeBasin, RiverReach, SurfaceId,
+    TERRAIN_CELL_METERS, TerrainDensityClass, TerrainField, TerrainMaterial, TerrainSource,
+    WaterSurface, WorldPosition,
 };
 
 /// Terrain cells along one edge of a water cell.
@@ -60,6 +61,42 @@ fn local_offset(index: usize) -> IVec3 {
 /// Open terrain cells in each of a water cell's four layers, bottom first.
 pub(super) type Openings = [u8; 4];
 
+/// How far above and below the ground's top the seed's own surface is
+/// looked for, in metres: grass grows back over ground cut or built up no
+/// further than this from where the seed laid it.
+const NATIVE_REACH_METRES: f64 = 0.3;
+
+/// Depth under the seed's surface at which what lies under its grass is
+/// found, in metres.
+const UNDER_GRASS_METRES: f64 = 0.3;
+
+/// What grows on a column by nature, as the seed made the ground.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeGrass {
+    /// The look of the grass the seed grows on the column, if it grows any.
+    pub grass: Option<SurfaceId>,
+    /// What lies under its grass, and dead grass turns to: soft ground's
+    /// material and look.
+    pub under: (TerrainMaterial, SurfaceId),
+}
+
+impl NativeGrass {
+    /// Plain soil under plain grass, or under none.
+    pub const fn plain(grows: bool) -> Self {
+        Self {
+            grass: if grows {
+                Some(SurfaceId::plain(TerrainMaterial::SurfaceCover))
+            } else {
+                None
+            },
+            under: (
+                TerrainMaterial::Soil,
+                SurfaceId::plain(TerrainMaterial::Soil),
+            ),
+        }
+    }
+}
+
 /// The ground water sits in.
 pub trait WaterGround: WaterNetwork {
     /// Whether each terrain cell of one water cell is open, x fastest, then
@@ -97,6 +134,14 @@ pub trait WaterGround: WaterNetwork {
     /// finest terrain mesh met going down from `from`, if any within `reach`
     /// metres.
     fn ground_top(&self, x: f64, z: f64, from: f64, reach: f64) -> Option<f64>;
+
+    /// What grows by nature on a column whose ground's top is at `top`: plain
+    /// grass where its top is grass, over plain soil.
+    fn native_grass(&self, x: f64, z: f64, top: f64) -> NativeGrass {
+        NativeGrass::plain(
+            self.material(DVec3::new(x, top - 0.02, z)) == Some(TerrainMaterial::SurfaceCover),
+        )
+    }
 }
 
 /// Terrain, untouched and edited, as the ground water sits in.
@@ -261,6 +306,40 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
             .edits
             .sample_position(self.field, crate::WorldPosition(point));
         sample.is_solid().then_some(sample.material)
+    }
+
+    /// The seed's own surface near the top, and what it grows: the first
+    /// ground met going down from a little above the top, if the seed's
+    /// ground there is open above it.
+    fn native_grass(&self, x: f64, z: f64, top: f64) -> NativeGrass {
+        let sample = |y: f64| {
+            self.field
+                .sample_position(WorldPosition(DVec3::new(x, y, z)))
+        };
+        let mut y = top + NATIVE_REACH_METRES;
+        let mut above = sample(y);
+        let mut surface = None;
+        while !above.is_solid() && y > top - NATIVE_REACH_METRES {
+            y -= TERRAIN_CELL_METERS;
+            let below = sample(y);
+            if below.is_solid() {
+                surface = Some((y, below));
+            }
+            above = below;
+        }
+        let mut native = NativeGrass::plain(false);
+        let Some((height, ground)) = surface else {
+            return native;
+        };
+        native.grass = (ground.material == TerrainMaterial::SurfaceCover).then_some(ground.surface);
+        let under = sample(height - UNDER_GRASS_METRES);
+        if under.is_solid()
+            && under.material != TerrainMaterial::SurfaceCover
+            && BreakageResponse::for_material(under.material).soft
+        {
+            native.under = (under.material, under.surface);
+        }
+        native
     }
 }
 

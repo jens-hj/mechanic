@@ -131,6 +131,8 @@ pub struct WetGround {
     /// Water it holds, and running water standing on it, as a depth over
     /// the column, in metres: a film too thin to see adds next to nothing.
     pub soaked: f64,
+    /// How far its grass has wilted, from 0 for green to 1 for dead.
+    pub wilt: f64,
 }
 
 impl Soil {
@@ -186,7 +188,7 @@ impl WaterWorld {
     }
 
     /// Every column of wet ground, to draw: ground water has soaked into,
-    /// and ground running water stands on.
+    /// ground running water stands on, and grass water has wilted.
     ///
     /// Running water counts by its depth, and its column keeps the height
     /// its ground was measured at: the film at the front of running water
@@ -204,6 +206,7 @@ impl WaterWorld {
                         top: soil.top,
                         fill: soil.fill(),
                         soaked: soil.moisture / CELL_AREA_M2,
+                        wilt: 0.0,
                     },
                 )
             })
@@ -220,6 +223,19 @@ impl WaterWorld {
                         .map_or(sheet.floor(), |soil| soil.top),
                     fill: self.soil_fill(cell.x, cell.z),
                     soaked: depth,
+                    wilt: 0.0,
+                });
+        }
+        // Wilting grass shows whether or not the ground is wet now.
+        for (column, top, wilt) in self.wilting() {
+            wet.entry(column)
+                .and_modify(|wet| wet.wilt = wilt)
+                .or_insert(WetGround {
+                    column,
+                    top,
+                    fill: self.soil_fill(column.0, column.1),
+                    soaked: 0.0,
+                    wilt,
                 });
         }
         wet.into_values().collect()

@@ -15,6 +15,7 @@
 
 mod cells;
 mod cycle;
+mod grass;
 mod grid;
 mod ground;
 mod pool;
@@ -33,9 +34,10 @@ use serde::{Deserialize, Serialize};
 use cells::CellMap;
 use cycle::Cycle;
 pub use cycle::{SurplusDoc, WaterLedger, WaterNetwork, WaterShift};
+pub use grass::GrassDoc;
 use grid::SheetGrid;
 use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
-pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
+pub use ground::{NativeGrass, TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
 pub use sediment::{
     BedDoc, ErosionConfig, SedimentDiagnosticColumn, SedimentDiagnostics, SedimentDoc,
@@ -352,6 +354,8 @@ pub struct StoredWaterDoc {
     pub soil: Vec<SoilDoc>,
     /// Sediment waiting to be laid, and what erosion has moved.
     pub sediment: SedimentDoc,
+    /// Grass water has harmed.
+    pub grass: Vec<GrassDoc>,
 }
 
 /// A cell that filled from seed-derived water and joined it, in a saved
@@ -532,6 +536,10 @@ pub struct WaterWorld {
     shown: BTreeMap<WaterBody, WaterShift>,
     /// Sediment beside the water.
     sediment: Sediment,
+    /// Grass water has harmed, by column.
+    grass: grass::GrassMap,
+    /// The set of grass columns that grows next.
+    grass_set: u32,
     /// Power of the falls landing on each column, in watts, to draw.
     splashes: CellMap<(i32, i32), f64>,
     /// Energy landed on each column so far this step, in joules.
@@ -586,6 +594,7 @@ impl WaterWorld {
         }
         water.load_soil(&doc.soil);
         water.load_sediment(&doc.sediment);
+        water.load_grass(&doc.grass);
         let ids = water.pools.keys().copied().collect::<Vec<_>>();
         for id in ids {
             // A saved pool fills out to its level again at once.
@@ -629,6 +638,7 @@ impl WaterWorld {
             sheets: self.sheet_docs(),
             soil: self.soil_docs(),
             sediment: self.sediment_doc(),
+            grass: self.grass_docs(),
         }
     }
 
@@ -1146,6 +1156,7 @@ impl WaterWorld {
         moved_m3 += running;
         fed.extend(sheet_fed);
         self.wear_and_settle(ground, dt);
+        self.grow_grass(ground, dt);
         self.settle_splashes(dt);
         phases.sheets_ms = clock.lap();
         // Water that arrived floods at once, so no pool stands higher than

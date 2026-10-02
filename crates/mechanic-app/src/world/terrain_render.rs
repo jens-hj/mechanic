@@ -82,7 +82,7 @@ pub(crate) struct TerrainRenderMaterial {
 
 /// A wetness map of dry ground, for terrain drawn before water has run.
 pub(crate) fn dry_ground(images: &mut Assets<Image>) -> Handle<Image> {
-    images.add(super::water_render::wetness_image(1, vec![0.0; 2]))
+    images.add(super::water_render::wetness_image(1, vec![0.0; 3]))
 }
 
 /// One palette surface as the terrain shader reads it.

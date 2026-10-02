@@ -51,7 +51,7 @@ fn capture(dev: &DevTools, controls: &Controls) -> Model {
             controls.label(GameAction::DevSpeedReset)
         ),
         erosion: format!(
-            "Erosion {}× · {} cycle",
+            "Ground {}× · erosion and grass · {} cycle",
             dev.erosion,
             controls.label(GameAction::DevErosion)
         ),

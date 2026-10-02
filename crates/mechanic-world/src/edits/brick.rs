@@ -159,6 +159,26 @@ impl TerrainBrick {
         true
     }
 
+    /// Gives a solid cell another material and look, keeping its shape and
+    /// what it holds. Returns whether the cell changed.
+    pub(super) fn relabel(
+        &mut self,
+        local: IVec3,
+        material: TerrainMaterial,
+        surface: SurfaceId,
+    ) -> bool {
+        let Some(index) = local_index(local) else {
+            return false;
+        };
+        let sample = &mut self.cells[index];
+        if !sample.is_solid() || (sample.material == material && sample.surface == surface) {
+            return false;
+        }
+        sample.material = material;
+        sample.surface = surface;
+        true
+    }
+
     /// Changes how much a solid cell holds and where its surface lies,
     /// keeping it solid. Returns whether the cell was solid.
     pub(super) fn reshape(&mut self, local: IVec3, looseness: u8, density: f32) -> bool {
