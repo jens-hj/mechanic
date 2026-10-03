@@ -69,8 +69,8 @@ class StorageTests(unittest.TestCase):
         self.children.append(child)
         return child
 
-    def wait_for(self, predicate):
-        deadline = time.monotonic() + 8
+    def wait_for(self, predicate, timeout=8):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if predicate():
                 return
@@ -331,17 +331,25 @@ class StorageTests(unittest.TestCase):
             (source / 'Cargo.toml').write_text(
                 '[package]\nname="collision-smoke"\nversion="0.1.0"\nedition="2021"\n[workspace]\n')
             (source / 'src/lib.rs').write_text(
-                'pub fn value() -> &' + "'static str { \"first\" }" if name == 'first'
-                else 'pub fn value() -> usize { 2 }')
+                ('pub fn value() -> &' + "'static str { \"first\" }" if name == 'first'
+                 else 'pub fn value() -> usize { 2 }') +
+                '\npub struct LocalCollider { pub ' + name + ': usize }')
             (source / 'src/main.rs').write_text(
                 'fn main() { let value: ' + ('&str' if name == 'first' else 'usize') +
                 '=collision_smoke::value(); assert_eq!(value, ' +
                 ('"first"' if name == 'first' else '2') + '); println!("' + name + '"); }')
             (source / 'src/bin').mkdir()
+            (source / 'tests').mkdir()
+            (source / 'tests/api.rs').write_text(
+                '#[test] fn checkout_api() { let collider = collision_smoke::LocalCollider { ' +
+                name + ': 42 }; assert_eq!(collider.' + name + ', 42); }')
             (source / 'src/bin/xtask.rs').write_text(
-                'fn main() { assert!(std::process::Command::new("cargo")'
-                '.args(["build", "--quiet", "--offline", "--bin", "collision-smoke"])'
-                '.status().unwrap().success()); }')
+                'fn main() { for args in ['
+                'vec!["check", "--all-targets", "--quiet", "--offline"],'
+                'vec!["test", "--test", "api", "--quiet", "--offline"],'
+                'vec!["build", "--quiet", "--offline", "--bin", "collision-smoke"]] {'
+                'assert!(std::process::Command::new("cargo").args(args)'
+                '.stdout(std::process::Stdio::inherit()).status().unwrap().success()); }}')
             (source / '.cargo').mkdir()
             (source / '.cargo/config.toml').write_text(
                 '[alias]\nxtask="run --quiet --offline --bin xtask --"\n')
@@ -351,14 +359,15 @@ class StorageTests(unittest.TestCase):
         entered = self.root.parent / 'second-entered'
         pipeline = (
             'import os,subprocess,time; from pathlib import Path; '
-            f'subprocess.run([{sys.executable!r}, {str(LAUNCHER)!r}, "cargo", "xtask"], check=True); '
+            f'import sys; subprocess.run([{sys.executable!r}, {str(LAUNCHER)!r}, "cargo", "xtask"], '
+            'check=True, stdout=sys.stderr); '
             'binary=Path(os.environ["CARGO_TARGET_DIR"])/"debug"/'
             '("collision-smoke.exe" if os.name == "nt" else "collision-smoke"); ')
         first = self.start(pipeline +
                            f'Path({str(built)!r}).touch(); '
                            f'\nwhile not Path({str(release)!r}).exists(): time.sleep(.03)'
                            '\nsubprocess.run([str(binary)], check=True)', cwd=checkouts[0])
-        self.wait_for(built.exists)
+        self.wait_for(built.exists, timeout=60)
         second = self.start(f'from pathlib import Path; Path({str(entered)!r}).touch(); ' +
                             pipeline + 'subprocess.run([str(binary)], check=True)',
                             cwd=checkouts[1])

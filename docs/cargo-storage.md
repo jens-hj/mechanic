@@ -217,6 +217,16 @@ case skipped); removing only reassignment invalidation reproduces
 `AssertionError: 'first' != 'second'` on pinned Cargo 1.97.1. Cross-platform
 verification of this revision is pending; adoption remains suspended.
 
+Mechanic-5 separately reported a shared-target `cargo check -p mechanic-physics
+--all-targets` success followed by two `cargo test -p mechanic-physics treads`
+failures resolving `mechanic_core::CompiledTreads` and `LocalCollider.treads`.
+Verbose test output referenced `libmechanic_core-ea127a26adde3ca3.rlib`; a local
+target resolved the symptom. Another checkout overwriting that rlib is the
+worker's hypothesis: interleaving and hash causality were not observed. The tiny
+isolation regression now exercises nested xtask running check-all-targets, an
+integration test requiring checkout-specific struct fields, then build/direct
+execution across concurrently submitted and alternating A/B/A pipelines.
+
 ### Local validation, 2026-10-03
 
 macOS arm64, Rust/Cargo 1.97.1, Python 3.14.3:
