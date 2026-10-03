@@ -507,6 +507,7 @@ fn write_voxels(out: &Path, species: &SpeciesSpec, tree: &TreeModel) -> Result<(
     let depth_span = (tree.max.z - tree.min.z).max(cell);
     for (panel, stride) in [(0_usize, 1_usize), (1, 4)] {
         let step = cell * stride as f64;
+        let lattice_stride = i32::try_from(stride)?;
         for row in (0..rows).step_by(stride) {
             for column in (0..columns).step_by(stride) {
                 let x = (column as f64).mul_add(cell, tree.min.x);
@@ -514,7 +515,8 @@ fn write_voxels(out: &Path, species: &SpeciesSpec, tree: &TreeModel) -> Result<(
                 let mut z = tree.max.z;
                 let mut found = None;
                 while z >= tree.min.z {
-                    if let Some((density, part)) = tree.sample(DVec3::new(x, y, z))
+                    if let Some((density, part)) =
+                        tree.sample_at_stride(DVec3::new(x, y, z), lattice_stride)
                         && density > 0.0
                     {
                         found = Some((part, (z - tree.min.z) / depth_span));

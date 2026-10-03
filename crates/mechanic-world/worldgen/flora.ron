@@ -4,7 +4,7 @@ Flora(species: [
     // Narrow cone of horizontal whorls down to the ground, needles everywhere.
     Species(
         name: "spruce",
-        height: (18, 30), width: 0.35, girth: 0.022, stems: (1, 1), crown_base: 0.04,
+        height: (18, 30), width: 0.35, girth: 0.028, stems: (1, 1), crown_base: 0.04,
         dominance: 1.0, split_chance: 0.85, split_count: (4, 6), split_angle: 85,
         tropism: -0.15, wobble: 0.08,
         foliage: (look: "spruce_needles", size: 0.35, density: 0.9),
@@ -24,7 +24,7 @@ Flora(species: [
     // Slender pale stems, a light crown, drooping tips.
     Species(
         name: "birch",
-        height: (12, 22), width: 0.45, girth: 0.02, stems: (1, 3), crown_base: 0.35,
+        height: (12, 22), width: 0.45, girth: 0.028, stems: (1, 3), crown_base: 0.35,
         dominance: 0.7, split_chance: 0.6, split_count: (2, 3), split_angle: 40,
         tropism: -0.35, wobble: 0.25,
         foliage: (look: "birch_leaves", size: 0.55, density: 0.55),
@@ -54,7 +54,7 @@ Flora(species: [
     // Tall narrow column, every branch reaching for the sun.
     Species(
         name: "poplar",
-        height: (18, 28), width: 0.2, girth: 0.03, stems: (1, 1), crown_base: 0.1,
+        height: (18, 28), width: 0.2, girth: 0.036, stems: (1, 1), crown_base: 0.1,
         dominance: 0.85, split_chance: 0.6, split_count: (2, 3), split_angle: 25,
         tropism: 0.9, wobble: 0.1,
         foliage: (look: "birch_leaves", size: 0.5, density: 0.75),

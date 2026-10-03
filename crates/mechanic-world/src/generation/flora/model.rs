@@ -2,14 +2,31 @@
 
 use bevy_math::DVec3;
 
-use super::FOLIAGE_NOISE_SCALE;
+use super::forest::MAX_GROWN_STRIDE;
 use super::noise::foliage_noise;
+use super::{FOLIAGE_DENT_SLACK, FOLIAGE_FILL_BIAS, FOLIAGE_NOISE_SLOPE};
+use crate::TERRAIN_CELL_METERS;
 
 /// Distance beyond a primitive's surface over which its density stays exact;
 /// farther points report nothing. It spans a whole lattice edge at the
 /// coarsest stride that samples grown trees, so every crossing's open
 /// corner knows the tree it meets.
 pub(crate) const SAMPLE_MARGIN: f64 = 0.3;
+
+/// Thinnest wood a lattice holds in one piece, as a fraction of its spacing.
+/// No point on a branch's axis lies farther than half a cube diagonal, 0.87
+/// spacings, from a lattice corner, so a branch at least this thick puts a
+/// solid corner beside every point of its axis; and as the point moves on,
+/// its nearest corner steps to a neighbour along a cube edge, so those solid
+/// corners join edge to edge, and the surface meshed over them is one piece.
+const RESOLVED_RADIUS: f64 = 0.9;
+
+/// Thinnest wood, in metres, that a lattice of `stride` cells holds in one
+/// piece. Thinner branches are sampled this thick, so they never break up
+/// into floating shards.
+pub(crate) fn wood_floor(stride: i32) -> f64 {
+    f64::from(stride) * TERRAIN_CELL_METERS * RESOLVED_RADIUS
+}
 
 /// Edge of the buckets that index primitives for point queries.
 const BUCKET_METRES: f64 = 1.0;
@@ -104,12 +121,15 @@ pub struct TreeModel {
     pub foliage: Vec<FoliageBlob>,
     /// Fraction of foliage blobs that is filled.
     pub foliage_density: f64,
-    /// Lowest corner of every primitive's bounds.
+    /// Lowest corner of every primitive's bounds, wood as thick as the
+    /// coarsest lattice that samples grown trees draws it.
     pub min: DVec3,
-    /// Highest corner of every primitive's bounds.
+    /// Highest corner of every primitive's bounds, likewise.
     pub max: DVec3,
     /// Bounds of the wood and leaves alone: what the tree adds to the ground.
     solid: (DVec3, DVec3),
+    /// Radius of the largest foliage blob: how deep holes can cut.
+    foliage_depth: f64,
     noise_seed: u64,
     buckets: Buckets,
 }
@@ -134,9 +154,17 @@ impl TreeModel {
         segments.truncate(limit);
         foliage.truncate(limit - segments.len());
         let bounds = |a: DVec3, b: DVec3, radius: f64| (a.min(b) - radius, a.max(b) + radius);
+        // Wood as thick as the coarsest lattice that samples it draws it.
+        let thickest = wood_floor(MAX_GROWN_STRIDE);
         let primitives = segments
             .iter()
-            .map(|segment| bounds(segment.a, segment.b, segment.ra.max(segment.rb)))
+            .map(|segment| {
+                bounds(
+                    segment.a,
+                    segment.b,
+                    segment.ra.max(segment.rb).max(thickest),
+                )
+            })
             .chain(
                 foliage
                     .iter()
@@ -165,6 +193,9 @@ impl TreeModel {
                 },
             );
         let buckets = Buckets::new(min - SAMPLE_MARGIN, max + SAMPLE_MARGIN, &primitives);
+        let foliage_depth = foliage
+            .iter()
+            .fold(0.0, |deepest: f64, blob| deepest.max(blob.radius));
         Self {
             origin,
             height,
@@ -177,6 +208,7 @@ impl TreeModel {
             min,
             max,
             solid,
+            foliage_depth,
             noise_seed,
             buckets,
         }
@@ -198,20 +230,34 @@ impl TreeModel {
             + self.buckets.items.capacity() * size_of::<u16>()
     }
 
-    /// Signed density at a point, positive inside, with the part that
-    /// dominates there. `None` farther than about 0.3 m from every primitive.
+    /// Signed density at a point as the finest terrain lattice holds it,
+    /// positive inside, with the part that dominates there. `None` farther
+    /// than about 0.3 m from every primitive.
     pub fn sample(&self, point: DVec3) -> Option<(f32, Part)> {
-        self.sample_parts(point, Parts::All)
+        self.sample_at_stride(point, 1)
     }
 
-    /// [`Self::sample`] over only some of the tree's parts.
-    pub(crate) fn sample_parts(&self, point: DVec3, parts: Parts) -> Option<(f32, Part)> {
+    /// [`Self::sample`] as a lattice of `stride` cells holds the tree: wood
+    /// thinner than that lattice can draw in one piece is thickened to it.
+    pub fn sample_at_stride(&self, point: DVec3, stride: i32) -> Option<(f32, Part)> {
+        self.sample_parts(point, Parts::All, wood_floor(stride))
+    }
+
+    /// [`Self::sample`] over only some of the tree's parts, with wood at
+    /// least `floor` metres thick.
+    pub(crate) fn sample_parts(
+        &self,
+        point: DVec3,
+        parts: Parts,
+        floor: f64,
+    ) -> Option<(f32, Part)> {
         let items = self.buckets.items_at(point)?;
         // Only true densities within the exact range count: a floor here
         // would lift the ground's own density wherever a bucket overlaps it.
         let mut best = f64::NEG_INFINITY;
         let mut part = None;
-        let mut noise = None;
+        // Deepest point inside any foliage blob: the leaves before holes.
+        let mut shell = f64::NEG_INFINITY;
         let segment_count = self.segments.len();
         for &item in items {
             let item = item as usize;
@@ -220,26 +266,34 @@ impl TreeModel {
                 if segment.part == Part::Root && parts != Parts::All {
                     continue;
                 }
-                let density = capsule_density(point, segment.a, segment.b, segment.ra, segment.rb);
+                let density = capsule_density(
+                    point,
+                    segment.a,
+                    segment.b,
+                    segment.ra.max(floor),
+                    segment.rb.max(floor),
+                );
                 if density > best {
                     best = density;
                     part = Some(segment.part);
                 }
             } else if parts != Parts::Wood {
                 let blob = &self.foliage[item - segment_count];
-                let shell = capsule_density(point, blob.a, blob.b, blob.radius, blob.radius);
-                if shell <= best {
-                    continue;
-                }
-                let holes = *noise.get_or_insert_with(|| {
-                    FOLIAGE_NOISE_SCALE
-                        * (self.foliage_density - foliage_noise(self.noise_seed, point))
-                });
-                let density = shell.min(holes);
-                if density > best {
-                    best = density;
-                    part = Some(Part::Foliage);
-                }
+                shell = shell.max(capsule_density(
+                    point,
+                    blob.a,
+                    blob.b,
+                    blob.radius,
+                    blob.radius,
+                ));
+            }
+        }
+        // Holes only ever take leaves away.
+        if shell > best {
+            let leaves = shell - self.foliage_dent(point);
+            if leaves > best {
+                best = leaves;
+                part = Some(Part::Foliage);
             }
         }
         #[expect(
@@ -248,6 +302,22 @@ impl TreeModel {
         )]
         part.filter(|_| best > -SAMPLE_MARGIN)
             .map(|part| (best as f32, part))
+    }
+
+    /// How deep holes cut into the foliage at a point: nothing where the
+    /// noise falls well below the fill target, the whole depth of the leaves
+    /// where it rises well above it. The noise's wavelength scales with that
+    /// depth so the dent never changes faster than distance does; walking
+    /// from any leaf toward its twig, the foliage only grows denser, so no
+    /// clump floats free of its twig.
+    fn foliage_dent(&self, point: DVec3) -> f64 {
+        let wavelength = FOLIAGE_DENT_SLACK * FOLIAGE_NOISE_SLOPE * self.foliage_depth;
+        let noise = foliage_noise(self.noise_seed, point / wavelength);
+        // Most of a blob's volume lies near its surface, where the shallowest
+        // dents already reach, so the target is biased up to keep about
+        // `foliage_density` of the foliage.
+        let fill = (0.5 + FOLIAGE_FILL_BIAS + self.foliage_density - noise).clamp(0.0, 1.0);
+        (1.0 - fill) * self.foliage_depth
     }
 }
 

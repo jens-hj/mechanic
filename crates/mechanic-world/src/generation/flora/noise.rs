@@ -7,15 +7,14 @@ use bevy_math::DVec3;
 
 use super::super::scatter::mix;
 use super::super::tape::smoothstep;
-use super::FOLIAGE_NOISE_SCALE;
 
 /// Quantiles of the raw lattice noise, measured once.
 const QUANTILES: usize = 256;
 
-/// Lattice noise at `point`, remapped through its own distribution so the
-/// result is close to uniform on `[0, 1]`.
+/// Lattice noise of unit wavelength at `point`, remapped through its own
+/// distribution so the result is close to uniform on `[0, 1]`.
 pub(super) fn foliage_noise(seed: u64, point: DVec3) -> f64 {
-    let raw = lattice_noise(seed, point / FOLIAGE_NOISE_SCALE);
+    let raw = lattice_noise(seed, point);
     let table = quantiles();
     let above = table.partition_point(|&quantile| quantile < raw);
     if above == 0 {
@@ -100,4 +99,33 @@ fn lattice_value(seed: u64, x: i64, y: i64, z: i64) -> f64 {
 )]
 fn unit(bits: u64) -> f64 {
     (bits >> 11) as f64 / (1_u64 << 53) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_math::DVec3;
+
+    use super::super::FOLIAGE_NOISE_SLOPE;
+    use super::foliage_noise;
+
+    #[test]
+    fn noise_is_never_steeper_than_its_bound() {
+        let step = 1.0e-4;
+        let mut steepest: f64 = 0.0;
+        for index in 0..100_000_u32 {
+            let i = f64::from(index);
+            let point =
+                DVec3::new((i * 0.618_034).fract(), (i * 0.754_878).fract(), i * 1.0e-3) * 7.0;
+            let along = |axis: DVec3| {
+                (foliage_noise(9, point + axis * step) - foliage_noise(9, point - axis * step))
+                    / (2.0 * step)
+            };
+            steepest = steepest
+                .max(DVec3::new(along(DVec3::X), along(DVec3::Y), along(DVec3::Z)).length());
+        }
+        assert!(
+            steepest < FOLIAGE_NOISE_SLOPE,
+            "noise slope {steepest:.2} beyond {FOLIAGE_NOISE_SLOPE}"
+        );
+    }
 }

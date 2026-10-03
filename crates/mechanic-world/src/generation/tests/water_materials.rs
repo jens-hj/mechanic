@@ -217,7 +217,7 @@ fn sealed_cave_materials_stay_dry_under_established_water() {
                     density,
                     gradient,
                     carved,
-                    TreeSource::Lookup(TreeDetail::Grown),
+                    TreeSource::Lookup(TreeDetail::FINEST),
                 );
                 let mut dry_column = column;
                 dry_column.water.surface = None;
@@ -227,7 +227,7 @@ fn sealed_cave_materials_stay_dry_under_established_water() {
                     density,
                     gradient,
                     carved,
-                    TreeSource::Lookup(TreeDetail::Grown),
+                    TreeSource::Lookup(TreeDetail::FINEST),
                 );
                 assert_eq!(
                     (wet.material, wet.surface),

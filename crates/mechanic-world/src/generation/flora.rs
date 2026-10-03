@@ -18,12 +18,13 @@ mod species;
 mod sweep;
 
 pub(crate) use self::forest::{
-    Forest, ForestLayer, ForestSpecies, TREE_DENSITY_CEILING, Tree, TreeHit, TreeInstance,
+    Forest, ForestLayer, ForestSpecies, MAX_GROWN_STRIDE, TREE_DENSITY_CEILING, Tree, TreeHit,
+    TreeInstance,
 };
 pub use self::grow::grow_tree;
 pub use self::metrics::TreeMetrics;
-pub(crate) use self::model::Parts;
 pub use self::model::{Axis, FoliageBlob, Part, Segment, TreeModel};
+pub(crate) use self::model::{Parts, wood_floor};
 pub use self::species::{FoliageSpec, RootsSpec, SpeciesSpec};
 pub use self::sweep::GenomeSweep;
 
@@ -53,9 +54,18 @@ const WOBBLE_RATE: f64 = 0.35;
 /// Main roots leaving the base.
 const ROOT_COUNT: u32 = 5;
 
-/// Wavelength of the holes that thin foliage, in metres: leaf clumps rather
-/// than a sponge, whose surface would cost far more triangles.
-const FOLIAGE_NOISE_SCALE: f64 = 0.4;
+/// Steepest the foliage noise gets, per unit of its wavelength. A test
+/// holds the noise to it.
+const FOLIAGE_NOISE_SLOPE: f64 = 3.5;
+
+/// How much gentler than distance itself holes in foliage change, so no leaf
+/// clump is ever cut off from its twig: the wavelength of the holes is this
+/// times the slope times their depth.
+const FOLIAGE_DENT_SLACK: f64 = 1.25;
+
+/// Extra fill aimed for, so the leaves left after holes fill about the
+/// genome's foliage density of their blobs. Measured over the presets.
+const FOLIAGE_FILL_BIAS: f64 = 0.2;
 
 /// Root flare: how much wider the trunk is at the ground, and over what height.
 const FLARE_WIDENING: f64 = 1.4;

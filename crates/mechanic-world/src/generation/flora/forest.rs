@@ -41,6 +41,10 @@ const LOCAL_INSTANCE_SLOTS: usize = 16_384;
 /// Extra reach beyond what the genome allows, for wobble and leaning stems.
 const REACH_SLACK: f64 = 2.0;
 
+/// Coarsest lattice stride, in cells, that samples grown trees. Coarser
+/// levels of detail draw impostors: twigs are finer than their samples.
+pub(crate) const MAX_GROWN_STRIDE: i32 = 4;
+
 /// Densest a tree gets: no trunk or leaf ball is wider than this.
 pub(crate) const TREE_DENSITY_CEILING: f64 = 4.0;
 
@@ -475,11 +479,13 @@ impl Forest {
         });
     }
 
-    /// The grown tree whose `parts` dominate a point, if any reaches it.
+    /// The grown tree whose `parts` dominate a point, if any reaches it, with
+    /// wood at least `floor` metres thick.
     pub(crate) fn sample(
         &self,
         point: DVec3,
         parts: Parts,
+        floor: f64,
         place: Placement<'_>,
     ) -> Option<TreeHit> {
         if self.is_empty() {
@@ -501,7 +507,7 @@ impl Forest {
             let Some(tree) = self.tree(layer, cell_x, cell_z, place) else {
                 return;
             };
-            if let Some((density, part)) = tree.model.sample_parts(point, parts) {
+            if let Some((density, part)) = tree.model.sample_parts(point, parts, floor) {
                 let density = f64::from(density);
                 if best.is_none_or(|hit| density > hit.density) {
                     best = Some(TreeHit {
@@ -515,11 +521,15 @@ impl Forest {
         best
     }
 
-    /// Bounds of an impostor: its crown and trunk.
-    pub(crate) fn impostor_bounds(&self, instance: &TreeInstance) -> (DVec3, DVec3) {
+    /// Bounds of an impostor whose trunk is at least `floor` metres thick:
+    /// its crown and trunk.
+    pub(crate) fn impostor_bounds(&self, instance: &TreeInstance, floor: f64) -> (DVec3, DVec3) {
         let spec = &self.species[instance.species].spec;
         let height = instance.height;
-        let widest = (spec.width * height * 0.5 * IMPOSTOR_CROWN).max(0.5) + 0.5;
+        let widest = (spec.width * height * 0.5 * IMPOSTOR_CROWN)
+            .max(0.5)
+            .max(floor)
+            + 0.5;
         let side = DVec3::new(widest, 0.0, widest);
         (
             instance.origin - side - DVec3::Y * 0.5,
@@ -528,8 +538,9 @@ impl Forest {
     }
 
     /// An impostor's density at a point, for terrain too coarse to show
-    /// twigs: a trunk under a solid crown of the species' own envelope.
-    pub(crate) fn impostor(&self, instance: &TreeInstance, point: DVec3) -> TreeHit {
+    /// twigs: a trunk at least `floor` metres thick under a solid crown of
+    /// the species' own envelope.
+    pub(crate) fn impostor(&self, instance: &TreeInstance, point: DVec3, floor: f64) -> TreeHit {
         let spec = &self.species[instance.species].spec;
         let height = instance.height;
         let crown_from = spec.crown_base * height;
@@ -541,7 +552,7 @@ impl Forest {
         let crown = (crown_shape(t, spec.dominance) * widest - across)
             .min(rise - crown_from)
             .min(height - rise);
-        let trunk_radius = (spec.girth * height * 0.5).max(0.1);
+        let trunk_radius = (spec.girth * height * 0.5).max(floor);
         let trunk = (trunk_radius - across)
             .min(rise + 0.5)
             .min(crown_from + 0.5 * crown_height - rise);

@@ -80,9 +80,13 @@ The sweeps are defined once, in `GenomeSweep::ALL`, and the gallery draws them.
 6. **Foliage.**
    - Every non-stem axis carries a capsule sleeve of radius `size` beyond its
      last split, and a ball 1.3× wider at its tip.
-   - The sleeve is cut by smooth noise on a 40 cm scale. The noise is remapped
-     through its own distribution, so `density` is the filled fraction
-     (`foliage_density_sets_filled_fraction`).
+   - Holes dent the blobs' union from outside: smooth noise sets how deep,
+     from nothing to the full blob radius. The noise is remapped through its
+     own distribution, and its target is biased so that `density` is the
+     filled fraction (`foliage_density_sets_filled_fraction`).
+   - The noise's wavelength is 1.25 × its steepest slope × the dent depth, so
+     a dent never changes faster than distance. Walking from any leaf toward
+     its twig, the foliage only gets denser: no leaf clump floats free.
 7. **Roots.** Five main roots, plus a taproot when `depth > spread·R/2`, grow by
    the same process with fixed branching numbers.
 
@@ -91,9 +95,19 @@ cell can no longer split. `MAX_ORDER = 6` and a 20,000-segment budget are
 safety stops that no preset reaches.
 
 A `TreeModel` holds tapered capsules for wood and roots and capsules for
-foliage, indexed by 0.5 m buckets. `TreeModel::sample` returns a signed
+foliage, indexed by 1 m buckets. `TreeModel::sample` returns a signed
 density, exact to 0.3 m outside every primitive, together with the part that
 dominates: wood, root, or foliage.
+
+Every lattice draws wood at least 0.9 lattice spacings thick
+(`sample_at_stride`): 4.5 cm at the finest level, 18 cm at the 20 cm stride.
+No point on a branch's axis lies farther than half a cube diagonal (0.87
+spacings) from a lattice corner, so every point of the axis has a solid
+corner beside it, and those corners join edge to edge. Thinner wood broke
+into floating shards: 933 pieces on one spruce at the finest level.
+`every_branch_holds_together_at_every_grown_stride` and
+`no_wood_or_crown_floats_at_coarse_levels_of_detail` hold both the model and
+the meshed field to this.
 
 ## Gallery
 
@@ -210,8 +224,8 @@ both.
 
 ### Known limits
 
-- Twigs finer than a lattice's stride vanish, so trees thin out with
-  distance until impostors take over beyond the 20 cm stride.
+- Twigs are drawn as thick as the lattice can hold them, so distant trees
+  look stouter: twigs are 36 cm across at the 20 cm stride.
 - Bark and leaf looks recolour the wood and grass textures; there are no
   dedicated bark or leaf maps.
 - There is no growth, felling, or tree-specific harvesting: trees are part of
@@ -237,12 +251,14 @@ both.
 - **No genome field was pruned.** All fifteen pass monotonicity and
   distinctness, `wobble` and `crown_base` included.
 - **Preset changes from the plan's starting values:**
-  - spruce: `dominance` 1.0
+  - spruce: `dominance` 1.0, `girth` 0.028
   - oak: `tropism` 0.12
-  - birch: `split_chance` 0.6, `split_count` (2, 3), `split_angle` 40, `tropism` −0.35, `foliage` size 0.55 and density 0.55
+  - birch: `girth` 0.028, `split_chance` 0.6, `split_count` (2, 3), `split_angle` 40, `tropism` −0.35, `foliage` size 0.55 and density 0.55
   - willow: `crown_base` 0.3, `tropism` −0.95
   - bamboo: `width` 0.3, `girth` 0.03, `dominance` 0.9, `split_chance` 0.3
-  - poplar: `dominance` 0.85
+  - poplar: `dominance` 0.85, `girth` 0.036
+  - Girth was raised on the three slenderest species after the first look in
+    the app: their trunks read as sticks at 5 cm cells.
 - **Validation errors use the existing `WorldgenError::Invalid`**, naming the
   species. A dedicated variant would add nothing.
 - **Images:** the sheet lives in `docs/flora/`, following the per-feature image
@@ -271,8 +287,21 @@ both.
   - The footing check replaced a local slope probe.
 - **Bark uses the shipped wood texture** (`TextureSet::Wood`) rather than
   recoloured stone.
-- **Foliage holes are 0.4 m across**, not 0.15 m: the finer sponge tripled a
-  woodland's triangles.
+- **Foliage holes are as wide as the leaves are deep.**
+  - First version: 0.15 m holes. The finer sponge tripled a woodland's
+    triangles.
+  - Second version: 0.4 m holes, cut anywhere in the blob. These left leaf
+    clumps floating beside the crowns.
+  - Third version: radial holes, read where each direction from a twig
+    meets its blob. These cannot float, but overlapping blobs each fill
+    independently: a density of 0.2 filled 75 %.
+  - Now one dent field, gentler than distance, cuts the blobs' union:
+    holes span 1.6 m on a spruce and 5.7 m on an oak.
+- **Wood is never thinner than its lattice can hold.** Without this floor,
+  twigs and the tops of slender trunks broke into floating shards at every
+  level. Impostor trunks were 10 cm thick on 40 cm lattices. Edits keep the
+  finest level's densities, so dug wood far away is drawn at its true
+  thickness.
 - **Grown trees end at the 20 cm stride; impostors take over.** With grown
   trees at 40 cm, Verdant Hills cost 2.5×. Most of that was culling by the
   tree-aware interval and painting by per-vertex tree lookups. Both are now

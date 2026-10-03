@@ -1,5 +1,7 @@
 //! Trees in the generated world.
 
+use std::collections::VecDeque;
+
 use bevy_math::{DVec3, IVec3};
 
 use super::super::super::interval::Interval;
@@ -125,7 +127,7 @@ fn tree_samples_agree_across_lattices_and_points() {
             lattice.coordinate(1, j),
             lattice.coordinate(2, k),
         );
-        let exact = field.density(point);
+        let exact = field.density_at_stride(point, lattice.stride);
         assert!(
             (exact - density).abs() < 1.0e-9,
             "lattice {density} and point {exact} differ at {point:?}"
@@ -208,6 +210,83 @@ fn bounds_never_claim_a_tree_box_is_empty_or_solid_wrongly() {
                     );
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn no_wood_or_crown_floats_at_coarse_levels_of_detail() {
+    let field = TerrainField::new(WorldSeed(42));
+    #[expect(clippy::cast_possible_truncation, reason = "cells near the spawn")]
+    let cell = |value: f64| (value / crate::TERRAIN_CELL_METERS).floor() as i32;
+    for tree in trees_near_spawn(&field, 60.0).iter().take(3) {
+        let base = tree.origin();
+        let reach = tree.height() * 0.7 + 2.0;
+        // Grown at stride 4; impostors beyond.
+        for stride in [4, 8, 16] {
+            let span =
+                |metres: f64| usize::try_from(cell(metres) / stride + 1).expect("positive span");
+            let lattice = Lattice {
+                origin: IVec3::new(
+                    cell(base.x - reach),
+                    cell(base.y - 1.5),
+                    cell(base.z - reach),
+                ),
+                stride,
+                dims: [
+                    span(2.0 * reach),
+                    span(tree.height() * 1.3 + 3.0),
+                    span(2.0 * reach),
+                ],
+                centred: false,
+            };
+            let [nx, ny, nz] = lattice.dims;
+            let densities = field.density_lattice(&lattice);
+            let index = |i: usize, j: usize, k: usize| i + nx * (j + ny * k);
+            // Everything joined to the ground or to the box's sides is held up;
+            // whatever is left floats.
+            let mut reached = vec![false; densities.len()];
+            let mut queue = VecDeque::new();
+            for k in 0..nz {
+                for j in 0..ny {
+                    for i in 0..nx {
+                        let edge = j == 0 || i == 0 || k == 0 || i == nx - 1 || k == nz - 1;
+                        let at = index(i, j, k);
+                        if edge && densities[at] > 0.0 {
+                            reached[at] = true;
+                            queue.push_back((i, j, k));
+                        }
+                    }
+                }
+            }
+            while let Some((i, j, k)) = queue.pop_front() {
+                let steps = [
+                    (i.wrapping_sub(1), j, k),
+                    (i + 1, j, k),
+                    (i, j.wrapping_sub(1), k),
+                    (i, j + 1, k),
+                    (i, j, k.wrapping_sub(1)),
+                    (i, j, k + 1),
+                ];
+                for (a, b, c) in steps {
+                    if a < nx && b < ny && c < nz {
+                        let at = index(a, b, c);
+                        if !reached[at] && densities[at] > 0.0 {
+                            reached[at] = true;
+                            queue.push_back((a, b, c));
+                        }
+                    }
+                }
+            }
+            let floating = densities
+                .iter()
+                .zip(&reached)
+                .filter(|(density, reached)| **density > 0.0 && !**reached)
+                .count();
+            assert_eq!(
+                floating, 0,
+                "{floating} floating samples around the tree at {base:?} at stride {stride}"
+            );
         }
     }
 }

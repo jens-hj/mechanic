@@ -1,3 +1,4 @@
+mod connected;
 mod field;
 mod genome;
 mod library;
