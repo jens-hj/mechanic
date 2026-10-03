@@ -28,9 +28,10 @@ use transition::{generate_face_cap, generate_transition_face};
 pub(crate) use water::DEEPEST_METRES;
 pub use water::{WaterSheet, WaterTile, joined_water_sheet, water_sheet};
 
-use std::{collections::HashMap, time::Instant};
+use std::time::Instant;
 
 use bevy_math::{DVec3, Vec3};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -117,7 +118,7 @@ type VertexKey = ([u32; 3], [u32; 3], u16);
 #[derive(Clone, Debug, Default, PartialEq)]
 /// Transient incremental cache used while emitting one chunk's lattice vertices.
 pub struct LatticeEdgeVertexCache {
-    vertices: HashMap<VertexKey, u32>,
+    vertices: FxHashMap<VertexKey, u32>,
 }
 
 impl TerrainMeshChunk {
@@ -520,7 +521,7 @@ pub fn mesh_chunk_profiled_prepared(
         }
     }
     let transitions_caps_ms = transition_started.elapsed().as_secs_f64() * 1_000.0;
-    // The edge cache is extraction-only. `HashMap::clear` would retain its
+    // The edge cache is extraction-only. `FxHashMap::clear` would retain its
     // potentially large allocation in every published chunk for the rest of
     // the world's lifetime.
     chunk.vertex_cache = LatticeEdgeVertexCache::default();

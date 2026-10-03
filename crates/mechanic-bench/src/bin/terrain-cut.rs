@@ -8,6 +8,7 @@
 //! to measure an authored definition.
 
 use std::error::Error;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,8 +16,9 @@ use std::time::Instant;
 
 use bevy_math::DVec3;
 use mechanic_world::{
-    ActiveTerrainNode, TerrainBoundsCache, TerrainField, TerrainMeshRequest, TerrainOctree,
-    WorldPosition, WorldSeed, WorldgenSpec, mesh_chunk_profiled, select_active_nodes_cached,
+    ActiveTerrainNode, TerrainBoundsCache, TerrainField, TerrainMeshChunk, TerrainMeshRequest,
+    TerrainOctree, WorldPosition, WorldSeed, WorldgenSpec, mesh_chunk_profiled,
+    select_active_nodes_cached,
 };
 
 /// Spacing of the search grid for biome hearts, and how far it reaches.
@@ -34,6 +36,8 @@ struct CutReport {
     selection_ms: f64,
     wall_ms: f64,
     sampling_cpu_ms: f64,
+    empty_sampling_cpu_ms: f64,
+    digest: u64,
     extraction_cpu_ms: f64,
     sampling_p95_by_level: Vec<f64>,
 }
@@ -81,7 +85,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "\"nodes\":{},\"selected_by_level\":{:?},\"triangles\":{},",
                 "\"triangles_by_level\":{:?},\"empty_jobs\":{},\"empty_by_level\":{:?},",
                 "\"selection_ms\":{:.1},\"wall_ms\":{:.1},\"workers\":{},",
-                "\"sampling_cpu_ms\":{:.1},\"extraction_cpu_ms\":{:.1},",
+                "\"sampling_cpu_ms\":{:.1},\"empty_sampling_cpu_ms\":{:.1},",
+                "\"extraction_cpu_ms\":{:.1},\"mesh_digest\":\"{:016x}\",",
                 "\"sampling_p95_ms_by_level\":{:?}}}"
             ),
             name,
@@ -97,7 +102,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             report.wall_ms,
             workers,
             report.sampling_cpu_ms,
+            report.empty_sampling_cpu_ms,
             report.extraction_cpu_ms,
+            report.digest,
             report
                 .sampling_p95_by_level
                 .iter()
@@ -143,8 +150,32 @@ fn biome_heart(field: &TerrainField, name: &str) -> Option<(f64, f64)> {
 struct Measured {
     level: usize,
     triangles: usize,
+    digest: u64,
     sampling_ms: f64,
     extraction_ms: f64,
+}
+
+/// Every published value of one chunk, so a change meant to leave meshing
+/// bit for bit unchanged can show that it did.
+fn digest(chunk: &TerrainMeshChunk) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    chunk.node.hash(&mut hasher);
+    for value in chunk
+        .vertices
+        .iter()
+        .chain(&chunk.normals)
+        .flatten()
+        .chain(chunk.material_weights.iter().flatten())
+    {
+        value.to_bits().hash(&mut hasher);
+    }
+    chunk.surfaces.hash(&mut hasher);
+    chunk.compaction.hash(&mut hasher);
+    chunk
+        .index_groups
+        .final_indices(chunk.transition_mask)
+        .hash(&mut hasher);
+    hasher.finish()
 }
 
 fn measure_cut(field: &TerrainField, focus: WorldPosition, workers: usize) -> CutReport {
@@ -189,6 +220,7 @@ fn measure_cut(field: &TerrainField, focus: WorldPosition, workers: usize) -> Cu
                     local.push(Measured {
                         level: usize::from(node.id.level),
                         triangles: chunk.index_groups.final_index_count(chunk.transition_mask) / 3,
+                        digest: digest(&chunk),
                         sampling_ms: metrics.column_sampling_ms,
                         extraction_ms: metrics.polygonization_ms
                             + metrics.transitions_caps_ms
@@ -220,6 +252,15 @@ fn measure_cut(field: &TerrainField, focus: WorldPosition, workers: usize) -> Cu
         selection_ms,
         wall_ms,
         sampling_cpu_ms: results.iter().map(|m| m.sampling_ms).sum(),
+        // Jobs finish in any order; wrapping addition does not care.
+        digest: results
+            .iter()
+            .fold(0, |sum: u64, m| sum.wrapping_add(m.digest)),
+        empty_sampling_cpu_ms: results
+            .iter()
+            .filter(|m| m.triangles == 0)
+            .map(|m| m.sampling_ms)
+            .sum(),
         extraction_cpu_ms: results.iter().map(|m| m.extraction_ms).sum(),
         sampling_p95_by_level: sampling_by_level
             .iter_mut()

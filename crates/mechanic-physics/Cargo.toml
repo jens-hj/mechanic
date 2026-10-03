@@ -9,6 +9,7 @@ license.workspace = true
 bevy_math.workspace = true
 mechanic-core.workspace = true
 mechanic-world.workspace = true
+rustc-hash.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
