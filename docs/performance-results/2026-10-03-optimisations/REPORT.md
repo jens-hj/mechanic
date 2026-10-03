@@ -39,6 +39,54 @@ the same. Each change was measured against the commit before the pass,
 | `mechanic-bench --scenario terrain_dig` | cached selection p95 | 27–33 ms | 17–18 ms |
 | same | terrain stage p50 | 29–32 ms | 19 ms |
 
+### Builder replay by phase
+
+Full replays of the same fixture, same flags, same hardware, two interleaved
+repetitions per build, stopping when any contact overlaps by more than 10 cm
+(the machine coming apart). Medians and p95 in ms, ranges over the two
+repetitions:
+
+| Ticks | Baseline median / p95 | Current median / p95 | State |
+|---|---|---|---|
+| 1–600 | 34.6–36.2 / 49.5–110.0 | 22.7–23.5 / 33.9–34.7 | bit-identical |
+| 601–1,749 | 29.5–33.6 / 47.1–50.9 | 23.3–23.6 / 32.4–33.2 | bit-identical |
+| 1,750–2,999 | 36.6 / 49.6–49.9 | 25.3–25.4 / 33.7–33.8 | trajectories differ |
+| 3,000–end | 32.5 / 47.1–47.8 (degraded) | — | — |
+| comes apart at | tick 3,699 | tick 2,624 | |
+
+The two builds keep the same state hash until tick 1,749. At 1,750 a contact
+row rounds differently and the replays part; from then on they are different
+simulations of a chaotic machine. The current build's replay comes apart at
+2,624 (its last tick took 2.4 s), the baseline's at 3,699 after 699 ticks
+degraded by the 500 rad/s speed limit. Across eight further starts raised by
+1–8 nm, both builds stayed bit-identical with each other and came apart on
+the same tick or not at all: 3,388, never, 2,649, 3,720, never, never, never,
+3,401. The current build's 2,624 sits beside the baseline's own 2,649, so
+this is read as the existing instability rather than a regression; it is not
+proof of equal long-run behaviour.
+
+Per-tick components over ticks 1–600, as means (medians do not add up,
+because ticks alternate between about 650 and 2,700 contacts):
+
+| Mean ms | Baseline | Current |
+|---|---|---|
+| tick | 33.1 | 23.6 |
+| contact rows | 11.5 (35 %) | 5.2 (22 %) |
+| collision query | 18.3 (55 %) | 15.0 (64 %) |
+| constraints, continuous | 2.1, 0.8 | 2.1, 0.8 |
+
+The 30 % share the first profile gave contact rows is its self time on one
+inlined line. The `rows_ms` timer also covers closure, mesh and joint rows,
+and its median (16.1 ms) sits on the high-contact ticks; its mean is 11.5 ms,
+35 % of the mean tick. Rows saved 6.3 ms and the query 3.3 ms of the 9.5 ms
+mean saving.
+
+Memory over the same 2,600 ticks, before either replay comes apart: maximum
+resident 107–108 MB baseline, 102–106 MB current; peak footprint 126–144 MB
+against 143–144 MB, overlapping between repetitions of one build; solver
+scratch 8.528 MB against 8.545 MB, the 16.6 KB being the per-body response
+buffers. CPU cycles 279–285 G against 198–199 G (−29 %).
+
 Unchanged by design, and measured only as baselines:
 
 | Workload | Measure | Value |
@@ -108,6 +156,65 @@ overlap; four paired single-biome runs split two each way.
    2:1 balance was not enforced against level 6. Fixed; in the verdant_hills
    cut this adds 9,294 transition triangles and no nodes.
 
+### Ron: opening saves with fields this build does not know
+
+10. **Vendored ron 0.12.2 with two unreleased upstream fixes** (#608, #610).
+    Serde skips a field it does not recognise through `deserialize_any`, and
+    ron's untyped number parser searched the whole rest of the document for
+    `..` on every number. `water11`, saved by a build that also stores grass,
+    carries a 7.3 MB `grass` list this branch does not declare. Neither the
+    baseline nor the current app had opened it after six minutes; the main
+    thread was inside that search. Parsing the same 36.4 MB `water.ron` now
+    takes 0.52 s. Copies of it with the unknown list cut to 0.25, 0.5 and
+    1 MB took 1.1, 3.2 and 11.5 s before (quadratic) and 0.39–0.40 s after.
+    Typed fields never took this path, so documents without unknown fields
+    parse as before.
+
+## Evidence for each change
+
+| Change | Evidence | Kind |
+|---|---|---|
+| 1 contact rows | combined vs direct response ≤ 1e-9 relative on every row; builder state hash equal to tick 1,749; 8 jittered 4,200-tick replays equal throughout; physics suite | tolerance, then statistical |
+| 2 Fx separation cache, one-key sort | builder state hash equal over 300 ticks; the existing candidate-pair test compares the list with a brute-force lexicographic list, so order and the absence of duplicates are pinned | bit-identical |
+| 3 fits by hash, shape buffers | builder state hash equal over 300 ticks | bit-identical |
+| 4–6 tape arguments, lanes, mesher maps | `mesh_digest` of 108,408 nodes over nine biomes; edited-ground digest below | bit-identical |
+| 7 lattice columns cached | `mesh_digest`; edited-ground digest; `water-breach` ledger error and eroded quanta identical | bit-identical |
+| 8 hashed cut membership | node lists and `mesh_digest` identical with and without it | bit-identical |
+| 9 level-6 owners | node counts unchanged, digest differs by the new transition faces | intended change |
+| 10 ron | parsed documents compared by sheet count; upstream's own regression tests | upstream fix |
+
+**Edited ground, boundaries and materials.** A temporary tool dug two
+spheres and added a sand and a rock sphere at four places in each of two
+seeds, then meshed every node of levels 0–3 in a 3×3×3 block around each
+edit with four transition masks: none, all six faces, −X only, +Z only. That
+is 432 chunks per place, 3,456 in all, 4.77 million triangles. The digest
+covers positions, normals, material weights, surfaces, compaction and final
+indices, and matched the baseline at all eight places. The current build took
+23 % fewer cycles.
+
+**Empty nodes.** Plan item 4, culling provably empty nodes before sampling,
+was not implemented: the existing coarse `lattice_is_clear` check already
+skips the clearest cases, and the remaining empty jobs are ones bounds cannot
+prove empty. The evaluator changes cover empty and non-empty jobs alike; the
+nine-biome digest includes the 50–75 % of jobs that end empty, and the
+non-empty share is where most of the saving lands (sampling 5,773 → 4,062
+CPU-s).
+
+## Audited with no change made
+
+- **GPU physics.** On `test2_car` the bench's main thread spends 82 % of its
+  time waiting for the GPU and 12 % encoding (about 0.9 ms a tick, as the
+  bench's own encoding p95 says). The LBVH sort's 256 floor is a single local
+  workgroup sort with no global passes, so lowering it saves nothing. Kernel
+  time sits in the contact solver; changing it means changing the solver.
+- **Construction edits.** `edit-latency`: a block's boundary query costs
+  2.5 µs, a pipe junction's 0.34 ms, cached queries 0.03–0.05 µs.
+- **UI.** Every panel compares its snapshot with the last one pushed and
+  skips re-rendering when nothing changed; no per-frame rebuild was found.
+- **Loose material.** `material-clumps` p95 2.0 ms for 256 awake bodies.
+- **Mesh BVH.** Already built with `select_nth_unstable`.
+- **Water stepping** runs on a worker, never on the frame.
+
 ## Rejected after measurement
 
 - Remembering the face that last separated a collider pair and testing it
@@ -154,32 +261,68 @@ this pass and is left as a follow-up; the test was not relaxed.
 
 ### Long builder runs
 
-A full 4,200-tick builder replay degrades from tick 3,000 in both builds
-("speed limit": a body passes the 500 rad/s cap), and eventually the machine
-comes apart: continuous broadphase then finds millions of candidate pairs and
-ticks take seconds. In eight jittered replays both builds degraded on the
-same tick and came apart on the same tick (or not at all) every time. This
-matches the known spin-gain flakiness, predates the pass, and is a physics
-fix rather than a performance one.
+See "Builder replay by phase". Both builds' replays eventually come apart:
+continuous broadphase then finds millions of candidate pairs and ticks take
+seconds. Before that the baseline degrades ("speed limit", a body past
+500 rad/s) from tick 3,000 in most starts. This matches the known spin-gain
+flakiness and predates the pass; it is a physics fix rather than a
+performance one.
 
-## Not measured
+## In the app
 
-- **In-app frame time.** Two background captures failed: the builder fixture
-  never leaves loading (its saved player pose finds no terrain collision with
-  the current generator), and a `water11` capture hung at start-up while
-  another session held the GPU for app tests. App-side effects here are
-  inferred from the headless workloads the app runs.
-- **GPU frame cost** of the 5↔6 transition faces added by fix 9.
+Background captures (`scripts/run-background-capture.py --from-start`) of a
+copy of the player's `water11` world with its unknown `grass` list removed,
+so that the baseline can open it too: 4112×2524, 4× MSAA, unfocused window,
+60 s from world entry including streaming. Two runs per build, interleaved.
+These are diagnostics, not acceptance runs: a world with no creation never
+starts the simulation, so the settled-capture gate cannot apply, and the
+unfocused window's presentation pacing sets the frame rate.
+
+| | Baseline | Current |
+|---|---|---|
+| frame p50 / p95 | 50.4–51.3 / 65.8–67.2 ms | 52.6–58.2 / 64.6–78.3 ms |
+| FPS | 12.9–13.0 | 12.5–13.7 |
+| frames with terrain streaming busy | 808–811 | 705–722 |
+| opaque GPU p50 | 30.6–31.1 ms | 31.5–31.8 ms |
+| transparent GPU p50 | 39.9–40.7 ms | 41.8–43.2 ms |
+
+Streaming settles sooner, as the headless meshing results predict. Frame and
+GPU times overlap between builds except for one current run that other load
+visibly disturbed (966 frames instead of about 1,050, render CPU p95 doubled).
+Nothing on the render side changed apart from fix 9's seam triangles, so no
+frame-time gain or loss is claimed.
+
+The transparent pass is the water surface: with `MECHANIC_WATER=off` it
+disappears, yet background FPS only rises from 13.7 to 14.7, so in these
+captures the GPU passes overlap with presentation waits (acquire p50 about
+38 ms) rather than adding up. Attributing a foreground frame needs a focused
+capture, which would take over the user's screen, so none was run.
+
+The original `water11`, with its `grass` list, loads in the current app; the
+window appears 17 s after launch and the world reaches play with its 87 local
+terrain nodes resolved. Neither app had opened it after six minutes before
+change 10.
+
+The builder fixture world cannot be captured: its saved player pose finds no
+terrain collision under the current generator, so loading never ends, in
+either build.
 
 ## Remaining opportunities
 
 - The CPU collision query is still about 15 ms on the builder: convex
   separation (21 %), manifold clipping (14 %), pair traversal (13 %). The
-  buried-vertex query re-traverses candidate pairs the proximity query just
-  found; filtering that list instead would save the second traversal.
+  proximity query's pair traversal is about 4.4 ms a tick over ~60,000
+  candidate pairs, nearly all of them neighbouring blocks of adjacent bodies
+  within the speculative margin. (Reusing it for the buried-vertex query was
+  measured and rejected: that traversal costs 0.34 ms.)
+- Saved floats are written as full decimal expansions (`0.000…0128…` for
+  1.3e-30), which is much of why `water.ron` is 36 MB.
 - Water's ground lookup still evaluates density cell by cell down a column
   and misses the 1,024-slot column cache across a ~20,000-cell sheet. A larger
   or water-owned cache would cut it, at several MB per thread.
 - Per-column point evaluation in `CompiledWorld::column` could use grid
   evaluation across a lattice's columns.
+- The water surface's transparent pass is about 40 ms of GPU time at
+  4112×2524 with 4× MSAA in background captures; a focused capture would
+  show how much of it reaches frame time.
 - The ledge limit cycle and the builder's spin gain (above).

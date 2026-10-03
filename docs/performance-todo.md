@@ -16,11 +16,16 @@ meshes; water −26 % cycles; cached terrain selection p95 about 30 → 17 ms.
 - [x] Tape arguments gathered once; grid rows evaluated as lanes.
 - [x] Terrain cut balanced and stitched with hashed membership.
 - [x] Level-6 owners visible to balancing and seams.
+- [x] Vendored ron with upstream's linear number parsing: a save with an
+  unknown field no longer takes minutes to open.
 - [ ] Settle the ledge-blocks limit cycle: a tilted block's contact flips
   between a face manifold and one edge point with ~3.7 cm overlap.
 - [ ] Builder spin gain past the 500 rad/s speed limit after ~3,000 ticks.
 - [ ] Water ground lookups miss the 1,024-slot column cache.
-- [ ] In-app frame capture of these changes.
+- [x] Background in-app capture: streaming settles sooner; frame time
+  unchanged within noise.
+- [ ] Focused capture to attribute the water surface's ~40 ms transparent
+  pass.
 
 ## Declarative worldgen streaming (2026-09-25)
 
