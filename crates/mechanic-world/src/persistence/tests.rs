@@ -447,3 +447,29 @@ fn invalid_solar_times_are_rejected_on_read_and_write() {
         ));
     }
 }
+
+// A world saved by a build that stores more opens with everything this build
+// knows. Skipping the rest once scanned the whole remaining document for every
+// skipped number; a list this long then took seconds instead of milliseconds.
+#[test]
+fn stored_water_with_an_unknown_field_keeps_what_this_build_knows() {
+    let directory = TempDir::new();
+    let store = WorldStore::new(&directory.0);
+    let water = crate::StoredWaterDoc {
+        sea_m3: 12.5,
+        air_m3: 0.25,
+        ..crate::StoredWaterDoc::default()
+    };
+    fs::create_dir_all(store.directory_for("pond")).unwrap();
+    store.save_water("pond", &water).unwrap();
+    let path = store.directory_for("pond").join("water.ron");
+    let saved = fs::read_to_string(&path).unwrap();
+    let unknown = (0..50_000)
+        .map(|index| format!("(column:({index},{index}),health:0.000000000000000000000001)"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let body = saved.trim_end().strip_suffix(')').unwrap();
+    fs::write(&path, format!("{body},meadow:[{unknown}])")).unwrap();
+
+    assert_eq!(store.load_water("pond").unwrap(), water);
+}
