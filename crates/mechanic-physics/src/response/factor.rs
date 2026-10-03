@@ -164,6 +164,24 @@ impl DynamicsFactor {
         }
     }
 
+    /// [`Self::solve_ranges`] for several right-hand sides, each solved exactly
+    /// as it would be alone.
+    pub(crate) fn solve_ranges_many(
+        &self,
+        values: &mut [Vec<f64>],
+        ranges: &[std::ops::Range<usize>],
+    ) -> Result<(), PhysicsError> {
+        if values.iter().any(|values| values.len() != self.size) {
+            return Err(PhysicsError::InvalidDynamics);
+        }
+        match &self.storage {
+            FactorStorage::Articulated(factor) => factor.solve_ranges_many(values, ranges),
+            FactorStorage::Dense(_) => values
+                .iter_mut()
+                .try_for_each(|values| self.solve_ranges(values, ranges)),
+        }
+    }
+
     /// Applies inverse dynamics in-place to a generalized impulse.
     ///
     /// # Errors

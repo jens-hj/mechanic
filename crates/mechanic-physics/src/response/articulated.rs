@@ -237,6 +237,119 @@ impl ArticulatedFactor {
         self.solve_active(values, active)
     }
 
+    /// [`Self::solve_ranges`] for several right-hand sides at once. Each side
+    /// sees exactly the arithmetic a lone solve gives it; the sweeps only share
+    /// the walk over the bodies, so each body's joint data is read once.
+    pub(super) fn solve_ranges_many(
+        &self,
+        values: &mut [Vec<f64>],
+        ranges: &[std::ops::Range<usize>],
+    ) -> Result<(), PhysicsError> {
+        let active = self.components.iter().filter(|component| {
+            ranges
+                .iter()
+                .any(|range| !range.is_empty() && *range == component.velocities)
+        });
+        let sides = values.len();
+        let mut scratch = self
+            .scratch
+            .lock()
+            .map_err(|_| PhysicsError::InvalidDynamics)?;
+        if scratch.len() < self.bodies.len() * sides {
+            scratch.resize(self.bodies.len() * sides, [0.0; 6]);
+        }
+        for component in active.clone() {
+            if values.iter().any(|values| {
+                values[component.velocities.clone()]
+                    .iter()
+                    .any(|v| !v.is_finite())
+            }) {
+                return Err(PhysicsError::InvalidDynamics);
+            }
+            for &body in &self.preorder[component.bodies.clone()] {
+                scratch[body * sides..(body + 1) * sides].fill([0.0; 6]);
+            }
+        }
+        for &index in active
+            .clone()
+            .rev()
+            .flat_map(|component| self.preorder[component.bodies.clone()].iter().rev())
+        {
+            let body = &self.bodies[index];
+            if let Joint::Scalar {
+                motion,
+                projected,
+                pivot,
+            } = body.joint
+            {
+                for (side, values) in values.iter_mut().enumerate() {
+                    let own = index * sides + side;
+                    let rhs = values[body.row] - dot(motion, scratch[own]);
+                    values[body.row] = rhs;
+                    if rhs == 0.0 && scratch[own] == [0.0; 6] {
+                        continue;
+                    }
+                    let mut wrench = scratch[own];
+                    for axis in 0..6 {
+                        wrench[axis] += projected[axis] * (rhs / pivot);
+                    }
+                    if let Some(parent) = body.parent {
+                        let shifted = shift_force(wrench, body.arm);
+                        for (entry, value) in scratch[parent * sides + side].iter_mut().zip(shifted)
+                        {
+                            *entry += value;
+                        }
+                    }
+                }
+            }
+        }
+        for &index in active
+            .clone()
+            .flat_map(|component| &self.preorder[component.bodies.clone()])
+        {
+            let body = &self.bodies[index];
+            for (side, values) in values.iter_mut().enumerate() {
+                let own = index * sides + side;
+                scratch[own] = match body.joint {
+                    Joint::Fixed => [0.0; 6],
+                    Joint::Floating { lower } => {
+                        let mut rhs = [0.0; 6];
+                        for axis in 0..6 {
+                            rhs[axis] = values[body.row + axis] - scratch[own][axis];
+                        }
+                        solve_root(&lower, &mut rhs);
+                        values[body.row..body.row + 6].copy_from_slice(&rhs);
+                        rhs
+                    }
+                    Joint::Scalar {
+                        motion,
+                        projected,
+                        pivot,
+                    } => {
+                        let parent = body.parent.expect("joint has parent");
+                        let mut inherited = shift_motion(scratch[parent * sides + side], body.arm);
+                        let speed = (values[body.row] - dot(projected, inherited)) / pivot;
+                        values[body.row] = speed;
+                        for axis in 0..6 {
+                            inherited[axis] += motion[axis] * speed;
+                        }
+                        inherited
+                    }
+                };
+            }
+        }
+        if active.into_iter().any(|component| {
+            values.iter().any(|values| {
+                values[component.velocities.clone()]
+                    .iter()
+                    .any(|v| !v.is_finite())
+            })
+        }) {
+            return Err(PhysicsError::InvalidDynamics);
+        }
+        Ok(())
+    }
+
     fn solve_active<'a>(
         &self,
         values: &mut [f64],
@@ -272,6 +385,11 @@ impl ArticulatedFactor {
             {
                 let rhs = values[body.row] - dot(motion, scratch[index]);
                 values[body.row] = rhs;
+                // A body with no load of its own and none from below passes
+                // nothing up: a contact row only loads its body's ancestors.
+                if rhs == 0.0 && scratch[index] == [0.0; 6] {
+                    continue;
+                }
                 let mut wrench = scratch[index];
                 for axis in 0..6 {
                     wrench[axis] += projected[axis] * (rhs / pivot);

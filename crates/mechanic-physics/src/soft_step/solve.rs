@@ -266,9 +266,8 @@ impl Contact {
         model: &MachineKinematics,
         factor: &DynamicsFactor,
         output: &mut PointRows,
-        jacobian: &mut [f64],
-        response: &mut Vec<f64>,
-        bodies: &mut BodyResponses,
+        jacobians: &mut [Vec<f64>; 5],
+        responses: &mut [Vec<f64>; 5],
     ) -> Result<(), PhysicsError> {
         let world = |body: usize, local: DVec3| {
             let pose = model.poses[body];
@@ -297,24 +296,6 @@ impl Contact {
         point.body_point = anchor;
         point.terrain_point = other;
         let ranges = model.contact_ranges(&point);
-        // The second body pushes back with the opposite impulse.
-        let sides = [
-            Some((point.body, anchor, 1.0)),
-            point.other_body.map(|body| (body, other, -1.0)),
-        ];
-        // A lone free body's component solves as one 6×6 block, no dearer than
-        // combining six basis responses, so it keeps the direct solve and its
-        // exact arithmetic. Articulated components share their bases.
-        let shared = sides
-            .iter()
-            .flatten()
-            .any(|&(body, ..)| model.component_rows(body).len() > LONE_BODY_VELOCITIES);
-        if shared {
-            for &(body, ..) in sides.iter().flatten() {
-                bodies.prepare(model, factor, body)?;
-            }
-        }
-        response.resize(jacobian.len(), 0.0);
         let count = if self.rolling.is_some() { 5 } else { 3 };
         output.rows.resize_with(count, Row::default);
         for (row, direction) in [normal, tangent_u, tangent_v, tangent_u, tangent_v]
@@ -322,93 +303,27 @@ impl Contact {
             .enumerate()
             .take(count)
         {
-            let angular = row >= 3;
-            model.contact_row(&point, direction, angular, jacobian)?;
-            if !shared {
-                for range in &ranges {
-                    response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
-                }
-                factor.solve_ranges(response, &ranges)?;
-                output.rows[row].refresh_local(jacobian, response, &ranges);
-                continue;
-            }
+            let jacobian = &mut jacobians[row];
+            model.contact_row(&point, direction, row >= 3, jacobian)?;
+            let response = &mut responses[row];
+            response.resize(jacobian.len(), 0.0);
             for range in &ranges {
-                response[range.clone()].fill(0.0);
+                response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
             }
-            for &(body, at, sign) in sides.iter().flatten() {
-                let torque = if angular {
-                    direction
-                } else {
-                    (at - model.centre(body)).cross(direction)
-                };
-                let force = if angular { DVec3::ZERO } else { direction };
-                let weights = [force.x, force.y, force.z, torque.x, torque.y, torque.z]
-                    .map(|weight| sign * weight);
-                let basis = bodies.responses(body);
-                let rows = model.component_rows(body);
-                let length = rows.len();
-                for (offset, value) in response[rows].iter_mut().enumerate() {
-                    *value += weights
-                        .iter()
-                        .enumerate()
-                        .map(|(axis, weight)| weight * basis[axis * length + offset])
-                        .sum::<f64>();
-                }
-            }
-            output.rows[row].refresh_local(jacobian, response, &ranges);
+        }
+        // One sweep over the bodies for all of the contact's rows.
+        factor.solve_ranges_many(&mut responses[..count], &ranges)?;
+        for (row, (jacobian, response)) in jacobians
+            .iter()
+            .zip(responses.iter())
+            .enumerate()
+            .take(count)
+        {
+            output.rows[row].store_local(jacobian, response, &ranges);
         }
         output.separation = separation;
         output.moved = 0.0;
         Ok(())
-    }
-}
-
-/// Generalized velocities of one free body with no joints.
-const LONE_BODY_VELOCITIES: usize = 6;
-
-/// Each touched body's six basis responses under the current substep's factor,
-/// solved on first use; see [`MachineKinematics::body_responses`].
-#[derive(Default)]
-pub(super) struct BodyResponses {
-    values: Vec<Vec<f64>>,
-    ready: Vec<bool>,
-    solve: Vec<f64>,
-}
-
-impl BodyResponses {
-    // Forgets every response: the factor they came from has been replaced.
-    fn reset(&mut self, bodies: usize) {
-        self.values.resize_with(bodies, Vec::new);
-        self.ready.clear();
-        self.ready.resize(bodies, false);
-    }
-
-    fn prepare(
-        &mut self,
-        model: &MachineKinematics,
-        factor: &DynamicsFactor,
-        body: usize,
-    ) -> Result<(), PhysicsError> {
-        if !*self
-            .ready
-            .get(body)
-            .ok_or(PhysicsError::InvalidConstraints)?
-        {
-            model.body_responses(body, factor, &mut self.values[body], &mut self.solve)?;
-            self.ready[body] = true;
-        }
-        Ok(())
-    }
-
-    fn responses(&self, body: usize) -> &[f64] {
-        &self.values[body]
-    }
-
-    fn retained_bytes(&self) -> usize {
-        (self.values.iter().map(Vec::capacity).sum::<usize>() + self.solve.capacity())
-            * size_of::<f64>()
-            + self.values.capacity() * size_of::<Vec<f64>>()
-            + self.ready.capacity()
     }
 }
 
@@ -892,7 +807,7 @@ impl Row {
     }
 
     // Stores a row whose response over `ranges` is already solved.
-    fn refresh_local(
+    fn store_local(
         &mut self,
         jacobian: &[f64],
         response: &[f64],
@@ -1009,11 +924,10 @@ impl Soft {
 #[derive(Default)]
 pub(super) struct Scratch {
     pub(super) points: Vec<PointRows>,
-    jacobian: Vec<f64>,
-    response: Vec<f64>,
+    jacobians: [Vec<f64>; 5],
+    responses: [Vec<f64>; 5],
     factor: Option<DynamicsFactor>,
     diagonal: Vec<f64>,
-    bodies: BodyResponses,
 }
 
 impl Scratch {
@@ -1027,13 +941,18 @@ impl Scratch {
                     (row.jacobian.capacity() + row.response.capacity()) * size_of::<(usize, f64)>()
                 })
                 .sum::<usize>()
-            + (self.jacobian.capacity() + self.response.capacity() + self.diagonal.capacity())
+            + (self
+                .jacobians
+                .iter()
+                .chain(&self.responses)
+                .map(Vec::capacity)
+                .sum::<usize>()
+                + self.diagonal.capacity())
                 * size_of::<f64>()
             + self
                 .factor
                 .as_ref()
                 .map_or(0, DynamicsFactor::retained_bytes)
-            + self.bodies.retained_bytes()
     }
 }
 
@@ -1091,8 +1010,9 @@ pub(super) fn substep(
             .points
             .resize_with(contacts.len(), PointRows::default);
     }
-    scratch.jacobian.resize(state.velocities.len(), 0.0);
-    scratch.bodies.reset(state.poses.len());
+    for jacobian in &mut scratch.jacobians {
+        jacobian.resize(state.velocities.len(), 0.0);
+    }
     let points = &mut scratch.points[..contacts.len()];
     for (contact, point) in contacts.iter_mut().zip(points.iter_mut()) {
         contact.settle_ground(dt);
@@ -1100,9 +1020,8 @@ pub(super) fn substep(
             &model,
             factor,
             point,
-            &mut scratch.jacobian,
-            &mut scratch.response,
-            &mut scratch.bodies,
+            &mut scratch.jacobians,
+            &mut scratch.responses,
         )?;
     }
     let mut closures = creation
