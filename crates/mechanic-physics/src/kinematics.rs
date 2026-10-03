@@ -239,6 +239,52 @@ impl<'a> MachineKinematics<'a> {
         result
     }
 
+    /// Inverse-dynamics responses to a body's six spatial unit impulses at its
+    /// centre of mass: a world force along x, y and z, then a torque about x, y
+    /// and z. Each is `component_rows(body).len()` values long, stored one after
+    /// another in `output`.
+    ///
+    /// Every point or angular row on the body is a combination of these six
+    /// with weights `[d, (p - c) × d]` or `[0, d]`, and so is its response: a
+    /// substep solves six rows per touched body instead of one per contact row.
+    ///
+    /// # Errors
+    /// Rejects an unknown body or a non-finite response.
+    pub(crate) fn body_responses(
+        &self,
+        body: usize,
+        factor: &DynamicsFactor,
+        output: &mut Vec<f64>,
+        scratch: &mut Vec<f64>,
+    ) -> Result<(), PhysicsError> {
+        let range = self
+            .component_rows
+            .get(body)
+            .ok_or(PhysicsError::InvalidConstraints)?
+            .clone();
+        let ranges = [range.clone()];
+        output.clear();
+        scratch.resize(self.size, 0.0);
+        for axis in 0..6 {
+            scratch[range.clone()].fill(0.0);
+            for &(row, motion) in &self.jacobians[body] {
+                scratch[row] = if axis < 3 {
+                    motion.linear[axis]
+                } else {
+                    motion.angular[axis - 3]
+                };
+            }
+            factor.solve_ranges(scratch, &ranges)?;
+            output.extend_from_slice(&scratch[range.clone()]);
+        }
+        Ok(())
+    }
+
+    /// Generalized velocity rows of the dynamics component holding `body`.
+    pub(crate) fn component_rows(&self, body: usize) -> std::ops::Range<usize> {
+        self.component_rows[body].clone()
+    }
+
     pub(crate) fn contact_ranges(
         &self,
         contact: &crate::TerrainContact,
