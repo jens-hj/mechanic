@@ -1836,7 +1836,16 @@ impl CompiledWorld {
         )]
         let shows = match hit.part {
             Part::Root => hit.density > 0.0 && density > ROOT_COVER_METRES,
-            Part::Wood | Part::Foliage => hit.density as f32 >= density as f32,
+            Part::Wood | Part::Foliage => {
+                hit.density as f32 >= density as f32
+                    // Culled empty ground blocks hold a sign-preserving bound,
+                    // not the distance used to choose their surface material.
+                    // A tree raised into such a block still owns its open
+                    // crossing corner when it is nearer than the actual ground.
+                    || (density < 0.0
+                        && hit.density < 0.0
+                        && hit.density >= self.density_parts(column, position).0)
+            }
         };
         shows.then_some(hit)
     }

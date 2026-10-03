@@ -77,3 +77,8 @@ Flags are on when set to `1`.
 | `VK_DRIVER_FILES` | Point at the lavapipe ICD to run GPU tests on the CPU, off the display GPU. |
 
 `MECHANIC_SKY_TIME` fixes the rendered solar hour in `[0, 24)` (fractional hours allowed) and freezes automatic clock advancement. It does not replace the world’s saved time. By default, fixed-time launches use a temporary world store named `mechanic-sky-fixture-<pid>`, leaving player saves untouched. Automated runs may supply an explicit disposable store through `MECHANIC_AUTO_WORLD_STORE`.
+
+`MECHANIC_TERRAIN_CAPTURE` points to a JSON file containing `seed`, `directory`, and
+`views` (`name`, `eye`, `target`; positions are global metre triples). It creates
+a disposable world, waits for streamed terrain and textures, saves native screenshots,
+and exits. Use `MECHANIC_SKY_TIME` to fix lighting. Normal launches are unaffected.

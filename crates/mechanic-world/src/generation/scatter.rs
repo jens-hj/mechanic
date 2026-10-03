@@ -305,7 +305,9 @@ mod tests {
 
     #[test]
     fn scatter_output_is_unchanged() {
-        assert_eq!(scatter_fingerprint(), 13_898_954_667_620_756_581);
+        // Ground and masks use the enclosing terrain seed; only shape
+        // variation uses the scatter instance seed.
+        assert_eq!(scatter_fingerprint(), 13_898_904_302_974_188_553);
     }
 
     #[test]

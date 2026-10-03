@@ -1,0 +1,52 @@
+{
+  "adapter": "Apple M1 Pro / Metal",
+  "resolution": [
+    4096,
+    2524
+  ],
+  "profile": "test (optimized + debuginfo)",
+  "measurement": "opaque-pass GPU median, full-screen material fixture, A/B/B/A; 80 measured frames after warmup per sample",
+  "reference": "e4e90417:crates/mechanic-app/assets/shaders/terrain_material.wgsl",
+  "candidate_shader_sha256": "0ce220d19a1296718372e163550647fd5d4f767d476ed2c4795a7b20bbac28f1",
+  "results": [
+    {
+      "material": "SurfaceCover",
+      "reference_gpu_ms": [
+        11.188,
+        11.18
+      ],
+      "candidate_gpu_ms": [
+        11.805,
+        11.654
+      ],
+      "change_percent": 4.9
+    },
+    {
+      "material": "Soil",
+      "reference_gpu_ms": [
+        11.637,
+        11.616
+      ],
+      "candidate_gpu_ms": [
+        12.135,
+        12.135
+      ],
+      "change_percent": 4.4
+    },
+    {
+      "material": "Rock",
+      "reference_gpu_ms": [
+        11.821,
+        11.853
+      ],
+      "candidate_gpu_ms": [
+        15.103,
+        15.121
+      ],
+      "change_percent": 27.7
+    }
+  ],
+  "rock_repetition_correlation": 0.406,
+  "repetition_limit": 0.5,
+  "limitations": "Synthetic material cost on one M1 Pro; not gameplay FPS, total frame time, or a production performance gate. More mineral detail costs additional GPU time."
+}

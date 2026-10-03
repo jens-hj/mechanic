@@ -29,6 +29,9 @@ pub(crate) const RENDER_EXPERIMENT: &str = "MECHANIC_RENDER_EXPERIMENT";
 #[cfg(debug_assertions)]
 pub(crate) const WORLDGEN_DIR: &str = "MECHANIC_WORLDGEN_DIR";
 
+/// JSON configuration for native terrain screenshots in a disposable world.
+pub(crate) const TERRAIN_CAPTURE: &str = "MECHANIC_TERRAIN_CAPTURE";
+
 /// Directory receiving per-frame performance JSONL.
 pub(crate) const PERF_CAPTURE_DIR: &str = "MECHANIC_PERF_CAPTURE_DIR";
 /// Starts the performance capture at launch.

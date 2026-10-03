@@ -11,7 +11,8 @@
 //! `cargo run -p mechanic-bench --release --bin worldgen-preview -- --seed 42 --out <dir>`
 //! with optional `--worldgen <dir>` to preview an authored definition,
 //! `--span <metres>` for the map width, `--pixels <n>` for its resolution,
-//! and `--centre <x>,<z>`.
+//! and `--centre <x>,<z>`. For a single close view, use
+//! `--view-target <x>,<y>,<z> --view-offset <x>,<y>,<z>`.
 
 #![expect(
     clippy::cast_possible_truncation,
@@ -62,6 +63,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let started = Instant::now();
     let field = TerrainField::from_spec(WorldSeed(seed), Arc::clone(&spec))?;
     let compile_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let view_offset = value("--view-offset");
+    if let Some(target) = value("--view-target") {
+        return close_view(&field, seed, &out, &target, view_offset.as_deref());
+    }
     let names = spec.biome_names().map(str::to_owned).collect::<Vec<_>>();
 
     let started = Instant::now();
@@ -135,6 +140,38 @@ fn main() -> Result<(), Box<dyn Error>> {
             "carves": carve_report,
             "out": out.display().to_string(),
         })
+    );
+    Ok(())
+}
+
+/// One reproducible view without overview maps or biome searches.
+fn close_view(
+    field: &TerrainField,
+    seed: u64,
+    out: &Path,
+    target: &str,
+    offset: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let vector = |text: &str| -> Result<DVec3, Box<dyn Error>> {
+        let values = text
+            .split(',')
+            .map(str::parse::<f64>)
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.len() != 3 || values.iter().any(|v| !v.is_finite()) {
+            return Err("view coordinates must be three finite numbers: x,y,z".into());
+        }
+        Ok(DVec3::new(values[0], values[1], values[2]))
+    };
+    let target = vector(target)?;
+    let offset = vector(offset.unwrap_or("-12,4,-12"))?;
+    if offset.x.hypot(offset.z) < 0.001 {
+        return Err("view offset must have a horizontal component".into());
+    }
+    let view = perspective_view(field, target, offset);
+    write_png(&out.join("view.png"), VIEW_WIDTH, VIEW_HEIGHT, &view)?;
+    println!(
+        "{}",
+        serde_json::json!({"scenario": "worldgen-close-view", "seed": seed, "target": target.to_array(), "offset": offset.to_array(), "out": out.display().to_string()})
     );
     Ok(())
 }
