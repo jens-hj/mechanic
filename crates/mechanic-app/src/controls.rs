@@ -21,6 +21,8 @@ pub(crate) enum GameAction {
     DevSpeedReset,
     DevTimeEarlier,
     DevTimeLater,
+    DevDayEarlier,
+    DevDayLater,
     DevTimePause,
     DevErosion,
     DevErosionMap,
@@ -116,6 +118,8 @@ impl GameAction {
                 | Self::DevSpeedReset
                 | Self::DevTimeEarlier
                 | Self::DevTimeLater
+                | Self::DevDayEarlier
+                | Self::DevDayLater
                 | Self::DevTimePause
                 | Self::DevErosion
                 | Self::DevErosionMap
@@ -123,7 +127,7 @@ impl GameAction {
         )
     }
 
-    pub(crate) const ALL: [Self; 86] = [
+    pub(crate) const ALL: [Self; 88] = [
         Self::DevNoclip,
         Self::DevSpectator,
         Self::DevSpeedDecrease,
@@ -131,6 +135,8 @@ impl GameAction {
         Self::DevSpeedReset,
         Self::DevTimeEarlier,
         Self::DevTimeLater,
+        Self::DevDayEarlier,
+        Self::DevDayLater,
         Self::DevTimePause,
         Self::DevErosion,
         Self::DevErosionMap,
@@ -271,6 +277,8 @@ impl GameAction {
             Self::DevSpeedReset => "Dev Speed Reset",
             Self::DevTimeEarlier => "Dev Time Earlier",
             Self::DevTimeLater => "Dev Time Later",
+            Self::DevDayEarlier => "Dev Day Earlier",
+            Self::DevDayLater => "Dev Day Later",
             Self::DevTimePause => "Dev Day Cycle Pause",
             Self::DevErosion => "Dev Erosion Speed",
             Self::DevErosionMap => "Dev Erosion Heatmap",
@@ -365,6 +373,8 @@ impl GameAction {
             | Self::DevSpeedReset
             | Self::DevTimeEarlier
             | Self::DevTimeLater
+            | Self::DevDayEarlier
+            | Self::DevDayLater
             | Self::DevTimePause
             | Self::DevErosion
             | Self::DevErosionMap
@@ -782,6 +792,16 @@ impl Default for Controls {
         set(
             A::DevTimeLater,
             Some(InputChord::key(K::BracketRight)),
+            None,
+        );
+        set(
+            A::DevDayEarlier,
+            Some(InputChord::key(K::BracketLeft).with_shift()),
+            None,
+        );
+        set(
+            A::DevDayLater,
+            Some(InputChord::key(K::BracketRight).with_shift()),
             None,
         );
         set(A::DevTimePause, Some(InputChord::key(K::F8)), None);

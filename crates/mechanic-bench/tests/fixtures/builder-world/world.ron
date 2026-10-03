@@ -1,5 +1,6 @@
 (
-    version: 7,
+    version: 8,
+    day: 0,
     time_of_day_seconds: 32400.0,
     name: "builder",
     generator_version: 2,

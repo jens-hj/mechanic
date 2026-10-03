@@ -1,16 +1,17 @@
 //! Outdoor atmosphere, celestial motion, and the per-world solar clock.
 
 mod environment;
+mod lights;
+mod moons;
 mod night;
 
 use bevy::camera::Exposure;
 use bevy::core_pipeline::Skybox;
-use bevy::light::{
-    Atmosphere, AtmosphereEnvironmentMapLight, SunDisk, atmosphere::ScatteringMedium,
-};
+use bevy::light::{Atmosphere, AtmosphereEnvironmentMapLight, atmosphere::ScatteringMedium};
 use bevy::pbr::{AtmosphereMode, AtmosphereSettings};
 use bevy::prelude::*;
 use mechanic_core::SECONDS_PER_DAY;
+use mechanic_world::{CelestialSky, CelestialSystem, WorldSeed};
 
 use crate::camera::MainCamera;
 use crate::dev_tools::DevTools;
@@ -19,13 +20,10 @@ use crate::render::environment::StaticEnvironmentMap;
 use crate::schedule::FrameSet;
 use crate::world::{AppSpace, WorldListState, WorldRuntime};
 
+pub(crate) use lights::{Companion, Moon, Sun};
+pub(crate) use moons::{MoonDisk, MoonMaterial};
+
 const CYCLE_SECONDS: f64 = 3600.0;
-
-#[derive(Component)]
-pub(crate) struct Sun;
-
-#[derive(Component)]
-pub(crate) struct Moon;
 
 #[derive(Resource, Default)]
 pub(crate) struct SkyState {
@@ -34,14 +32,28 @@ pub(crate) struct SkyState {
     garage: CachedEnvironment,
     world: CachedEnvironment,
     night: Handle<Image>,
-    /// Render-only fixture override. Never written to the world document.
+    /// Render-only fixture override, in seconds since the world's first
+    /// midnight. Never written to the world document.
     fixed_seconds: Option<f64>,
+    /// The star system of the world last shown, by seed.
+    system: Option<(WorldSeed, CelestialSystem)>,
+    /// Where the system's bodies stand this frame, while outdoors.
+    current: Option<CelestialSky>,
 }
 
 impl SkyState {
+    /// Displayed time of day, in seconds since midnight.
     pub(crate) fn displayed_seconds(&self, runtime: &WorldRuntime) -> f64 {
+        self.fixed_seconds.map_or_else(
+            || runtime.time_of_day_seconds(),
+            |seconds| seconds.rem_euclid(SECONDS_PER_DAY),
+        )
+    }
+
+    /// Displayed solar days since the world began.
+    pub(crate) fn displayed_days(&self, runtime: &WorldRuntime) -> f64 {
         self.fixed_seconds
-            .unwrap_or_else(|| runtime.time_of_day_seconds())
+            .map_or_else(|| runtime.solar_days(), |seconds| seconds / SECONDS_PER_DAY)
     }
 
     pub(crate) fn status(&self) -> &'static str {
@@ -52,6 +64,16 @@ impl SkyState {
         } else {
             "paused"
         }
+    }
+
+    /// The star system of the world on display, if one has been shown.
+    pub(crate) fn system(&self) -> Option<&CelestialSystem> {
+        self.system.as_ref().map(|(_, system)| system)
+    }
+
+    /// Where the system's bodies stand this frame, while outdoors.
+    pub(crate) const fn current(&self) -> Option<&CelestialSky> {
+        self.current.as_ref()
     }
 }
 
@@ -78,12 +100,19 @@ pub(crate) struct SkyPlugin;
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
         environment::install(app);
-        app.init_resource::<SkyState>()
-            .add_systems(Startup, setup)
+        app.add_plugins(MaterialPlugin::<MoonMaterial>::default())
+            .init_resource::<SkyState>()
+            .add_systems(Startup, (setup, moons::setup))
             .add_systems(Update, advance_clock.in_set(FrameSet::SkyClock))
             .add_systems(
                 Update,
-                (switch_space, update_sky, environment::update)
+                (
+                    switch_space,
+                    update_sky,
+                    lights::place,
+                    moons::place,
+                    environment::update,
+                )
                     .chain()
                     .in_set(FrameSet::Sky),
             );
@@ -103,10 +132,10 @@ fn setup(
     sky.fixed_seconds = crate::env::text(crate::env::SKY_TIME).map(|value| {
         let hours = value
             .parse::<f64>()
-            .expect("sky fixture time must be hours in [0, 24)");
+            .expect("sky fixture time must be non-negative hours since day zero");
         assert!(
-            (0.0..24.0).contains(&hours),
-            "sky fixture time must be hours in [0, 24)"
+            hours.is_finite() && hours >= 0.0,
+            "sky fixture time must be non-negative hours since day zero"
         );
         hours * 3600.0
     });
@@ -147,7 +176,7 @@ fn switch_space(
         ),
         With<MainCamera>,
     >,
-    moons: Query<Entity, With<Moon>>,
+    outdoor_only: Query<Entity, Or<(With<Moon>, With<Companion>, With<MoonDisk>)>>,
 ) {
     let outdoors = *space.get() == AppSpace::World;
     if outdoors == sky.outdoors {
@@ -184,18 +213,7 @@ fn switch_space(
                 ..default()
             },
         ));
-        commands.spawn((
-            Name::new("World moon"),
-            Moon,
-            DirectionalLight {
-                illuminance: 4.0,
-                color: Color::srgb(0.7, 0.8, 1.0),
-                shadow_maps_enabled: true,
-                ..default()
-            },
-            SunDisk::OFF,
-            Transform::default(),
-        ));
+        lights::spawn_moonlight(&mut commands);
     } else {
         sky.world = previous;
         sky.garage.restore(&mut camera);
@@ -207,38 +225,19 @@ fn switch_space(
                 AmbientLight,
             )>()
             .insert(StaticEnvironmentMap);
-        for moon in &moons {
-            commands.entity(moon).despawn();
+        for entity in &outdoor_only {
+            commands.entity(entity).despawn();
         }
+        sky.current = None;
     }
     sky.outdoors = outdoors;
 }
 
-/// Fixed obliquity gives a 60 degree noon elevation, sunrise at 06:00.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "bounded solar phase rendered in f32"
-)]
-fn celestial_rotation(seconds: f64) -> Quat {
-    let angle = ((seconds / SECONDS_PER_DAY - 0.25) * std::f64::consts::TAU) as f32;
-    Quat::from_rotation_x(std::f32::consts::PI / 6.0) * Quat::from_rotation_z(angle)
-}
-
-#[expect(
-    clippy::type_complexity,
-    reason = "disjoint celestial and camera transforms"
-)]
+/// Work out where every body stands, then turn the stars and adapt exposure.
 fn update_sky(
-    sky: Res<SkyState>,
+    mut sky: ResMut<SkyState>,
     runtime: Res<WorldRuntime>,
-    mut camera: Query<
-        (&Transform, &mut Exposure, &mut Skybox),
-        (With<MainCamera>, Without<Sun>, Without<Moon>),
-    >,
-    mut lights: Query<
-        (&mut Transform, &mut DirectionalLight, Has<Moon>),
-        (Or<(With<Sun>, With<Moon>)>, Without<MainCamera>),
-    >,
+    mut camera: Query<(&Transform, &mut Exposure, &mut Skybox), With<MainCamera>>,
     mut planets: Query<(&Atmosphere, &mut GlobalTransform)>,
 ) {
     if !sky.outdoors {
@@ -247,27 +246,19 @@ fn update_sky(
     let Ok((camera, mut exposure, mut stars)) = camera.single_mut() else {
         return;
     };
-    let rotation = celestial_rotation(
-        sky.fixed_seconds
-            .unwrap_or_else(|| runtime.time_of_day_seconds()),
-    );
-    let sun = rotation * Vec3::X;
-    stars.rotation = rotation;
-    // Smooth twilight adaptation; enough fill and moonlight to build at night.
-    let twilight = ((sun.y + 0.2) / 0.2).clamp(0.0, 1.0);
-    let twilight = twilight * twilight * (3.0 - 2.0 * twilight);
-    let daylight = (sun.y / std::f32::consts::FRAC_PI_3.sin()).clamp(0.0, 1.0);
-    exposure.ev100 = 1.0 + 9.5 * twilight + 2.5 * daylight.sqrt();
-    for (mut transform, mut light, moon) in &mut lights {
-        let direction = if moon { -sun } else { sun };
-        light.shadow_maps_enabled = direction.y > 0.0;
-        *transform = Transform::default().looking_to(-direction, Vec3::Y);
-        light.illuminance = if moon {
-            4.0
-        } else {
-            bevy::light::light_consts::lux::RAW_SUNLIGHT
-        };
+    let seed = runtime.seed();
+    if sky.system.as_ref().is_none_or(|(shown, _)| *shown != seed) {
+        sky.system = Some((seed, CelestialSystem::generate(seed)));
     }
+    let days = sky.displayed_days(&runtime);
+    let Some(system) = sky.system() else {
+        return;
+    };
+    let celestial = system.sky(days);
+    let plan = lights::plan(&celestial);
+    stars.rotation = celestial.rotation;
+    exposure.ev100 = lights::ev100(&celestial, &plan);
+    sky.current = Some(celestial);
     for (atmosphere, mut planet) in &mut planets {
         *planet = planet_transform(
             atmosphere.inner_radius,

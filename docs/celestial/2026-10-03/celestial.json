@@ -1,0 +1,114 @@
+{
+  "adapter": "WgpuWrapper(AdapterInfo { name: \"Apple M1 Pro\", vendor: 0, device: 0, device_type: IntegratedGpu, device_pci_bus_id: \"\", driver: \"\", driver_info: \"\", backend: Metal, subgroup_min_size: 4, subgroup_max_size: 64, transient_saves_memory: true })",
+  "costs": [
+    {
+      "hour": 12.0,
+      "mean_ms": 42.06592628333335,
+      "p95_ms": 85.005042,
+      "system": "one sun, no moons"
+    },
+    {
+      "hour": 0.0,
+      "mean_ms": 35.32508473333334,
+      "p95_ms": 84.3415,
+      "system": "one sun, no moons"
+    },
+    {
+      "hour": 12.0,
+      "mean_ms": 57.233013166666666,
+      "p95_ms": 153.088625,
+      "system": "three stars, three moons"
+    },
+    {
+      "hour": 0.0,
+      "mean_ms": 28.9273736,
+      "p95_ms": 62.031166,
+      "system": "three stars, three moons"
+    }
+  ],
+  "measurement": "synchronized offscreen CPU+GPU frame latency, readback disabled",
+  "resolution": [
+    768,
+    512
+  ],
+  "shots": [
+    {
+      "days": 2.7279999999999998,
+      "moons": [
+        0.9042238593101501
+      ],
+      "shot": "twin-suns-dusk",
+      "stars": 2
+    },
+    {
+      "days": 1.346,
+      "moons": [
+        0.6533228158950806
+      ],
+      "shot": "twin-suns-day",
+      "stars": 2
+    },
+    {
+      "days": 8.176,
+      "moons": [
+        0.12987130880355835,
+        0.9873709082603455
+      ],
+      "shot": "moon-10-percent",
+      "stars": 1
+    },
+    {
+      "days": 2.1020000000000003,
+      "moons": [
+        0.5290166735649109,
+        0.18583934009075165
+      ],
+      "shot": "moon-50-percent",
+      "stars": 1
+    },
+    {
+      "days": 3.96,
+      "moons": [
+        0.8704349994659424,
+        0.5329630374908447
+      ],
+      "shot": "moon-90-percent",
+      "stars": 1
+    },
+    {
+      "days": 13.382,
+      "moons": [
+        0.6665629148483276,
+        0.13340431451797485
+      ],
+      "shot": "moon-by-day",
+      "stars": 1
+    },
+    {
+      "days": 1.056,
+      "moons": [
+        0.8157585859298706,
+        0.05343785509467125
+      ],
+      "shot": "night-sky",
+      "stars": 1
+    },
+    {
+      "days": 1.056,
+      "moons": [
+        0.8157585859298706,
+        0.05343785509467125
+      ],
+      "shot": "galaxy",
+      "stars": 1
+    },
+    {
+      "days": 31.16,
+      "moons": [
+        0.34264740347862244
+      ],
+      "shot": "distant-pair-at-night",
+      "stars": 3
+    }
+  ]
+}

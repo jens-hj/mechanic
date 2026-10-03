@@ -8,6 +8,7 @@ use crate::controls::{Controls, GameAction};
 use crate::dev_tools::{DevMode, DevTools};
 use bevy::prelude::{NonSendMut, Res};
 use bevy_mosaic::ui::*;
+use mechanic_world::{CelestialSky, CelestialSystem};
 use mosaic_core::Rect;
 use mosaic_macros::{component, view};
 
@@ -24,6 +25,34 @@ pub(crate) struct Model {
     history: String,
     notice: String,
     time: String,
+    clock: String,
+    sky: String,
+}
+
+/// The star system and how full each moon is.
+fn describe_sky(system: &CelestialSystem, sky: &CelestialSky) -> String {
+    let stars = match (system.stars().len(), system.circumbinary()) {
+        (1, _) => "One sun",
+        (2, true) => "Twin suns",
+        (2, false) => "Sun and distant star",
+        (_, true) => "Twin suns and distant star",
+        _ => "Sun and distant pair",
+    };
+    let moons = if sky.moons.is_empty() {
+        "no moons".to_owned()
+    } else {
+        let phases = sky
+            .moons
+            .iter()
+            .map(|moon| format!("{:.0}%", moon.illuminated_fraction * 100.0))
+            .collect::<Vec<_>>();
+        format!("moons {}", phases.join(" "))
+    };
+    format!(
+        "{stars} · {:.0}-day year · {:.0}° N · {moons}",
+        system.year_days(),
+        system.latitude().to_degrees()
+    )
 }
 
 fn capture(dev: &DevTools, controls: &Controls) -> Model {
@@ -65,6 +94,8 @@ fn capture(dev: &DevTools, controls: &Controls) -> Model {
         history: String::new(),
         notice: dev.notice.to_owned(),
         time: String::new(),
+        clock: String::new(),
+        sky: String::new(),
     }
 }
 
@@ -84,20 +115,36 @@ pub(crate) fn push(
             .sediment_diagnostics(dev.erosion_generation)
             .map_or(0.0, |snapshot| snapshot.seconds);
         next.history = format!("Recorded {recorded:.0} s · water hidden · 102.4 m map");
-        let seconds = sky.as_ref().map_or_else(
-            || runtime.time_of_day_seconds(),
-            |sky| sky.displayed_seconds(&runtime),
+        let (days, seconds) = sky.as_ref().map_or_else(
+            || (runtime.solar_days(), runtime.time_of_day_seconds()),
+            |sky| {
+                (
+                    sky.displayed_days(&runtime),
+                    sky.displayed_seconds(&runtime),
+                )
+            },
         );
         let minutes = (seconds / 60.0).floor();
+        let controls = settings.controls();
         next.time = format!(
-            "{:02.0}:{:02.0} · Cycle {} · {} / {} · {} pause",
+            "Day {:.0} · {:02.0}:{:02.0} · Cycle {}",
+            days.floor(),
             (minutes / 60.0).floor(),
             minutes % 60.0,
             sky.as_ref().map_or("paused", |sky| sky.status()),
-            settings.controls().label(GameAction::DevTimeEarlier),
-            settings.controls().label(GameAction::DevTimeLater),
-            settings.controls().label(GameAction::DevTimePause)
         );
+        next.clock = format!(
+            "{} / {} Hour   {} / {} Day   {} Pause",
+            controls.label(GameAction::DevTimeEarlier),
+            controls.label(GameAction::DevTimeLater),
+            controls.label(GameAction::DevDayEarlier),
+            controls.label(GameAction::DevDayLater),
+            controls.label(GameAction::DevTimePause)
+        );
+        next.sky = sky
+            .as_ref()
+            .and_then(|sky| Some(describe_sky(sky.system()?, sky.current()?)))
+            .unwrap_or_default();
     }
     if ui.handles.dev_tools.get_untracked() != next {
         ui.handles.dev_tools.set(next);
@@ -118,6 +165,10 @@ pub(crate) fn DevOverlay(model: State<Model>, viewport: State<Size>) -> Element 
                 text #mechanic.caption { model.get().modes }
                 text #mechanic.caption { model.get().speed }
                 text #mechanic.caption { model.get().time }
+                text #mechanic.caption { model.get().clock }
+                if model.with(|model| !model.sky.is_empty()) {
+                    text #mechanic.caption { model.get().sky }
+                }
                 text #mechanic.caption { model.get().erosion }
                 text #mechanic.caption { model.get().heatmap }
                 if model.with(|model| model.heatmap_visible) {

@@ -3,6 +3,7 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use mechanic_core::SECONDS_PER_DAY;
 
 use crate::camera::{MainCamera, PlayerCamera, PlayerState};
 use crate::controls::GameAction;
@@ -310,7 +311,9 @@ pub(crate) fn input(
             }
             let hours = i32::from(actions.just_pressed(GameAction::DevTimeLater))
                 - i32::from(actions.just_pressed(GameAction::DevTimeEarlier));
-            runtime.advance_day(f64::from(hours) * 3600.0);
+            let days = i32::from(actions.just_pressed(GameAction::DevDayLater))
+                - i32::from(actions.just_pressed(GameAction::DevDayEarlier));
+            runtime.advance_day(f64::from(hours) * 3600.0 + f64::from(days) * SECONDS_PER_DAY);
             if actions.just_pressed(GameAction::DevErosionMap) {
                 dev.erosion_map.cycle();
             }
