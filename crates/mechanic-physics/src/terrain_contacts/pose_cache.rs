@@ -7,13 +7,13 @@ use crate::{BodyPose, PhysicsError};
 use bevy_math::DVec3;
 use mechanic_core::{ContactCylinder, ContactPolytope, ConvexSeparation};
 use mechanic_world::TerrainNodeId;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::OnceLock;
 
 // Cached construction geometry is relative to the simulation origin, independent
 // of terrain publications. Exact body-pose changes invalidate only that body's
 // shapes. Topology owns the cache and cannot be changed in place.
-pub(super) type CachedSeparations = HashMap<[usize; 2], (f64, Option<ConvexSeparation>)>;
+pub(super) type CachedSeparations = FxHashMap<[usize; 2], (f64, Option<ConvexSeparation>)>;
 
 #[derive(Default)]
 pub(super) struct PoseCache {

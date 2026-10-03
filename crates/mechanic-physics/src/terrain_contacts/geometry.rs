@@ -620,7 +620,8 @@ impl MachineCollisionGeometry {
                 }
             }
         }
-        pairs.sort_unstable();
+        // The same order as sorting the pairs themselves, compared as one key.
+        pairs.sort_unstable_by_key(|&[first, second]| (first as u128) << 64 | second as u128);
         CandidatePairs { scratch }
     }
 }
