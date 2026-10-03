@@ -317,7 +317,7 @@ fn transition_boundary_samples_propagate_across_fine_edges_and_corners() {
     let node = TerrainNodeId::leaf(BrickCoord::new(0, 0, 0));
     let side = TerrainNodeId::leaf(BrickCoord::new(0, 0, 1));
     let diagonal = TerrainNodeId::leaf(BrickCoord::new(0, 1, 1));
-    let selected = BTreeSet::from([node, side, diagonal]);
+    let selected = rustc_hash::FxHashSet::from_iter([node, side, diagonal]);
     let mut masks = std::collections::BTreeMap::from([
         (
             node,

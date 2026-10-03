@@ -137,12 +137,36 @@ pub(crate) struct PlanarCache {
     values: Vec<Option<Vec<f64>>>,
 }
 
+/// An op's input registers in [`Op::inputs`] order, gathered once so the
+/// evaluators index them instead of re-deriving them at every point.
+#[derive(Clone, Copy, Debug, Default)]
+struct Arguments {
+    registers: [Reg; 5],
+    count: u8,
+}
+
+impl Arguments {
+    fn of(op: &Op) -> Self {
+        let mut arguments = Self::default();
+        for input in op.inputs() {
+            arguments.registers[usize::from(arguments.count)] = input;
+            arguments.count += 1;
+        }
+        arguments
+    }
+
+    fn registers(&self) -> &[Reg] {
+        &self.registers[..usize::from(self.count)]
+    }
+}
+
 /// A compiled expression. The last op is the result.
 #[derive(Clone, Debug)]
 pub(crate) struct Tape {
     pub(crate) ops: Vec<Op>,
     pub(crate) axes: Vec<Axes>,
     last_use: Vec<u32>,
+    arguments: Vec<Arguments>,
 }
 
 impl Tape {
@@ -168,10 +192,12 @@ impl Tape {
                 last_use[input as usize] = u32::try_from(index).expect("tape fits u32");
             }
         }
+        let arguments = ops.iter().map(Arguments::of).collect();
         Self {
             ops,
             axes,
             last_use,
+            arguments,
         }
     }
 
@@ -186,14 +212,14 @@ impl Tape {
         const STACK_OPS: usize = 96;
         if self.ops.len() <= STACK_OPS {
             let mut values = [0.0; STACK_OPS];
-            for (index, op) in self.ops.iter().enumerate() {
-                values[index] = apply(op, &values[..index], point, inputs);
+            for (index, (op, arguments)) in self.ops.iter().zip(&self.arguments).enumerate() {
+                values[index] = apply(op, arguments, &values[..index], point, inputs);
             }
             return values[self.ops.len() - 1];
         }
         let mut values = Vec::with_capacity(self.ops.len());
-        for op in &self.ops {
-            let value = apply(op, &values, point, inputs);
+        for (op, arguments) in self.ops.iter().zip(&self.arguments) {
+            let value = apply(op, arguments, &values, point, inputs);
             values.push(value);
         }
         *values.last().expect("tapes are never empty")
@@ -201,9 +227,17 @@ impl Tape {
 
     /// Bounds over an axis-aligned box.
     pub(crate) fn interval(&self, domain: [Interval; 3], inputs: &[Interval]) -> Interval {
+        const STACK_OPS: usize = 96;
+        if self.ops.len() <= STACK_OPS {
+            let mut values = [Interval::point(0.0); STACK_OPS];
+            for (index, (op, arguments)) in self.ops.iter().zip(&self.arguments).enumerate() {
+                values[index] = apply_interval(op, arguments, &values[..index], domain, inputs);
+            }
+            return values[self.ops.len() - 1];
+        }
         let mut values: Vec<Interval> = Vec::with_capacity(self.ops.len());
-        for op in &self.ops {
-            let value = apply_interval(op, &values, domain, inputs);
+        for (op, arguments) in self.ops.iter().zip(&self.arguments) {
+            let value = apply_interval(op, arguments, &values, domain, inputs);
             values.push(value);
         }
         *values.last().expect("tapes are never empty")
@@ -289,9 +323,10 @@ impl Tape {
             let mut buffer = free.pop().unwrap_or_default();
             buffer.clear();
             buffer.reserve(extent[0] * extent[1] * extent[2]);
-            let arity = op.inputs().count();
+            let registers = self.arguments[index].registers();
+            let arity = registers.len();
             let mut sources: [(&[f64], [usize; 3]); 5] = [(&[], [0; 3]); 5];
-            for (slot, input) in op.inputs().enumerate() {
+            for (slot, &input) in registers.iter().enumerate() {
                 sources[slot] = (
                     buffers[input as usize]
                         .as_deref()
@@ -321,8 +356,44 @@ impl Tape {
                     let count = extent[0];
                     macro_rules! each {
                         ($value:expr) => {
-                            for i in 0..count {
-                                buffer.push($value(i));
+                            buffer.extend((0..count).map($value))
+                        };
+                    }
+                    // A row that varies along x is contiguous; one that does
+                    // not is a single value. Either way each element sees the
+                    // same arithmetic as `at`, in a loop the compiler can
+                    // keep tight.
+                    let lane = |slot: usize| {
+                        let (values, stride) = rows[slot];
+                        if stride == 0 {
+                            Lane::Splat(values[0])
+                        } else {
+                            Lane::Row(&values[..count])
+                        }
+                    };
+                    macro_rules! unary {
+                        ($f:expr) => {
+                            match lane(0) {
+                                Lane::Row(a) => buffer.extend(a.iter().map(|&a| $f(a))),
+                                Lane::Splat(a) => buffer.extend(std::iter::repeat_n($f(a), count)),
+                            }
+                        };
+                    }
+                    macro_rules! binary {
+                        ($f:expr) => {
+                            match (lane(0), lane(1)) {
+                                (Lane::Row(a), Lane::Row(b)) => {
+                                    buffer.extend(a.iter().zip(b).map(|(&a, &b)| $f(a, b)));
+                                }
+                                (Lane::Row(a), Lane::Splat(b)) => {
+                                    buffer.extend(a.iter().map(|&a| $f(a, b)));
+                                }
+                                (Lane::Splat(a), Lane::Row(b)) => {
+                                    buffer.extend(b.iter().map(|&b| $f(a, b)));
+                                }
+                                (Lane::Splat(a), Lane::Splat(b)) => {
+                                    buffer.extend(std::iter::repeat_n($f(a, b), count));
+                                }
                             }
                         };
                     }
@@ -336,14 +407,14 @@ impl Tape {
                         Op::Y => each!(|_| y),
                         Op::Z => each!(|_| z),
                         Op::Const(value) => each!(|_| *value),
-                        Op::Add(..) => each!(|i| at(0, i) + at(1, i)),
-                        Op::Sub(..) => each!(|i| at(0, i) - at(1, i)),
-                        Op::Mul(..) => each!(|i| at(0, i) * at(1, i)),
-                        Op::Div(..) => each!(|i| at(0, i) / at(1, i)),
-                        Op::Neg(_) => each!(|i| -at(0, i)),
-                        Op::Min(..) => each!(|i| f64::min(at(0, i), at(1, i))),
-                        Op::Max(..) => each!(|i| f64::max(at(0, i), at(1, i))),
-                        Op::Abs(_) => each!(|i| f64::abs(at(0, i))),
+                        Op::Add(..) => binary!(|a: f64, b: f64| a + b),
+                        Op::Sub(..) => binary!(|a: f64, b: f64| a - b),
+                        Op::Mul(..) => binary!(|a: f64, b: f64| a * b),
+                        Op::Div(..) => binary!(|a: f64, b: f64| a / b),
+                        Op::Neg(_) => unary!(|a: f64| -a),
+                        Op::Min(..) => binary!(f64::min),
+                        Op::Max(..) => binary!(f64::max),
+                        Op::Abs(_) => unary!(f64::abs),
                         Op::Scatter(..) if nearby.is_empty() => each!(|_| SCATTER_FLOOR),
                         Op::Scatter(_, scatter) => {
                             each!(|i| scatter.sample_among(
@@ -370,7 +441,7 @@ impl Tape {
                 }
             }
             buffers[index] = Some(buffer);
-            for input in op.inputs() {
+            for &input in registers {
                 // Planar values are kept for the cache rather than reused.
                 if self.last_use[input as usize] == u32::try_from(index).expect("tape fits u32")
                     && input as usize != self.ops.len() - 1
@@ -409,17 +480,23 @@ impl Tape {
     }
 }
 
-fn apply(op: &Op, values: &[f64], point: [f64; 3], inputs: &[f64]) -> f64 {
+/// One input's values along a grid row.
+#[derive(Clone, Copy)]
+enum Lane<'a> {
+    Row(&'a [f64]),
+    Splat(f64),
+}
+
+fn apply(op: &Op, registers: &Arguments, values: &[f64], point: [f64; 3], inputs: &[f64]) -> f64 {
     if let Op::Input(index) | Op::Varying(index) = op {
         return inputs[*index as usize];
     }
     let mut arguments = [0.0; 5];
-    let mut count = 0;
-    for input in op.inputs() {
-        arguments[count] = values[input as usize];
-        count += 1;
+    let registers = registers.registers();
+    for (argument, &input) in arguments.iter_mut().zip(registers) {
+        *argument = values[input as usize];
     }
-    apply_gathered(op, &arguments[..count], point)
+    apply_gathered(op, &arguments[..registers.len()], point)
 }
 
 /// Evaluates one op from its gathered argument values. Point and grid
@@ -480,14 +557,16 @@ fn apply_gathered(op: &Op, arguments: &[f64], point: [f64; 3]) -> f64 {
 
 fn apply_interval(
     op: &Op,
+    registers: &Arguments,
     values: &[Interval],
     domain: [Interval; 3],
     inputs: &[Interval],
 ) -> Interval {
+    let registers = registers.registers();
     let argument = |index: usize| {
-        op.inputs()
-            .nth(index)
-            .map_or(Interval::point(0.0), |reg| values[reg as usize])
+        registers
+            .get(index)
+            .map_or(Interval::point(0.0), |&reg| values[reg as usize])
     };
     let a = argument(0);
     let b = argument(1);
