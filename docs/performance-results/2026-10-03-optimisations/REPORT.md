@@ -21,6 +21,50 @@ the same. Each change was measured against the commit before the pass,
   `mesh_digest`).
 - CPU profiles: macOS `sample` at 1 ms.
 
+## Follow-up: exact contact rows (after PR #67)
+
+PR #67 shipped change 1 (shared per-body responses). Its replay of the
+builder kept the baseline's state for 1,749 ticks, parted at tick 1,750 and
+came apart at tick 2,624 instead of the baseline's 3,699. The baseline spread
+argued below does not establish that as equivalent, so the follow-up replaces
+change 1 with a contact-row path that is exact.
+
+**Isolation.** `main` after PR #67 with only the shared-basis path switched
+off matches `a2cd0d0`'s builder state hash on all 3,698 ticks before the
+baseline comes apart. Every other change in the pass is therefore
+bit-identical over the full run, and change 1 alone caused the divergence.
+
+**Replacement.** Contact rows go back to one direct articulated solve per
+row, as at `a2cd0d0`. Two changes recover speed without touching the
+arithmetic:
+
+- The backward sweep skips a body whose own entry and accumulated load are
+  both exactly zero. Such a body only ever passed zeros up.
+- A contact's three or five rows are solved together (`solve_ranges_many`):
+  one walk over the bodies, each row seeing exactly the operations its own
+  solve performs.
+
+Builder replay, interleaved, load 2.6–9:
+
+| | Baseline `a2cd0d0` | Shared basis (PR #67) | Exact rows |
+|---|---|---|---|
+| tick median | 33.0–33.4 ms | 21.3–21.4 ms | 25.9–26.1 ms (−22 %) |
+| tick p95 | 46.7–46.9 ms | 31.0–31.1 ms | 36.4–36.6 ms (−22 %) |
+| contact rows median | 16.1 ms | 7.1 ms | 11.4–11.7 ms |
+| CPU cycles | 62.5–62.9 G | 43.8–43.9 G | 49.7 G (−21 %) |
+| state hash vs baseline | — | parts at tick 1,750 | equal on all 3,698 ticks |
+| comes apart at | 3,699 | 2,624 | 3,699 (same state) |
+| maximum resident / scratch | 130 MB / 8.457 MB | — | 123 MB / 8.460 MB |
+
+The physics suite matches the baseline (250 pass; only
+`a_box_dropped_on_a_resting_box…` fails, as at `a2cd0d0`), and the ledge
+test's outcome is the baseline's by construction.
+
+**Unknown save fields.** `stored_water_with_an_unknown_field_keeps_what_this_build_knows`
+loads a water save with an unrecognised 50,000-entry list and checks the
+known fields survive. It takes 0.12 s with the vendored ron and 72 s against
+unpatched ron 0.12.2.
+
 ## Final serial comparison
 
 Run one at a time, baseline and current interleaved, with the load average
@@ -152,7 +196,8 @@ overlap; four paired single-biome runs split two each way.
 
 ### CPU physics
 
-1. **Contact rows share each body's responses.** Every contact row is a
+1. **Contact rows share each body's responses** (superseded by the exact
+   rows above; kept here as the record of what PR #67 measured). Every contact row is a
    combination of six spatial unit impulses at its body's centre of mass, so a
    substep now solves those six per touched body
    (`MachineKinematics::body_responses`) and combines them, instead of running

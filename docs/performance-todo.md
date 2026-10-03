@@ -11,7 +11,8 @@ historical; they do not pause the authorized CPU/GPU and production-rendering wo
 CPU tick 34.5 → 23.0 ms median; full terrain cut −19 % cycles with identical
 meshes; water −26 % cycles; cached terrain selection p95 about 30 → 17 ms.
 
-- [x] Contact rows from six basis responses per touched body.
+- [x] Contact rows from six basis responses per touched body; replaced by
+  exact batched row solves after it changed the builder's long-run state.
 - [x] Fx hashing for collision and mesher maps; one-key candidate sort.
 - [x] Tape arguments gathered once; grid rows evaluated as lanes.
 - [x] Terrain cut balanced and stitched with hashed membership.
