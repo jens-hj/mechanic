@@ -124,6 +124,7 @@ impl Plugin for FramePlugin {
         app.init_resource::<crate::dial_assignment::DialAssignments>();
         app.init_resource::<crate::button_config::ButtonConfiguration>();
         app.init_resource::<crate::input_parts::InputParts>();
+        app.init_resource::<crate::coupler::Couplers>();
         app.init_resource::<crate::physical_controls::PhysicalControls>();
         app.configure_sets(
             Update,
@@ -315,6 +316,7 @@ impl Plugin for FramePlugin {
                     .chain()
                     .in_set(FrameSet::Visuals),
                 (
+                    crate::coupler::update,
                     maintain_space_simulation,
                     sync_simulation_visual_cache,
                     linear_render::sync_linear_bearing_visuals,

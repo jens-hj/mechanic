@@ -44,6 +44,7 @@ pub(super) fn contact_properties(spec: PartSpec) -> MaterialProperties {
         | PartSpec::Seat(_)
         | PartSpec::Dial(_)
         | PartSpec::Button(_)
+        | PartSpec::Coupler(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => AUTHORED_CONTACT_PROPERTIES,
     }
@@ -197,7 +198,7 @@ pub(super) fn append_part_colliders(
                 });
             }
         }
-        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => {
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => {
             colliders.push(LocalCollider {
                 source_part: part,
                 compound_index,

@@ -42,6 +42,10 @@ pub(crate) struct DimensionFreeze {
 }
 
 impl DimensionFreeze {
+    pub(crate) fn holds_body(&self, body: u32) -> bool {
+        self.held.get(body as usize).copied().unwrap_or(false)
+    }
+
     fn plan_height(
         &mut self,
         creation: &CompiledCreation,

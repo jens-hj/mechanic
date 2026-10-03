@@ -21,6 +21,38 @@ pub(crate) fn stage(
     first: PartId,
     second: PartId,
 ) -> Result<ConstructionGraph, String> {
+    stage_connection(graph, simulation, first, second, false)
+}
+
+pub(crate) fn stage_coupler(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    first: PartId,
+    second: PartId,
+) -> Result<ConstructionGraph, String> {
+    if ![first, second]
+        .into_iter()
+        .all(|part| matches!(graph.part(part), Some(mechanic_core::PartSpec::Coupler(_))))
+    {
+        return Err("Both endpoints must be couplers".into());
+    }
+    if graph
+        .structural_component(first, [])
+        .map_err(|e| e.to_string())?
+        .contains(second)
+    {
+        return Err("Couplers must belong to separate creations".into());
+    }
+    stage_connection(graph, simulation, first, second, true)
+}
+
+fn stage_connection(
+    graph: &ConstructionGraph,
+    simulation: &AppSimulation,
+    first: PartId,
+    second: PartId,
+    coupler: bool,
+) -> Result<ConstructionGraph, String> {
     let creation = simulation
         .creation
         .as_ref()
@@ -118,6 +150,23 @@ pub(crate) fn stage(
                 return Err("The combined Garage default pose would intersect itself".to_owned());
             }
         }
+    }
+    finish_connection(staged, first, second, coupler)
+}
+
+fn finish_connection(
+    mut staged: ConstructionGraph,
+    first: PartId,
+    second: PartId,
+    coupler: bool,
+) -> Result<ConstructionGraph, String> {
+    if coupler {
+        staged
+            .apply(mechanic_core::BuildCommand::RigidLink(
+                mechanic_core::RigidLinkSpec { first, second },
+            ))
+            .map_err(|e| e.to_string())?;
+        return Ok(staged);
     }
     builder::stage_weld_objects(&staged, FaceOwner::Part(first), FaceOwner::Part(second))
         .map_err(|e| e.to_string())

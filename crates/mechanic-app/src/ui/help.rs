@@ -366,6 +366,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 "Q cycles all 24 orientations; place a cushion, then wire it with Connector"
                     .to_owned()
             }
+            (false, Tool::Coupler, _, _, _) => "Place two opposing couplers; wire each to a Controller and assign a key with Connector".into(),
             (false, Tool::Dial(_) | Tool::Button(_), _, _, _) => format!("{} cycles 5 / 10 / 25 cm; place on a surface; use Connector to link to one Controller", controls.label(GameAction::PipeTurn)),
             (false, Tool::Input, _, _, _) => {
                 "Q cycles all 24 orientations; place Input, then wire it to a Seat".to_owned()
@@ -588,6 +589,7 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                         | Tool::Seat
                         | Tool::Dial(_)
                         | Tool::Button(_)
+                        | Tool::Coupler
                         | Tool::Input
                         | Tool::DimensionLink
                 )
@@ -653,6 +655,7 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
             | Tool::Connector
             | Tool::Dial(_)
             | Tool::Button(_)
+            | Tool::Coupler
             | Tool::Input
             | Tool::DimensionLink,
         ) => Tone::Key,

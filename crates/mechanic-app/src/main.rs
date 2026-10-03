@@ -15,6 +15,7 @@ mod camera;
 mod chroma;
 mod control_panel;
 mod controls;
+mod coupler;
 mod cpu_physics;
 mod creation_menu;
 mod creation_store;

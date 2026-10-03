@@ -25,7 +25,7 @@ pub(crate) fn ButtonOverlay(handles: Handles) -> Element {
                     col width:220px height:min-content shrink:0 gap:4px nohit {
                         (control(model, layout.clone(), Control::Key))
                         (control(model, layout.clone(), Control::Clear))
-                        (control(model, layout.clone(), Control::Mode))
+                        (mode_control(model, layout.clone()))
                         text #mechanic.value width:fill height:min-content { model.with(|m| m.status.clone()) }
                     }
                 }
@@ -33,6 +33,16 @@ pub(crate) fn ButtonOverlay(handles: Handles) -> Element {
         }
     }
 }
+fn mode_control(model: State<Model>, layout: Layout) -> Element {
+    view! {
+        stack width:fill height:min-content nohit {
+            if model.with(|m| !m.mode.is_empty()) {
+                (control(model, layout.clone(), Control::Mode))
+            }
+        }
+    }
+}
+
 fn control(model: State<Model>, layout: Layout, control: Control) -> Element {
     view! {
         row #mechanic.badge width:220px height:32px shrink:0 pad:6px nohit @layout:{ move |rect: Rect| { layout.borrow_mut().insert(control, rect); } } {
@@ -43,6 +53,7 @@ fn control(model: State<Model>, layout: Layout, control: Control) -> Element {
 
 #[expect(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "snapshot and reticle intent resolution at the ECS/UI boundary"
 )]
 pub(crate) fn push(
@@ -60,6 +71,14 @@ pub(crate) fn push(
     >,
 ) {
     let Some(ui) = ui else { return };
+    if config.selected.is_some_and(|part| {
+        matches!(
+            graph.0.part(part),
+            Some(mechanic_core::PartSpec::Coupler(_))
+        )
+    }) {
+        ui.handles.button_layout.borrow_mut().remove(&Control::Mode);
+    }
     let centre = camera
         .0
         .logical_viewport_rect()
@@ -91,7 +110,7 @@ pub(crate) fn push(
         if let Some(part) = hit.filter(|part| {
             matches!(
                 graph.0.part(*part),
-                Some(mechanic_core::PartSpec::Button(_))
+                Some(mechanic_core::PartSpec::Button(_) | mechanic_core::PartSpec::Coupler(_))
             )
         }) {
             config.selected = Some(part);
@@ -134,7 +153,14 @@ pub(crate) fn push(
                             .map_or_else(|| "Unassigned".into(), |key| key.to_string())
                     )
                 },
-                mode: format!("Mode: {:?}", setting.button_mode),
+                mode: if matches!(
+                    graph.0.part(part),
+                    Some(mechanic_core::PartSpec::Coupler(_))
+                ) {
+                    String::new()
+                } else {
+                    format!("Mode: {:?}", setting.button_mode)
+                },
                 status: if setting.controller.is_some() {
                     "Connected to Controller".into()
                 } else {

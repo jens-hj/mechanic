@@ -149,7 +149,7 @@ pub(crate) fn advance_simulation(
         Res<crate::pause_menu::PauseMenuState>,
     ),
     mut world_runtime: ResMut<world::WorldRuntime>,
-    publication: Res<WorldPhysicsPublication>,
+    coupling: (Res<crate::coupler::Couplers>, Res<WorldPhysicsPublication>),
     mut sequencer: ResMut<DriveSequencer>,
     mut gearboxes: ResMut<GearboxRuntime>,
     frozen: Res<freeze::DimensionFreeze>,
@@ -164,6 +164,7 @@ pub(crate) fn advance_simulation(
     mut meshes: ResMut<Assets<Mesh>>,
     mut construction_visuals: Query<(&ConstructionVisual, &mut Visibility), Without<BearingVisual>>,
 ) {
+    let (couplers, publication) = coupling;
     if !simulation.is_running() {
         return;
     }
@@ -298,6 +299,9 @@ pub(crate) fn advance_simulation(
         // it steps; it is restored before returning, including on failure.
         let mut cpu_route = simulation.cpu.take();
         for tick in ticks {
+            for impulse in crate::coupler::impulses(&couplers, &simulation, tick) {
+                world_runtime.queue_player_reaction(impulse);
+            }
             if let Some((keys, seat)) = automation::drive_input(&simulation, &mut automated, tick) {
                 let controller = published_graph.seat_controller(seat);
                 step_drive_programs(

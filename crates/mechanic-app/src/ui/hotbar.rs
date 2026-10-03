@@ -719,6 +719,12 @@ pub(super) fn icon(tool: Tool) -> Element {
                     stroke:(width:2px cap:round color:bar.slot)
             }
         },
+        Tool::Coupler => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                circle at:(x:20px y:20px) radius:13px exponent:1 stroke:(width:4px color:ink.fg)
+                circle at:(x:20px y:20px) radius:7px exponent:1 stroke:(width:2px color:accent.key)
+            }
+        },
         Tool::DimensionLink => view! {
             canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
                 rect at:(x:20px y:20px) size:(w:31px h:18px) radius:4px exponent:1 fill:bar.slot
