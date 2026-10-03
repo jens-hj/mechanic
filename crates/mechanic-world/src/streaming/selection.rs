@@ -557,7 +557,7 @@ fn owner_from_level(
     leaf: BrickCoord,
     level: u8,
 ) -> Option<TerrainNodeId> {
-    (level..=5).find_map(|level| {
+    (level..=MAX_STREAMED_LEVEL).find_map(|level| {
         let id = TerrainNodeId::containing(leaf, level)?;
         selected.contains(&id).then_some(id)
     })
