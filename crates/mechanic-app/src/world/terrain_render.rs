@@ -515,7 +515,7 @@ pub(crate) fn advance_terrain_textures(
         (layer < layer_count).then_some((kind, layer))
     });
     let Some((kind, layer)) = next else {
-        return Ok(true);
+        return Ok(build.trees_done);
     };
     let edge = if kind == 3 {
         TERRAIN_MASK_EDGE
@@ -561,10 +561,11 @@ pub(crate) fn advance_terrain_textures(
         // Keep the published kind counted as done.
         build.layers[kind] = vec![Vec::new(); layer_count];
     }
-    Ok(build
-        .layers
-        .iter()
-        .all(|layers| layers.len() == layer_count))
+    Ok(build.trees_done
+        && build
+            .layers
+            .iter()
+            .all(|layers| layers.len() == layer_count))
 }
 
 /// Starts drawing every tree texture's maps off the main thread, each on its
@@ -1022,6 +1023,35 @@ mod tests {
                 let recipe = f32::from(procedural_recipe(look.texture));
                 assert!((gpu.shade.y - recipe).abs() < f32::EPSILON);
             }
+        }
+    }
+
+    #[test]
+    fn terrain_textures_are_ready_only_once_the_tree_arrays_are() {
+        let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(42))
+            .palette()
+            .clone();
+        let mut images = Assets::<Image>::default();
+        // Blank ground layers finish at once; the trees take far longer.
+        let mut build = TerrainTextureBuild {
+            sources: vec![[None, None, None, None]; TextureSet::ALL.len()],
+            layers: Default::default(),
+            targets: core::array::from_fn(|_| images.reserve_handle()),
+            luma: [0.5; TextureSet::ALL.len()],
+            surfaces: Handle::default(),
+            tree_task: Some(draw_tree_layers(palette.tree_textures().to_vec())),
+            tree_targets: core::array::from_fn(|_| images.reserve_handle()),
+            trees_done: false,
+        };
+        let started = std::time::Instant::now();
+        let mut ready = false;
+        while !ready && started.elapsed() < std::time::Duration::from_mins(2) {
+            ready = advance_terrain_textures(&mut build, &mut images).unwrap();
+            std::thread::yield_now();
+        }
+        assert!(ready, "terrain textures never finished");
+        for target in &build.tree_targets {
+            assert!(images.get(target).is_some(), "ready before the tree arrays");
         }
     }
 

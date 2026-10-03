@@ -141,7 +141,10 @@ every 1.5 m, the terrain's texture repeat, at 512 pixels (3 mm each).
 The terrain shader samples tree maps from their own texture arrays, so the
 1536-pixel ground layers stay as they are. Bark and hanging leaves need an
 up direction. On faces facing along x, the shader swaps the repeat's axes
-for tree maps, so fissures run up the trunk on every side.
+for tree maps, so fissures run up the trunk on every side. That swap made the
+terrain pixel test's blended case drift, through undefined implicit
+derivatives. Every textured lookup now takes explicit gradients (see
+[terrain materials](terrain-materials.md)).
 
 ![Bark and leaves](flora/textures.png)
 

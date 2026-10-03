@@ -98,6 +98,13 @@ add a `*_look` composing them.
   scored 0.92 at 3 m; procedural grass, dirt and stone score 0.20, 0.09 and 0.03.
 - `terrain_shader_preserves_pixels_and_measures_gpu_cost` (ignored): runs
   with procedural ground off, so it still guards the textured path.
+  - Textured lookups take their gradients from the top of the fragment
+    (`textureSampleGrad`). They sit inside per-surface branches, where
+    implicit derivatives are undefined.
+  - With implicit derivatives, any unrelated edit could shift the blended
+    case by up to 83 per channel along material boundaries.
+  - The frozen reference was refreshed to the explicit-gradient shader on
+    2026-10-03, and now reproduces itself exactly.
 - `procedural_terrain_gpu_cost` and `procedural_cache_update_cost` (ignored):
   paired opaque timings per material, and frame cost while the cache moves.
 

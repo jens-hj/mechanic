@@ -278,25 +278,34 @@ struct TerrainSample {
     mask: f32,
 }
 
-fn sample_projection(layer: i32, uv: vec2<f32>, masked: bool) -> array<vec4<f32>, 4> {
+// Samples every map of a layer at `uv`, which moves by `du` and `dv` per
+// pixel. Gradients are taken once in uniform control flow: lookups sit
+// inside per-fragment branches, where implicit derivatives are undefined.
+fn sample_projection(
+    layer: i32,
+    uv: vec2<f32>,
+    du: vec2<f32>,
+    dv: vec2<f32>,
+    masked: bool,
+) -> array<vec4<f32>, 4> {
     if layer >= TREE_LAYER_BASE {
         let tree = layer - TREE_LAYER_BASE;
         return array<vec4<f32>, 4>(
-            textureSample(tree_base_color_maps, terrain_sampler, uv, tree),
-            textureSample(tree_orm_maps, terrain_sampler, uv, tree),
-            textureSample(tree_normal_maps, terrain_sampler, uv, tree),
+            textureSampleGrad(tree_base_color_maps, terrain_sampler, uv, tree, du, dv),
+            textureSampleGrad(tree_orm_maps, terrain_sampler, uv, tree, du, dv),
+            textureSampleGrad(tree_normal_maps, terrain_sampler, uv, tree, du, dv),
             vec4<f32>(1.0),
         );
     }
     // Untinted and unmasked surfaces skip the mask lookup entirely.
     var mask = vec4<f32>(1.0);
     if masked {
-        mask = textureSample(tint_masks, terrain_sampler, uv, layer);
+        mask = textureSampleGrad(tint_masks, terrain_sampler, uv, layer, du, dv);
     }
     return array<vec4<f32>, 4>(
-        textureSample(base_color_maps, terrain_sampler, uv, layer),
-        textureSample(orm_maps, terrain_sampler, uv, layer),
-        textureSample(normal_maps, terrain_sampler, uv, layer),
+        textureSampleGrad(base_color_maps, terrain_sampler, uv, layer, du, dv),
+        textureSampleGrad(orm_maps, terrain_sampler, uv, layer, du, dv),
+        textureSampleGrad(normal_maps, terrain_sampler, uv, layer, du, dv),
         mask,
     );
 }
@@ -307,6 +316,8 @@ fn sample_layer(
     layer: i32,
     masked: bool,
     coordinates: vec3<f32>,
+    ddx: vec3<f32>,
+    ddy: vec3<f32>,
     projection: vec3<f32>,
     geometric_normal: vec3<f32>,
 ) -> TerrainSample {
@@ -319,7 +330,13 @@ fn sample_layer(
     // keep up on the x-facing sides too, as they do on the z-facing ones.
     let upright = layer >= TREE_LAYER_BASE;
     if projection.x > 0.001 {
-        let maps = sample_projection(layer, select(coordinates.yz, coordinates.zy, upright), masked);
+        let maps = sample_projection(
+            layer,
+            select(coordinates.yz, coordinates.zy, upright),
+            select(ddx.yz, ddx.zy, upright),
+            select(ddy.yz, ddy.zy, upright),
+            masked,
+        );
         sampled.color += maps[0] * projection.x;
         sampled.surface += maps[1].rgb * projection.x;
         sampled.mask += maps[3].r * projection.x;
@@ -334,7 +351,7 @@ fn sample_layer(
         ) * projection.x;
     }
     if projection.y > 0.001 {
-        let maps = sample_projection(layer, coordinates.xz, masked);
+        let maps = sample_projection(layer, coordinates.xz, ddx.xz, ddy.xz, masked);
         sampled.color += maps[0] * projection.y;
         sampled.surface += maps[1].rgb * projection.y;
         sampled.mask += maps[3].r * projection.y;
@@ -346,7 +363,7 @@ fn sample_layer(
         ) * projection.y;
     }
     if projection.z > 0.001 {
-        let maps = sample_projection(layer, coordinates.xy, masked);
+        let maps = sample_projection(layer, coordinates.xy, ddx.xy, ddy.xy, masked);
         sampled.color += maps[0] * projection.z;
         sampled.surface += maps[1].rgb * projection.z;
         sampled.mask += maps[3].r * projection.z;
@@ -872,6 +889,8 @@ fn fragment(
                 i32(look.params.x),
                 look.params.y > 0.5 && any(look.tint.rgb != vec3<f32>(1.0)),
                 coordinates / repeat,
+                ddx / repeat,
+                ddy / repeat,
                 projection,
                 pbr_input.world_normal,
             );
