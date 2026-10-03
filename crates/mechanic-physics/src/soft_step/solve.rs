@@ -302,8 +302,17 @@ impl Contact {
             Some((point.body, anchor, 1.0)),
             point.other_body.map(|body| (body, other, -1.0)),
         ];
-        for &(body, ..) in sides.iter().flatten() {
-            bodies.prepare(model, factor, body)?;
+        // A lone free body's component solves as one 6×6 block, no dearer than
+        // combining six basis responses, so it keeps the direct solve and its
+        // exact arithmetic. Articulated components share their bases.
+        let shared = sides
+            .iter()
+            .flatten()
+            .any(|&(body, ..)| model.component_rows(body).len() > LONE_BODY_VELOCITIES);
+        if shared {
+            for &(body, ..) in sides.iter().flatten() {
+                bodies.prepare(model, factor, body)?;
+            }
         }
         response.resize(jacobian.len(), 0.0);
         let count = if self.rolling.is_some() { 5 } else { 3 };
@@ -315,6 +324,14 @@ impl Contact {
         {
             let angular = row >= 3;
             model.contact_row(&point, direction, angular, jacobian)?;
+            if !shared {
+                for range in &ranges {
+                    response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
+                }
+                factor.solve_ranges(response, &ranges)?;
+                output.rows[row].refresh_local(jacobian, response, &ranges);
+                continue;
+            }
             for range in &ranges {
                 response[range.clone()].fill(0.0);
             }
@@ -345,6 +362,9 @@ impl Contact {
         Ok(())
     }
 }
+
+/// Generalized velocities of one free body with no joints.
+const LONE_BODY_VELOCITIES: usize = 6;
 
 /// Each touched body's six basis responses under the current substep's factor,
 /// solved on first use; see [`MachineKinematics::body_responses`].
