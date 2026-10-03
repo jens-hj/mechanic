@@ -60,6 +60,7 @@ const TREE_LAYER_BASE: u32 = 64;
 const TREE_MAP_KINDS: usize = 3;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, PartialEq)]
+#[bind_group_data(TerrainMaterialKey)]
 pub(crate) struct TerrainRenderMaterial {
     #[texture(0, dimension = "2d_array")]
     #[sampler(4)]
@@ -96,6 +97,38 @@ pub(crate) struct TerrainRenderMaterial {
     pub(super) tree_normal: Handle<Image>,
     #[texture(13, dimension = "2d_array")]
     pub(super) tree_orm: Handle<Image>,
+    /// The procedural field cache around the camera; see
+    /// [`super::terrain_cache`].
+    #[texture(14, dimension = "2d_array")]
+    pub(super) stone_fields: Handle<Image>,
+    #[texture(15, dimension = "2d_array")]
+    pub(super) soil_fields: Handle<Image>,
+    #[texture(16, dimension = "2d_array")]
+    pub(super) grass_fields: Handle<Image>,
+    #[storage(17, read_only)]
+    pub(super) field_windows: Handle<ShaderBuffer>,
+    /// Fine grain under the procedural fields; see [`super::terrain_cache`].
+    #[texture(18, dimension = "2d_array")]
+    pub(super) grain: Handle<Image>,
+    /// Whether grass, dirt and stone are drawn procedurally. Switched off,
+    /// the shader is built without the procedural path and costs nothing
+    /// for it.
+    pub(crate) procedural_ground: bool,
+}
+
+/// Which terrain shader a material needs: with the procedural path or not.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct TerrainMaterialKey {
+    procedural_ground: bool,
+}
+
+impl From<&TerrainRenderMaterial> for TerrainMaterialKey {
+    fn from(material: &TerrainRenderMaterial) -> Self {
+        Self {
+            procedural_ground: material.procedural_ground,
+        }
+    }
 }
 
 /// A wetness map of dry ground, for terrain drawn before water has run.
@@ -110,7 +143,8 @@ pub(crate) struct TerrainSurfaceGpu {
     tint: Vec4,
     /// Texture layer, tint-masked flag, roughness and repeat multipliers.
     params: Vec4,
-    /// Mean luminance of the layer's base colour.
+    /// Mean luminance of the layer's base colour, and the procedural recipe
+    /// that draws the layer instead of its textures, or zero.
     shade: Vec4,
 }
 
@@ -163,7 +197,12 @@ fn terrain_surfaces(
                     look.roughness,
                     look.scale,
                 ),
-                shade: Vec4::new(layer_luma[layer as usize], 0.0, 0.0, 0.0),
+                shade: Vec4::new(
+                    layer_luma[layer as usize],
+                    f32::from(procedural_recipe(look.texture)),
+                    0.0,
+                    0.0,
+                ),
             }
         })
         .collect()
@@ -188,8 +227,13 @@ impl Material for TerrainRenderMaterial {
         _pipeline: &bevy::pbr::MaterialPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
         layout: &bevy::mesh::MeshVertexBufferLayoutRef,
-        _key: bevy::pbr::MaterialPipelineKey<Self>,
+        key: bevy::pbr::MaterialPipelineKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if key.bind_group_data.procedural_ground
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("PROCEDURAL_GROUND".into());
+        }
         // The prepass keeps Bevy's own vertex stage and layout.
         let prepass = descriptor
             .vertex
@@ -335,6 +379,23 @@ fn texture_directory(set: TextureSet) -> &'static str {
     }
 }
 
+/// The terrain shader's procedural recipe for a set, or zero for a set only
+/// ever drawn from its textures. Sets with a recipe keep their textures for
+/// when procedural ground is switched off. Mirrors the `RECIPE_*` constants
+/// in the shader.
+pub(crate) const fn procedural_recipe(set: TextureSet) -> u8 {
+    match set {
+        TextureSet::Grass => 1,
+        TextureSet::Dirt => 2,
+        TextureSet::Stone => 3,
+        TextureSet::Sand
+        | TextureSet::Iron
+        | TextureSet::Graphite
+        | TextureSet::Copper
+        | TextureSet::Wood => 0,
+    }
+}
+
 /// Sets whose textures come with a tint mask; the rest tint everywhere.
 const fn has_tint_mask(set: TextureSet) -> bool {
     matches!(
@@ -389,6 +450,12 @@ pub(crate) fn terrain_render_material(
         tree_base_color: tree_targets[0].clone(),
         tree_normal: tree_targets[1].clone(),
         tree_orm: tree_targets[2].clone(),
+        stone_fields: super::terrain_cache::STONE_FIELDS,
+        soil_fields: super::terrain_cache::SOIL_FIELDS,
+        grass_fields: super::terrain_cache::GRASS_FIELDS,
+        field_windows: super::terrain_cache::FIELD_WINDOWS,
+        grain: super::terrain_cache::GRAIN,
+        procedural_ground: false,
     };
     (
         material,
@@ -646,7 +713,7 @@ fn mean_luma(pixels: &[u8]) -> f32 {
     mean
 }
 
-fn full_mip_chain(top: &[u8], width: u32, height: u32) -> Vec<u8> {
+pub(super) fn full_mip_chain(top: &[u8], width: u32, height: u32) -> Vec<u8> {
     let mut chain = Vec::with_capacity(full_rgba8_mip_byte_count(width, height));
     chain.extend_from_slice(top);
     let mut level = top.to_vec();
@@ -661,7 +728,7 @@ fn full_mip_chain(top: &[u8], width: u32, height: u32) -> Vec<u8> {
     chain
 }
 
-fn texture_array(layers: Vec<Vec<u8>>, edge: u32, format: TextureFormat) -> Image {
+pub(super) fn texture_array(layers: Vec<Vec<u8>>, edge: u32, format: TextureFormat) -> Image {
     let layer_count = u32::try_from(layers.len()).expect("a handful of layers");
     let mut image = Image::new_uninit(
         bevy::render::render_resource::Extent3d {
@@ -931,6 +998,30 @@ mod tests {
                 "terrain must release its handle without deleting a shared image"
             );
             // Leaving the world drops the build before the next entry.
+        }
+    }
+
+    #[test]
+    fn grass_dirt_and_stone_surfaces_name_their_procedural_recipe() {
+        for set in TextureSet::ALL {
+            assert_eq!(
+                procedural_recipe(set) != 0,
+                matches!(
+                    set,
+                    TextureSet::Grass | TextureSet::Dirt | TextureSet::Stone
+                ),
+                "{set:?}"
+            );
+        }
+        let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(42))
+            .palette()
+            .clone();
+        let surfaces = terrain_surfaces(&palette, &[0.5; TextureSet::ALL.len()]);
+        for (look, gpu) in palette.looks().iter().zip(&surfaces) {
+            if look.tree_texture.is_none() {
+                let recipe = f32::from(procedural_recipe(look.texture));
+                assert!((gpu.shade.y - recipe).abs() < f32::EPSILON);
+            }
         }
     }
 

@@ -57,7 +57,7 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<PipelinedRenderingPlugin>(),
     )
-    .add_plugins(MaterialPlugin::<TerrainRenderMaterial>::default())
+    .add_plugins(crate::world::TerrainRenderPlugin)
     .init_resource::<Pixels>();
     app.finish();
     app.cleanup();
@@ -153,6 +153,12 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
         tree_base_color: base_color.clone(),
         tree_normal: normal.clone(),
         tree_orm: orm.clone(),
+        stone_fields: crate::world::terrain_cache::STONE_FIELDS,
+        soil_fields: crate::world::terrain_cache::SOIL_FIELDS,
+        grass_fields: crate::world::terrain_cache::GRASS_FIELDS,
+        field_windows: crate::world::terrain_cache::FIELD_WINDOWS,
+        grain: crate::world::terrain_cache::GRAIN,
+        procedural_ground: false,
     };
     let material = app
         .world_mut()
@@ -612,7 +618,7 @@ fn grass_pixel(wilt: f32) -> Vec<u8> {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<PipelinedRenderingPlugin>(),
     )
-    .add_plugins(MaterialPlugin::<TerrainRenderMaterial>::default())
+    .add_plugins(crate::world::TerrainRenderPlugin)
     .init_resource::<Pixels>();
     app.finish();
     app.cleanup();
@@ -690,6 +696,12 @@ fn grass_pixel(wilt: f32) -> Vec<u8> {
         tree_base_color: base_color.clone(),
         tree_normal: normal.clone(),
         tree_orm: orm.clone(),
+        stone_fields: crate::world::terrain_cache::STONE_FIELDS,
+        soil_fields: crate::world::terrain_cache::SOIL_FIELDS,
+        grass_fields: crate::world::terrain_cache::GRASS_FIELDS,
+        field_windows: crate::world::terrain_cache::FIELD_WINDOWS,
+        grain: crate::world::terrain_cache::GRAIN,
+        procedural_ground: false,
     };
     let material = app
         .world_mut()

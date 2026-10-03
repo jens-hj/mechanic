@@ -100,7 +100,7 @@ fn atmosphere_captures_four_times_and_reports_cost() {
     )
     .add_plugins((
         SkyPlugin,
-        MaterialPlugin::<crate::world::TerrainRenderMaterial>::default(),
+        crate::world::TerrainRenderPlugin,
         MaterialPlugin::<crate::world::WaterRenderMaterial>::default(),
         crate::render::environment::OneShotEnvironmentMapPlugin,
     ))

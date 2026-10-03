@@ -48,7 +48,9 @@ contract they always did.
    or the value of any expression. The rule names
    a palette surface. That surface decides the physical `TerrainMaterial`
    (how the ground digs and compacts) and the look: texture family, tint,
-   recolour, roughness and repeat.
+   recolour, roughness and repeat. Grass, dirt and stone are drawn
+   procedurally unless the player switches it off, and ignore the repeat;
+   see [Terrain materials](terrain-materials.md).
 
 ## Water-aware surfaces
 

@@ -139,6 +139,7 @@ pub(crate) enum PauseAction {
     OpenControls,
     Back,
     SetCameraFov(f32),
+    SetProceduralGround(bool),
     BeginBindingCapture(GameAction, usize),
     ClearBinding(GameAction, usize),
     ResetControls,
@@ -708,6 +709,7 @@ pub(crate) fn push(
         open: pause.is_open(),
         page: pause.page(),
         camera_fov_degrees: settings.camera_fov_degrees(),
+        procedural_ground: settings.procedural_ground(),
         controls: settings.controls().clone(),
         capture: pause.binding_capture(),
         vehicle_conflicts: if pause.is_open() {

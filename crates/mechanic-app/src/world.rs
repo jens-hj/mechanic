@@ -15,6 +15,7 @@ mod saving;
 mod space;
 mod spoil;
 pub(crate) mod streaming;
+pub(crate) mod terrain_cache;
 pub(crate) mod terrain_render;
 mod transfer;
 mod walking;
@@ -40,6 +41,7 @@ use streaming::{
     TerrainAcknowledgements, TerrainMeshResult, TerrainSelectionTaskResult,
     integrate_terrain_remeshes, schedule_terrain_remeshes,
 };
+pub(crate) use terrain_cache::TerrainRenderPlugin;
 use terrain_render::prepare_terrain_textures;
 pub(crate) use terrain_render::{TerrainRenderMaterial, generate_rgba8_mip_chain};
 pub(crate) use transfer::place_loaded_creation_in_garage;
@@ -793,6 +795,15 @@ impl Plugin for WorldPrototypePlugin {
             .add_systems(OnExit(AppSpace::World), erosion_overlay::clear)
             .add_systems(Startup, restore_initial_garage)
             .add_systems(OnEnter(AppSpace::World), enter_world)
+            .add_systems(
+                PostUpdate,
+                (
+                    terrain_cache::follow_main_camera
+                        .after(bevy::transform::TransformSystems::Propagate),
+                    terrain_cache::apply_procedural_ground,
+                )
+                    .run_if(in_state(AppSpace::World)),
+            )
             .add_systems(OnExit(AppSpace::World), (leave_world, clear_water_tiles))
             .add_systems(
                 Update,

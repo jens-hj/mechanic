@@ -1,5 +1,6 @@
 mod dev_tools;
 mod render;
+mod terrain_gallery;
 mod terrain_shader;
 
 use super::brush::terrain_edit_commands;

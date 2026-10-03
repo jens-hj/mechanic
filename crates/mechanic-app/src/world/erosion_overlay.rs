@@ -306,6 +306,12 @@ mod tests {
                 tree_base_color: default(),
                 tree_normal: default(),
                 tree_orm: default(),
+                stone_fields: default(),
+                soil_fields: default(),
+                grass_fields: default(),
+                field_windows: default(),
+                grain: default(),
+                procedural_ground: false,
             });
         app.world_mut()
             .resource_mut::<WorldRuntime>()
