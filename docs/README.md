@@ -25,6 +25,7 @@ follows.
 - [Spirals on cylinders](spiral-tool.md)
 - [Gears and meshes](gears.md)
 - [Coupler: live welding](coupler.md)
+- [Treads](treads.md)
 - [Feature weld placement](feature-weld-placement.md)
 - [Live construction editing and dimension-link freezing](live-construction-editing.md)
 - [Multitool guide](multitool/GUIDE.md)

@@ -756,7 +756,7 @@ pub(crate) fn update_previews(
         selection.1.scale = Vec3::splat(1.12);
     }
     match (selected_tool.active_editor_tool(), graph.0.pending()) {
-        (None | Some(Tool::Shape | Tool::Chroma), _) => {
+        (None | Some(Tool::Shape | Tool::Chroma | Tool::Tread), _) => {
             *action.2 = Visibility::Hidden;
         }
         (Some(Tool::Block), _) => {

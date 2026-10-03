@@ -174,7 +174,7 @@ impl PlayerCamera {
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct MaterialWheelState {
     pub(crate) open: bool,
-    pub(crate) chroma_config: bool,
+    pub(crate) config_panel: bool,
     pub(crate) selector: Vec2,
     pub(crate) highlighted: Option<WheelChoice>,
     context: Option<WheelChoice>,
@@ -184,7 +184,7 @@ pub(crate) struct MaterialWheelState {
 impl MaterialWheelState {
     pub(crate) fn open(&mut self, current: WheelChoice) {
         self.open = true;
-        self.chroma_config = false;
+        self.config_panel = false;
         self.selector = Vec2::ZERO;
         self.highlighted = Some(current);
         self.context = Some(current);
@@ -206,9 +206,9 @@ impl MaterialWheelState {
         self.highlighted
     }
 
-    pub(crate) fn open_chroma_config(&mut self) {
+    pub(crate) fn open_config_panel(&mut self) {
         self.open = true;
-        self.chroma_config = true;
+        self.config_panel = true;
         self.selector = Vec2::ZERO;
         self.highlighted = None;
         self.context = None;
@@ -385,12 +385,12 @@ pub(crate) const fn committed_choice(
     if tab_released { highlighted } else { None }
 }
 
-const fn chroma_config_should_close(
+const fn config_panel_should_close(
     selector_pressed: bool,
     another_panel_open: bool,
-    chroma_active: bool,
+    configurable_mode_active: bool,
 ) -> bool {
-    selector_pressed || another_panel_open || !chroma_active
+    selector_pressed || another_panel_open || !configurable_mode_active
 }
 
 #[expect(clippy::too_many_arguments)]
@@ -409,13 +409,17 @@ pub(crate) fn update_material_wheel(
     mut shape_mode: ResMut<crate::shape_tool::ShapeEditMode>,
 ) {
     if wheel.open {
-        let chroma_active = selection.tool == Some(MainTool::MatterManipulator)
-            && selection.matter_mode == MatterMode::Chroma;
-        if wheel.chroma_config {
-            if chroma_config_should_close(
+        // Chroma and Tread configure through a panel rather than a radial.
+        let configurable_mode_active = selection.tool == Some(MainTool::MatterManipulator)
+            && matches!(
+                selection.matter_mode,
+                MatterMode::Chroma | MatterMode::Tread
+            );
+        if wheel.config_panel {
+            if config_panel_should_close(
                 actions.just_pressed(GameAction::MaterialWheel),
                 menu.is_open() || panel.is_open() || pause.blocks_world_input(),
-                chroma_active,
+                configurable_mode_active,
             ) {
                 wheel.close();
             }
@@ -456,7 +460,7 @@ pub(crate) fn update_material_wheel(
         (Some(MainTool::MatterManipulator), MatterMode::Terrain) => {
             Some(Some(WheelChoice::TerrainMaterial(terrain_material.0)))
         }
-        (Some(MainTool::MatterManipulator), MatterMode::Chroma) => Some(None),
+        (Some(MainTool::MatterManipulator), MatterMode::Chroma | MatterMode::Tread) => Some(None),
         (Some(MainTool::MatterManipulator), MatterMode::Manipulate) => {
             Some(Some(WheelChoice::ShapeMode(*shape_mode)))
         }
@@ -474,7 +478,7 @@ pub(crate) fn update_material_wheel(
         if let Some(choice) = current {
             wheel.open(choice);
         } else {
-            wheel.open_chroma_config();
+            wheel.open_config_panel();
         }
     }
 }
@@ -504,7 +508,7 @@ pub(crate) fn update_player_camera(
     let spectator = dev.as_ref().is_some_and(|dev| dev.spectator());
     let noclip = dev.as_ref().is_some_and(|dev| dev.noclip());
     let panel_open = crate::automation::enabled()
-        || wheel.chroma_config
+        || wheel.config_panel
         || player_controls_blocked([
             menu.is_open(),
             panel.is_open(),

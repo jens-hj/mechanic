@@ -12,6 +12,7 @@ use super::layers::{
 };
 use super::material::ConstructionMaterial;
 use super::spiral::{SpiralError, SpiralSpec};
+use super::tread::TreadError;
 use crate::MaterialAppearance;
 use bevy_math::Vec3;
 use thiserror::Error;
@@ -385,6 +386,35 @@ impl CylinderSpec {
     pub const fn without_spiral(mut self) -> Self {
         self.spiral = None;
         self
+    }
+
+    /// Whether a tread can be cut into the outer wall, the bore, or one end
+    /// cap.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreadError`] for a surface a cylinder does not have, a bore
+    /// on a solid cylinder, or a sector, spiral, or toothed cylinder.
+    pub fn tread_fits(self, surface: LayerFace) -> Result<(), TreadError> {
+        match surface {
+            LayerFace::OuterWall
+            | LayerFace::Bore
+            | LayerFace::Face(FaceKind::PositiveY | FaceKind::NegativeY) => {}
+            LayerFace::Face(_) => return Err(TreadError::UnsupportedSurface),
+        }
+        if self.dimensions.sweep_angle_degrees != MAX_CYLINDER_SWEEP_DEGREES {
+            return Err(TreadError::PartialCylinder);
+        }
+        if self.spiral.is_some() {
+            return Err(TreadError::SpiralPart);
+        }
+        if self.gear.is_some() {
+            return Err(TreadError::ToothedPart);
+        }
+        if surface == LayerFace::Bore && self.dimensions.inner_diameter <= 0.0 {
+            return Err(TreadError::BoreRequired);
+        }
+        Ok(())
     }
 
     /// Material of the outermost curved wall, which meets the world.

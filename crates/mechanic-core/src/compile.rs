@@ -8,7 +8,7 @@ mod model;
 pub use colliders::cylinder_collider_count;
 use colliders::{
     append_evaluated_colliders, append_part_colliders, append_region_colliders,
-    band_contact_properties, compose_raw_colliders, solid_full_cylinder,
+    band_contact_properties, compiled_treads, compose_raw_colliders, solid_full_cylinder,
 };
 use compaction::compact_grid_aligned_cuboids;
 use disjoint_set::{DisjointSet, ordered_pair};
@@ -19,9 +19,9 @@ use drives::{
 use mass::{calculate_mass_properties, region_pieces};
 pub use model::{
     CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledBearing, CompiledCompound, CompiledConvex,
-    CompiledCreation, CompiledCylinder, CompiledGearLink, CompiledGearSide, CoordinateDrive,
-    DriveMode, GearSelection, LocalCollider, LoopTopology, MAX_COMPILED_COLLIDERS, MassProperties,
-    MechanismBodyTopology, PIPE_BEND_COLLIDER_COUNT, TopologyError,
+    CompiledCreation, CompiledCylinder, CompiledGearLink, CompiledGearSide, CompiledTreads,
+    CoordinateDrive, DriveMode, GearSelection, LocalCollider, LoopTopology, MAX_COMPILED_COLLIDERS,
+    MassProperties, MechanismBodyTopology, PIPE_BEND_COLLIDER_COUNT, TopologyError,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -198,6 +198,7 @@ fn compile_graph(
     }
     let mut colliders = Vec::with_capacity(collider_capacity);
     let mut cylinders = Vec::new();
+    let mut treads = Vec::new();
     let mut compound_by_dense_part = vec![0_u32; part_rows.len()];
 
     // A part inside a region hands its geometry over to that region, so it must
@@ -254,6 +255,7 @@ fn compile_graph(
             if covered.contains(&part) {
                 continue;
             }
+            let first_row = colliders.len();
             // Layered cuboids collide per band. An unfeatured layered cylinder
             // keeps its envelope colliders and analytic rolling contact, which
             // only its outer wall's material ever touches.
@@ -286,6 +288,19 @@ fn compile_graph(
                     start,
                     &colliders[start..],
                 ));
+            }
+            let frame = graph.part_frame(part).expect("compiled part has a frame");
+            if let Some(placed) = compiled_treads(
+                *spec,
+                graph.part_treads(part),
+                frame,
+                mass_properties.center_of_mass,
+            ) {
+                let row = u32::try_from(treads.len()).expect("tread rows fit u32");
+                treads.push(placed);
+                for collider in &mut colliders[first_row..] {
+                    collider.treads = Some(row);
+                }
             }
         }
         for &(id, region) in &region_shapes {
@@ -592,6 +607,7 @@ fn compile_graph(
         coordinate_drives,
         gear_links,
         meshing_parts,
+        treads,
         cylinders,
     })
 }

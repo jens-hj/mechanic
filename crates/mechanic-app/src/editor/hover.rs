@@ -476,6 +476,7 @@ pub(crate) fn update_hover(
             | Tool::Layer
             | Tool::Spiral
             | Tool::Gear
+            | Tool::Tread
             | Tool::Chroma => raycast_surface(None),
         }
     };
@@ -1405,6 +1406,11 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
             .hovered
             .and_then(|hit| crate::editor::spiral::hover(graph, state, hit)),
         (Tool::Gear, _) => crate::editor::gears::hover(graph, state, material, appearance),
+        // Cutting a tread places nothing; the Tread tool's own hover says what
+        // a click would do once it knows the brush.
+        (Tool::Tread, _) => state
+            .hovered
+            .and_then(|hit| crate::builder::layer_target_from_hit(graph, hit).err()),
         (Tool::Transmission, _) => state.hovered.and_then(|hit| {
             match transmission_candidate_from_hit_in_bounds(graph, hit, state.placement_bounds) {
                 Ok((_, candidate)) => {

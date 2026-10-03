@@ -209,6 +209,12 @@ pub(crate) fn capture(sources: &Sources) -> Model {
                 controls.label(GameAction::MaterialWheel)
             )
         }
+        (Some(MainTool::MatterManipulator), MatterMode::Tread) => {
+            format!(
+                "     {}  Toggle tread workbench",
+                controls.label(GameAction::MaterialWheel)
+            )
+        }
         _ => String::new(),
     };
 
@@ -412,6 +418,12 @@ pub(crate) fn capture(sources: &Sources) -> Model {
             (false, Tool::Chroma, _, _, _) => {
                 format!(
                     "Left-drag paints; right-drag restores baked appearance; Q samples; press {} to configure",
+                    controls.label(GameAction::MaterialWheel),
+                )
+            }
+            (false, Tool::Tread, _, _, _) => {
+                format!(
+                    "Left-drag cuts the tread into faces, walls, bores and caps; right-drag smooths them; Q samples; press {} to choose pattern and depth",
                     controls.label(GameAction::MaterialWheel),
                 )
             }
@@ -669,6 +681,7 @@ const fn tool_tone(tool: Option<Tool>) -> Tone {
             | Tool::Shape
             | Tool::Spiral
             | Tool::Gear
+            | Tool::Tread
             | Tool::Chroma,
         ) => Tone::Speed,
         None => Tone::Muted,

@@ -102,6 +102,9 @@ impl ConstructionGraph {
         if !self.physical_inputs.is_empty() {
             self.prune_input_bindings();
         }
+        if !self.treads.is_empty() {
+            self.prune_treads();
+        }
         Ok(outcome)
     }
 
@@ -814,6 +817,14 @@ impl ConstructionGraph {
                 self.validate_shape_owner_replay(owner)?;
                 self.validate_shape_owner_connections(owner)?;
                 Ok(BuildOutcome::LayersUpdated)
+            }
+            BuildCommand::SetTread {
+                part,
+                surface,
+                tread,
+            } => {
+                self.set_tread(part, surface, tread)?;
+                Ok(BuildOutcome::TreadUpdated)
             }
             BuildCommand::SetSpiral { part, spec } => {
                 let current = self

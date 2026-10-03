@@ -40,6 +40,15 @@ pub struct MaterialLayerDoc {
     pub appearance: MaterialAppearance,
 }
 
+/// One surface's tread in its serialized form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceTreadDoc {
+    /// Surface the tread is cut into.
+    pub surface: crate::LayerFace,
+    /// Pattern and depth.
+    pub tread: crate::TreadSpec,
+}
+
 /// One tapered cylinder end in its serialized form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpiralTaperDoc {
@@ -122,6 +131,9 @@ pub enum PartDoc {
         /// Rack teeth cut into one face.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rack: Option<RackDoc>,
+        /// Treads cut into the envelope's faces.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        treads: Vec<SurfaceTreadDoc>,
     },
     /// Solid or hollow cylinder whose axis is local Y.
     Cylinder {
@@ -148,6 +160,9 @@ pub enum PartDoc {
         /// Gear teeth cut into the walls.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         gear: Option<GearDoc>,
+        /// Treads cut into the envelope's surfaces.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        treads: Vec<SurfaceTreadDoc>,
     },
     /// Cardinal 90-degree quarter-torus pipe bend.
     PipeBend {

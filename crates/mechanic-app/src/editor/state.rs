@@ -128,6 +128,10 @@ pub(crate) struct EditorState {
     pub(crate) hovered_source_feature: Option<mechanic_core::ShapeFeatureId>,
     /// Active paint/remove drag, committed to history as one edit on release.
     pub(crate) chroma_stroke: Option<ChromaStroke>,
+    /// Active tread cut/smooth drag, committed to history as one edit on release.
+    pub(crate) tread_stroke: Option<crate::editor::treads::TreadStroke>,
+    /// What the Tread tool last said about the hovered surface, so it is said once.
+    pub(crate) tread_announced: Option<String>,
 }
 
 impl EditorState {
@@ -153,6 +157,7 @@ impl EditorState {
             || self.wire_drag.is_some()
             || self.paint_selecting
             || self.chroma_stroke.is_some()
+            || self.tread_stroke.is_some()
     }
 
     pub(crate) fn next_layer_thickness(&self) -> f32 {

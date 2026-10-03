@@ -6,7 +6,7 @@ use crate::pose::transform_bearing_pose;
 use crate::render::mesh::bearing::append_bearing_cylinder;
 use crate::render::mesh::construction::{
     BuildTransform, append_authored_cuboid, append_evaluated_solid, append_layered_part,
-    append_region, append_textured_part, ordinary_materials,
+    append_region, append_textured_part, append_treads, ordinary_materials, part_placement,
 };
 use crate::render::mesh::pipe::{pipe_end_faces, pipe_texture_offsets, welded_pipe_ends};
 use crate::{AuthoredPart, chroma};
@@ -185,6 +185,8 @@ pub(crate) fn combined_simulation_mesh_filtered(
         }
         let frame = graph.part_frame(part).expect("part exists");
         let texture_offset = pipe_texture_offsets.get(&part).copied().unwrap_or_default();
+        let first_index = indices.len();
+        let part_placement = part_placement(graph, placement, part);
         if spec.is_layered() {
             append_layered_part(
                 graph,
@@ -198,6 +200,15 @@ pub(crate) fn combined_simulation_mesh_filtered(
                 &mut tangents,
                 &mut colors,
                 &mut indices,
+            );
+            append_treads(
+                graph,
+                part,
+                part_placement,
+                material,
+                first_index,
+                (&mut positions, &mut normals, &mut uvs),
+                (&mut tangents, &mut colors, &mut indices),
             );
             continue;
         }
@@ -236,6 +247,15 @@ pub(crate) fn combined_simulation_mesh_filtered(
             chroma::encode_appearance(spec.appearance().expect("ordinary parts have appearances")),
             positions.len() - first_vertex,
         ));
+        append_treads(
+            graph,
+            part,
+            part_placement,
+            material,
+            first_index,
+            (&mut positions, &mut normals, &mut uvs),
+            (&mut tangents, &mut colors, &mut indices),
+        );
     }
 
     Mesh::new(

@@ -22,6 +22,12 @@ pub enum GraphError {
     /// Material layers and shaped regions cannot be combined.
     #[error("part {0:?} cannot combine material layers with a shaped region")]
     LayeredPartInRegion(PartId),
+    /// A tread does not fit its surface.
+    #[error(transparent)]
+    Tread(#[from] crate::TreadError),
+    /// A part inside a shaped region hands its surfaces to the region.
+    #[error("part {0:?} is part of a shaped region and takes no tread of its own")]
+    TreadInRegion(PartId),
     /// A spiral does not fit its cylinder.
     #[error(transparent)]
     Spiral(#[from] crate::SpiralError),

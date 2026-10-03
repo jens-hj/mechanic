@@ -16,6 +16,7 @@ pub(crate) mod shape_actions;
 pub(crate) mod shortcuts;
 pub(crate) mod spiral;
 pub(crate) mod state;
+pub(crate) mod treads;
 pub(crate) mod wiring;
 
 #[cfg(test)]

@@ -30,6 +30,7 @@ fn block(doc: &mut CreationDocument, dimensions: [u8; 3], pose: PoseDoc) -> u32 
         ),
         layers: Vec::new(),
         rack: None,
+        treads: Vec::new(),
     });
     doc.part_frames.push(0);
     id
@@ -144,6 +145,7 @@ fn main() -> Result<()> {
                 layers: Vec::new(),
                 spiral: None,
                 gear: None,
+                treads: Vec::new(),
             });
             doc.part_frames.push(0);
             axles.push(bearing(

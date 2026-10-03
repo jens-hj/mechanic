@@ -9,3 +9,4 @@ pub(crate) mod preview;
 pub(crate) mod primitives;
 pub(crate) mod simulation;
 pub(crate) mod spiral;
+pub(crate) mod tread;

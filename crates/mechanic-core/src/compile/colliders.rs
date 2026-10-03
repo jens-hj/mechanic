@@ -2,7 +2,8 @@
 
 use super::mass::{physical_spec, region_pieces};
 use super::model::{
-    CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledConvex, CompiledCylinder, LocalCollider,
+    CYLINDER_COLLIDER_COUNT, ColliderShape, CompiledConvex, CompiledCylinder, CompiledTreads,
+    LocalCollider,
 };
 use crate::shape::{ConvexPiece, PartPiece, decompose_part};
 use crate::{
@@ -48,6 +49,31 @@ pub(super) fn contact_properties(spec: PartSpec) -> MaterialProperties {
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => AUTHORED_CONTACT_PROPERTIES,
     }
+}
+
+/// Where a treaded part sits in its compound, so a contact on any of its rows
+/// can find the surface it touches. `None` for a part with no tread.
+pub(super) fn compiled_treads(
+    spec: PartSpec,
+    treads: crate::SurfaceTreads,
+    frame: crate::ConstructionFrame,
+    center_of_mass: Vec3,
+) -> Option<CompiledTreads> {
+    if treads.is_empty() {
+        return None;
+    }
+    let pose = spec.pose();
+    Some(CompiledTreads {
+        local_center: frame.point(pose.translation()) - center_of_mass,
+        local_rotation: frame.rotation() * pose.rotation.quaternion(),
+        radii: spec.as_cylinder().map(|cylinder| {
+            [
+                cylinder.dimensions.outer_diameter() * 0.5,
+                cylinder.dimensions.inner_diameter() * 0.5,
+            ]
+        }),
+        treads,
+    })
 }
 
 /// Composes raw grid geometry once, then rebases it onto the compiled root.
@@ -151,6 +177,7 @@ pub(super) fn append_part_colliders(
                         compound_index,
                         local_center: center - center_of_mass,
                         material_properties,
+                        treads: None,
                         shape: ColliderShape::Cuboid {
                             local_rotation: rotation,
                             half_extents,
@@ -161,6 +188,7 @@ pub(super) fn append_part_colliders(
                         compound_index,
                         local_center: convex.centroid - center_of_mass,
                         material_properties,
+                        treads: None,
                         shape: ColliderShape::Convex(compile_convex(&convex, center_of_mass)),
                     },
                 });
@@ -191,6 +219,7 @@ pub(super) fn append_part_colliders(
                     local_center: spec.pose.translation() - center_of_mass
                         + part_rotation * wall.center,
                     material_properties,
+                    treads: None,
                     shape: ColliderShape::Cuboid {
                         local_rotation: part_rotation * wall.rotation,
                         half_extents: wall.half_extents,
@@ -204,6 +233,7 @@ pub(super) fn append_part_colliders(
                 compound_index,
                 local_center: spec.pose().translation() - center_of_mass,
                 material_properties,
+                treads: None,
                 shape: ColliderShape::Cuboid {
                     local_rotation: spec.pose().rotation.quaternion(),
                     half_extents: spec.size_meters() * 0.5,
@@ -275,6 +305,7 @@ fn append_cylinder_colliders(
             local_center: spec.pose.translation() - center_of_mass
                 + part_rotation * (radial * center_radius + Vec3::Y * center_y),
             material_properties,
+            treads: None,
             shape: ColliderShape::Cuboid {
                 local_rotation: part_rotation * Quat::from_rotation_y(-angle),
                 half_extents: Vec3::new(half_radial, half_length, half_tangent),
@@ -291,6 +322,7 @@ fn append_cylinder_colliders(
                     compound_index,
                     local_center: piece.centroid - center_of_mass,
                     material_properties,
+                    treads: None,
                     shape: ColliderShape::Convex(compile_convex(piece, center_of_mass)),
                 }),
         );
@@ -333,6 +365,7 @@ pub(super) fn append_pipe_bend_colliders(
                 compound_index,
                 local_center: corner - center_of_mass + part_rotation * local_center,
                 material_properties,
+                treads: None,
                 shape: ColliderShape::Cuboid {
                     local_rotation: part_rotation * Quat::from_mat3(&local_basis),
                     half_extents: Vec3::new(half_radial, half_bend_tangent, half_cross_tangent),
@@ -365,6 +398,7 @@ pub(super) fn append_region_colliders(
                 compound_index,
                 local_center: center - center_of_mass,
                 material_properties,
+                treads: None,
                 shape: ColliderShape::Cuboid {
                     local_rotation: rotation,
                     half_extents,
@@ -375,6 +409,7 @@ pub(super) fn append_region_colliders(
                 compound_index,
                 local_center: convex.centroid - center_of_mass,
                 material_properties,
+                treads: None,
                 shape: ColliderShape::Convex(compile_convex(&convex, center_of_mass)),
             },
         });
@@ -394,6 +429,7 @@ pub(super) fn append_evaluated_colliders(
         compound_index,
         local_center: cell.piece.centroid - center_of_mass,
         material_properties: material_properties(cell.band),
+        treads: None,
         shape: ColliderShape::Convex(compile_convex(&cell.piece, center_of_mass)),
     }));
 }
