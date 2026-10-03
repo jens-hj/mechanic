@@ -224,6 +224,7 @@ pub(crate) fn raycast_construction_for_annulus_filtered_with_ground(
                     | PartSpec::Seat(_)
                     | PartSpec::Dial(_)
                     | PartSpec::Button(_)
+                    | PartSpec::Coupler(_)
                     | PartSpec::Input(_)
                     | PartSpec::DimensionLink(_) => None,
                 }),
@@ -553,7 +554,7 @@ pub(super) fn raycast_part(
         PartSpec::Transmission(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Servo(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
         PartSpec::Seat(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),
-        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => {
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => {
             raycast_envelope(origin, direction, part, spec.pose(), spec.size_meters())
         }
         PartSpec::Input(spec) => raycast_cuboid(origin, direction, part, spec.cuboid()),

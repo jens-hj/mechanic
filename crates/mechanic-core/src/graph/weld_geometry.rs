@@ -303,6 +303,11 @@ impl ConstructionGraph {
                         spec.size_meters(),
                         face.face,
                     )),
+                    PartSpec::Coupler(spec) => Ok(crate::geometry::envelope_face(
+                        spec.pose,
+                        spec.size_meters(),
+                        face.face,
+                    )),
                     PartSpec::Button(spec) => Ok(crate::geometry::envelope_face(
                         spec.pose,
                         spec.size_meters(),

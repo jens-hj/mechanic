@@ -270,11 +270,9 @@ pub(super) fn part_face_geometry(spec: PartSpec, face: FaceKind) -> Option<FaceG
         PartSpec::Transmission(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Servo(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Seat(spec) => Some(face_geometry(spec.cuboid(), face)),
-        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => Some(envelope_face_geometry(
-            spec.pose(),
-            spec.size_meters(),
-            face,
-        )),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => Some(
+            envelope_face_geometry(spec.pose(), spec.size_meters(), face),
+        ),
         PartSpec::Input(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::DimensionLink(spec) => Some(face_geometry(spec.cuboid(), face)),
         PartSpec::Cylinder(spec) => cylinder_face_geometry(spec, face),
@@ -355,6 +353,7 @@ pub(crate) fn face_is_flat(graph: &ConstructionGraph, face: FaceRef) -> bool {
             | PartSpec::Seat(_)
             | PartSpec::Dial(_)
             | PartSpec::Button(_)
+            | PartSpec::Coupler(_)
             | PartSpec::Input(_)
             | PartSpec::DimensionLink(_) => false,
         };

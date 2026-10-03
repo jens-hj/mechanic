@@ -164,7 +164,7 @@ fn compile_graph(
             | PartSpec::Servo(_)
             | PartSpec::Seat(_)
             | PartSpec::Dial(_)
-        | PartSpec::Button(_)
+        | PartSpec::Button(_) | PartSpec::Coupler(_)
         | PartSpec::Input(_)
             | PartSpec::DimensionLink(_)
             | PartSpec::Cuboid(_) => 1,

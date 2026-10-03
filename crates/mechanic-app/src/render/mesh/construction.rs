@@ -485,6 +485,7 @@ pub(crate) const fn ordinary_material(spec: PartSpec) -> Option<ConstructionMate
         | PartSpec::Seat(_)
         | PartSpec::Dial(_)
         | PartSpec::Button(_)
+        | PartSpec::Coupler(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => None,
     }
@@ -626,14 +627,16 @@ pub(crate) fn append_part(
             normals,
             indices,
         ),
-        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => append_transformed_cuboid(
-            spec.pose().translation(),
-            spec.pose().rotation.quaternion(),
-            spec.size_meters() * scale_factor,
-            positions,
-            normals,
-            indices,
-        ),
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => {
+            append_transformed_cuboid(
+                spec.pose().translation(),
+                spec.pose().rotation.quaternion(),
+                spec.size_meters() * scale_factor,
+                positions,
+                normals,
+                indices,
+            );
+        }
         PartSpec::Input(spec) => append_transformed_cuboid(
             spec.pose.translation(),
             spec.pose.rotation.quaternion(),
@@ -1179,6 +1182,7 @@ pub(crate) fn append_textured_part(
         | PartSpec::Seat(_)
         | PartSpec::Dial(_)
         | PartSpec::Button(_)
+        | PartSpec::Coupler(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => {
             unreachable!("authored parts render in their own texture batches")
@@ -1240,6 +1244,7 @@ pub(crate) fn append_textured_part(
         | PartSpec::Seat(_)
         | PartSpec::Dial(_)
         | PartSpec::Button(_)
+        | PartSpec::Coupler(_)
         | PartSpec::Input(_)
         | PartSpec::DimensionLink(_) => unreachable!(),
     }

@@ -287,6 +287,9 @@ pub(super) fn part_mass_properties(spec: PartSpec) -> PartMassProperties {
         PartSpec::Dial(spec) => {
             envelope_mass_properties(spec.size_meters(), MACHINE_PART_DENSITY_KG_M3)
         }
+        PartSpec::Coupler(spec) => {
+            envelope_mass_properties(spec.size_meters(), MACHINE_PART_DENSITY_KG_M3)
+        }
         PartSpec::Button(spec) => {
             envelope_mass_properties(spec.size_meters(), MACHINE_PART_DENSITY_KG_M3)
         }

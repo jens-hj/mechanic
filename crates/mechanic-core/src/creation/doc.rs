@@ -215,6 +215,11 @@ pub enum PartDoc {
         /// Envelope centre and orientation.
         pose: PoseDoc,
     },
+    /// Half-block rigid connector.
+    Coupler {
+        /// Envelope centre and orientation.
+        pose: PoseDoc,
+    },
     /// Physical pushbutton.
     Button {
         /// Authored model size.

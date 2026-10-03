@@ -43,6 +43,7 @@ pub(crate) fn stage_input_part(
     let command = match spec {
         PartSpec::Dial(spec) => BuildCommand::SpawnDial(spec),
         PartSpec::Button(spec) => BuildCommand::SpawnButton(spec),
+        PartSpec::Coupler(spec) => BuildCommand::SpawnCoupler(spec),
         _ => unreachable!("input placement has a physical input spec"),
     };
     let fail = |error: mechanic_core::GraphError| PlacementError::Graph(error.to_string());

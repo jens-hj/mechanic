@@ -44,6 +44,9 @@ pub(crate) fn update_input_placement(
     }
     let spec = match selected.active_editor_tool() {
         Some(Tool::Dial(size)) => PartSpec::Dial(DialSpec::new(size, BuildPose::default())),
+        Some(Tool::Coupler) => {
+            PartSpec::Coupler(mechanic_core::CouplerSpec::new(BuildPose::default()))
+        }
         Some(Tool::Button(size)) => PartSpec::Button(ButtonSpec::new(size, BuildPose::default())),
         _ => return,
     };
@@ -85,7 +88,14 @@ pub(crate) fn update_input_placement(
                 graph.0 = staged;
                 history.commit(previous);
                 state.construction_mesh_dirty = true;
-                state.feedback = Some("Placed physical input".to_owned());
+                state.feedback = Some(
+                    if matches!(spec, PartSpec::Coupler(_)) {
+                        "Placed coupler — connect a Controller and assign its activation key"
+                    } else {
+                        "Placed physical input"
+                    }
+                    .to_owned(),
+                );
             }
             Err(error) => state.feedback = Some(error.to_string()),
         }
@@ -103,7 +113,11 @@ mod tests {
 
     #[test]
     fn physical_input_click_uses_local_surface_and_world_preview() {
-        for tool in [Tool::Dial(InputSize::Panel), Tool::Button(InputSize::Panel)] {
+        for tool in [
+            Tool::Dial(InputSize::Panel),
+            Tool::Button(InputSize::Panel),
+            Tool::Coupler,
+        ] {
             let mut graph = ConstructionGraph::new();
             let BuildOutcome::Spawned(anchor) = graph
                 .apply(BuildCommand::Spawn(

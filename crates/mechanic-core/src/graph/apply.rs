@@ -188,6 +188,12 @@ impl ConstructionGraph {
                     .insert(id, crate::InputConfiguration::default());
                 Ok(BuildOutcome::Spawned(id))
             }
+            BuildCommand::SpawnCoupler(spec) => {
+                let id = self.insert_edit_part(spec.into());
+                self.physical_inputs
+                    .insert(id, crate::InputConfiguration::default());
+                Ok(BuildOutcome::Spawned(id))
+            }
             BuildCommand::SetInputConfiguration {
                 input,
                 configuration,

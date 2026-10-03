@@ -85,10 +85,12 @@ pub(crate) fn act(
         return;
     }
     let Some(control) = config.aim else { return };
-    let Some(input) = config
-        .selected
-        .filter(|input| matches!(graph.0.part(*input), Some(PartSpec::Button(_))))
-    else {
+    let Some(input) = config.selected.filter(|input| {
+        matches!(
+            graph.0.part(*input),
+            Some(PartSpec::Button(_) | PartSpec::Coupler(_))
+        )
+    }) else {
         return;
     };
     actions.clear_just_pressed(crate::controls::GameAction::Primary);
