@@ -10,11 +10,12 @@ members = [
     "crates/xtask",
 ]
 resolver = "2"
-exclude = ["vendor/bevy_pbr", "vendor/mosaic-macros", "vendor/mosaic-text", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal"]
+exclude = ["vendor/bevy_pbr", "vendor/mosaic-macros", "vendor/mosaic-text", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal", "vendor/ron"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
+ron = { path = "vendor/ron" }
 
 [patch."https://github.com/bevyengine/bevy.git"]
 bevy_pbr = { path = "vendor/bevy_pbr" }
