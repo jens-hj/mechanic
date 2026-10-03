@@ -142,7 +142,15 @@ pub(super) fn bearing_ring_overlaps_face(
 }
 
 pub(super) fn faces_touch(first: &FaceGeometry, second: &FaceGeometry) -> bool {
-    if first.normal.dot(second.normal) > -1.0 + axis_cosine_tolerance() {
+    // At the authored tolerance, cos(angle) rounds to 1 in f32. Compare sine
+    // instead, accounting for small length errors in rotated face normals.
+    let sine_tolerance = AXIS_TOLERANCE_DEGREES.to_radians().sin();
+    if first.normal.dot(second.normal) >= 0.0
+        || first.normal.cross(second.normal).length_squared()
+            > sine_tolerance.powi(2)
+                * first.normal.length_squared()
+                * second.normal.length_squared()
+    {
         return false;
     }
     let separation = (second.center - first.center).dot(first.normal).abs();
@@ -424,3 +432,6 @@ pub(super) fn annuli_overlap(first: &FaceGeometry, second: &FaceGeometry) -> boo
 pub(super) fn axis_cosine_tolerance() -> f32 {
     1.0 - AXIS_TOLERANCE_DEGREES.to_radians().cos()
 }
+
+#[cfg(test)]
+mod tests;

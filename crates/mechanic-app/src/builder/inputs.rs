@@ -103,7 +103,9 @@ pub(crate) fn validate_input_part(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mechanic_core::{BuildPose, ButtonSpec, CreationDocument, DialSpec, InputSize};
+    use mechanic_core::{
+        BuildPose, ButtonSpec, CouplerSpec, CreationDocument, DialSpec, InputSize,
+    };
 
     #[test]
     fn physical_inputs_mount_on_horizontal_vertical_and_oblique_faces() {
@@ -145,6 +147,7 @@ mod tests {
                     for spec in [
                         PartSpec::Dial(DialSpec::new(size, BuildPose::default())),
                         PartSpec::Button(ButtonSpec::new(size, BuildPose::default())),
+                        PartSpec::Coupler(CouplerSpec::new(BuildPose::default())),
                     ] {
                         for turns in 0_u8..4 {
                             let transform = input_surface_transform(
