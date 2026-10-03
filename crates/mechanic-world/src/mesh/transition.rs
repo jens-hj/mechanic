@@ -13,7 +13,7 @@ use crate::transvoxel::tables::{
 use crate::{TERRAIN_CELL_METERS, TerrainFace, TerrainField, WorldCell};
 use bevy_math::{DVec3, Vec3};
 use std::array;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 pub(super) fn generate_face_cap(
     lattice: &[LatticePoint],
@@ -206,7 +206,7 @@ pub(super) fn transition_coarse_lattice_point(
     edits: &PreparedTerrainRegion<'_>,
     cell: WorldCell,
     stride: i32,
-    samples: &mut HashMap<WorldCell, LatticeSample>,
+    samples: &mut FxHashMap<WorldCell, LatticeSample>,
 ) -> LatticePoint {
     let mut sample = transition_coarse_sample(field, edits, cell, stride, samples);
     let mut density = |offset: [i32; 3]| {
@@ -251,7 +251,7 @@ pub(super) fn transition_coarse_sample(
     edits: &PreparedTerrainRegion<'_>,
     cell: WorldCell,
     stride: i32,
-    samples: &mut HashMap<WorldCell, LatticeSample>,
+    samples: &mut FxHashMap<WorldCell, LatticeSample>,
 ) -> LatticeSample {
     if let Some(&sample) = samples.get(&cell) {
         return sample;

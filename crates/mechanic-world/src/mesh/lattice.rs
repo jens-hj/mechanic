@@ -9,7 +9,7 @@ use crate::{
     WorldCell,
 };
 use bevy_math::{IVec3, Vec3};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 
 /// Node-local view of promoted terrain used throughout one mesh job.
 ///
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 /// avoiding a depth-27 root walk for every coarse lattice sample.
 #[derive(Clone, Debug, Default)]
 pub struct PreparedTerrainRegion<'a> {
-    pub(super) bricks: HashMap<crate::BrickCoord, &'a crate::TerrainBrick>,
+    pub(super) bricks: FxHashMap<crate::BrickCoord, &'a crate::TerrainBrick>,
 }
 
 impl<'a> PreparedTerrainRegion<'a> {
@@ -500,7 +500,7 @@ pub(super) fn synchronize_edited_boundary_lattice(
     {
         return;
     }
-    let mut coarse_samples = HashMap::<WorldCell, LatticeSample>::new();
+    let mut coarse_samples = FxHashMap::<WorldCell, LatticeSample>::default();
     for face in TerrainFace::ALL {
         for v in (0..=cubes).step_by(2) {
             for u in (0..=cubes).step_by(2) {
