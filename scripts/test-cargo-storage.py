@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.dont_write_bytecode = True
 from cargo_storage import Store, require_binary_lease, size
@@ -55,7 +56,7 @@ class StorageTests(unittest.TestCase):
 
     def invoke(self, *args):
         try:
-            return subprocess.run([sys.executable, str(LAUNCHER), '--root', str(self.root), *args],
+            return subprocess.run([sys.executable, str(LAUNCHER), '--root', str(self.root), '--min-free-gib', '0', *args],
                                   env=self.env, text=True, capture_output=True,
                                   timeout=60 if args[:1] == ('cargo',) else 10)
         except subprocess.TimeoutExpired as error:
@@ -63,7 +64,7 @@ class StorageTests(unittest.TestCase):
 
     def start(self, source, cwd=None):
         child = subprocess.Popen([sys.executable, str(LAUNCHER), '--root', str(self.root),
-                                  'run', '--', sys.executable, '-c', source],
+                                  '--min-free-gib', '0', 'run', '--', sys.executable, '-c', source],
                                  env=self.env, cwd=cwd, text=True, stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE)
         self.children.append(child)
@@ -404,9 +405,52 @@ class StorageTests(unittest.TestCase):
         store.save(0, {'state': 'idle', 'checkout': 'another-checkout'})
         with patch.object(launcher, 'run', return_value=101) as run:
             for _ in range(2):
-                self.assertEqual(launcher.execute(store, [sys.executable, '-c', 'pass']), 101)
+                self.assertEqual(launcher.execute(store, [sys.executable, '-c', 'pass'], min_free_gib=0), 101)
                 self.assertIn('_reassign', run.call_args.args[0])
                 self.assertIsNone(store.state(0)['checkout'])
+
+    def test_low_space_checks_storage_volume_under_lease_without_starting(self):
+        store = Store(self.root, 1)
+        target = store.target(0)
+        target.mkdir(parents=True)
+        retained = target / 'untouched'
+        retained.write_text('preserve')
+        def disk_usage(path):
+            self.assertEqual(path, target)
+            with store.lock(0) as lock:
+                self.assertFalse(lock.acquire())
+            return SimpleNamespace(free=19 * 1024**3)
+        with patch.object(launcher.shutil, 'disk_usage', side_effect=disk_usage), \
+                patch.object(launcher, 'run') as run:
+            with self.assertRaisesRegex(ValueError, '19.00 GiB.*20 GiB.*No command started'):
+                launcher.execute(store, [sys.executable, '-c', 'pass'])
+            run.assert_not_called()
+        self.assertEqual(store.state(0)['state'], 'idle')
+        self.assertEqual(retained.read_text(), 'preserve')
+
+    def test_admission_uses_target_parent_before_first_build_and_accepts_floor(self):
+        store = Store(self.root, 1)
+        with patch.object(launcher.shutil, 'disk_usage',
+                          return_value=SimpleNamespace(free=20 * 1024**3)) as usage, \
+                patch.object(launcher, 'run', return_value=0) as run:
+            self.assertEqual(launcher.execute(store, [sys.executable, '-c', 'pass']), 0)
+            usage.assert_called_once_with(store.target(0).parent)
+            run.assert_called_once()
+
+    def test_cli_low_capacity_refuses_before_command_marker(self):
+        marker = self.root.parent / 'must-not-start'
+        result = self.invoke('--min-free-gib', '1000000000', 'run', '--', sys.executable,
+                             '-c', f'from pathlib import Path; Path({str(marker)!r}).touch()')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No command started', result.stderr)
+        self.assertIn('clean (preview)', result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_invalid_admission_floor_is_refused(self):
+        store = Store(self.root, 1)
+        for value in (-1, float('nan'), float('inf')):
+            with self.assertRaisesRegex(ValueError, 'finite and nonnegative'):
+                launcher.execute(store, [sys.executable, '-c', 'pass'], value)
 
     @unittest.skipIf(os.name == 'nt', 'symlink creation requires privileges on Windows')
     def test_cleanup_refuses_symlinked_profile(self):

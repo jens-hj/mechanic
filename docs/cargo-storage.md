@@ -119,6 +119,25 @@ also applies to same-boot recovery; escaping children are unsupported.
 
 ## Inventory and explicit cleanup
 
+Managed admission requires **20 GiB free** by default, formalizing the repository's
+earlier 20 GB low-space policy with an explicit binary-unit threshold. Configure
+it before the subcommand, for example `--min-free-gib 30 cargo xtask test`; zero
+explicitly disables the threshold for small isolated fixtures. Negative and
+non-finite values are rejected. After acquiring an idle slot, the launcher checks
+`disk_usage` on its actual Cargo target (or its existing parent before the first
+build), not the checkout or temporary filesystem. Admission checks and owner
+publication are serialized across slots. Below the threshold, no build,
+reassignment cleanup, or command starts; the error prints current/required bytes
+and suggests status plus explicit cleanup preview. Nested commands retain their
+existing admission and lease rather than independently admitting another build.
+
+This is **not a disk reservation or runtime quota**. Serialized checks remeasure
+current space but do not reserve future growth: both slots can pass before either
+allocates much. An active build or unmanaged writer can still fill the volume.
+The guard never deletes active storage automatically. Initial rollout remains one
+needed invocation at a time with before/after capacity measurements, not two cold
+workspace builds. The explicit cleanup budget remains a soft idle-cache target.
+
 ```sh
 python3 scripts/cargo-storage.py status
 python3 scripts/cargo-storage.py clean --idle-hours 24 --budget-gib 80
@@ -270,6 +289,14 @@ Source, reports/captures, binaries, dependency artifacts, and lock files survive
 
 This was explicit, narrowly scoped legacy recovery under independent Cargo locks,
 not managed-slot cleanup or evidence of completed shared-worker rollout.
+
+Separately, mechanic-5 reported deleting only its own `target/debug/incremental`
+after compilation while CPU tests still ran, estimating about 15 GB via `du -sh`
+and reporting about 65 GB free afterward. This was not our audited recovery and
+is not added to the measured 13.59 GiB free-space gain. Mechanic-6 reported no
+deletion. The original ENOSPC path/cause remains unresolved; these observations
+do not prove what caused the earlier recovery. Future cleanup requires exclusive
+protection through dependent execution as well as compilation.
 
 The expanded lifecycle suite defines 16 tests, including hardlink accounting and a
 Windows-specific descendant-handle test. Lightweight Linux/macOS CI passed before

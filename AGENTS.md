@@ -74,7 +74,9 @@ Old storage-format roots are refused, never migrated while workers use them.
   supervisor quarantines its slot; `recover` requires an empty recorded Unix
   process group or proof of a later OS boot.
 - Keep release/profiling builds for tasks that need them. No profile defaults
-  change. Check `df -h .` before a large build; two slots are not a byte quota.
+  change. Admission requires 20 GiB free on the storage filesystem by default
+  (`--min-free-gib` configures it). Check capacity before a large build; this
+  start-time floor and two slots are not disk reservations or runtime quotas.
 - Explicit isolated measurements and ordinary ephemeral CI can use
   `cargo-storage.py --unmanaged cargo ...`. Isolated reference-builder scripts
   already create and preserve their own source-matched binaries; their storage

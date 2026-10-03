@@ -8,6 +8,7 @@ python3 scripts/cargo-storage.py clean --idle-hours 24 --budget-gib 80 [--apply]
 """
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -16,7 +17,7 @@ import sys
 import time
 import uuid
 
-from cargo_storage import Store, boot_identity, default_root, reclaimable, size
+from cargo_storage import Lock, Store, boot_identity, default_root, reclaimable, size
 from cargo_process import group_is_empty, run
 
 TOKEN = 'MECHANIC_CARGO_LEASE'
@@ -57,7 +58,9 @@ def validate_command(command):
                 raise ValueError('target/config overrides require explicit --unmanaged mode')
 
 
-def execute(store, command):
+def execute(store, command, min_free_gib=20):
+    if not math.isfinite(min_free_gib) or min_free_gib < 0:
+        raise ValueError('minimum free GiB must be finite and nonnegative')
     validate_command(command)
     if inherited(store) is not None:
         code = subprocess.call(command)
@@ -85,7 +88,24 @@ def execute(store, command):
                 state = {'state': 'running', 'pid': os.getpid(), 'token': token,
                          'boot': boot_identity(), 'checkout': affinity,
                          'started': time.time(), 'command': command}
-                store.save(index, state)
+                # Serialize admission snapshots and owner publication across slots.
+                # This is not a reservation: running or unmanaged writers can grow.
+                with Lock(store.root / 'admission.lock') as admission:
+                    while not admission.acquire():
+                        time.sleep(.05)
+                    volume_path = target if target.exists() else target.parent
+                    free = shutil.disk_usage(volume_path).free
+                    required = math.ceil(min_free_gib * 1024**3)
+                    if free < required:
+                        raise ValueError(
+                            f'low storage space at {volume_path}: {free} bytes '
+                            f'({free / 1024**3:.2f} GiB) free; required {required} bytes '
+                            f'({min_free_gib:g} GiB). No command started. '
+                            'Use this root with status and clean (preview); '
+                            'review idle candidates before clean --apply. '
+                            'Active storage is never automatically deleted.')
+                    state['admission_free_bytes'] = free
+                    store.save(index, state)
                 env = {**os.environ, ROOT: str(store.root), TOKEN: token,
                        **{name: str(target) for name in TARGET_VARIABLES}}
                 if os.name == 'nt':
@@ -239,6 +259,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=os.environ.get(ROOT))
     parser.add_argument('--slots', type=int)
+    parser.add_argument('--min-free-gib', type=float, default=20,
+                        help='minimum free space on storage volume before admission (default: 20 GiB)')
     parser.add_argument('--unmanaged', action='store_true', help='explicit isolated/CI opt-out; command only')
     sub = parser.add_subparsers(dest='action', required=True)
     for action in ('cargo', 'run'):
@@ -261,7 +283,7 @@ def main():
                 raise ValueError('cannot opt out from inside an active lease')
             code = subprocess.call(command)
             return 128 - code if code < 0 else code
-        return execute(Store(args.root or default_root(), args.slots), command)
+        return execute(Store(args.root or default_root(), args.slots), command, args.min_free_gib)
     if args.unmanaged:
         raise ValueError('--unmanaged applies only to commands')
     store = Store(args.root or default_root(), args.slots)
