@@ -1,0 +1,20 @@
+{
+  "app_version": "0.4.2",
+  "detail_scale": 1.0,
+  "eye": [
+    -94.0,
+    25.2,
+    -124.5
+  ],
+  "frame_sample_phase": "local terrain ready",
+  "procedural_ground": true,
+  "seed": 42,
+  "settle_seconds": 30.033603584,
+  "streaming_backlog": 9504,
+  "target": [
+    -90.0,
+    23.2,
+    -120.0
+  ],
+  "triangles": 2592480
+}

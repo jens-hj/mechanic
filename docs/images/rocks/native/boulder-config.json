@@ -1,0 +1,45 @@
+{
+  "seed": 42,
+  "directory": "docs/images/rocks/native",
+  "views": [
+    {
+      "name": "boulder-close",
+      "eye": [
+        -94,
+        25.2,
+        -124.5
+      ],
+      "target": [
+        -90,
+        23.2,
+        -120
+      ]
+    },
+    {
+      "name": "boulder-gameplay",
+      "eye": [
+        -98,
+        26.2,
+        -129
+      ],
+      "target": [
+        -90,
+        23.2,
+        -120
+      ]
+    },
+    {
+      "name": "boulder-detail",
+      "eye": [
+        -92,
+        24.2,
+        -124
+      ],
+      "target": [
+        -89.5,
+        22.4,
+        -121
+      ]
+    }
+  ]
+}

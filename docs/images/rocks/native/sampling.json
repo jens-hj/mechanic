@@ -1,0 +1,45 @@
+{
+  "measurement": "worldgen-preview process CPU time (user + system), including field compilation, density/material ray marching and PNG output",
+  "hardware": "Apple M1 Pro",
+  "baseline": "fbcfe0b worldgen definitions",
+  "candidate": "Intermediate weathered forms (6m boulder / 13m cliff reach), before the deeper fracture-face revision",
+  "repeats": 1,
+  "limitations": "Historical authoring comparison, not a measurement of the final shapes or shader. Single paired run per view on a busy shared machine; not a gameplay performance gate.",
+  "boulder": [
+    {
+      "label": "baseline",
+      "returncode": 0,
+      "wall_s": 74.02688720799051,
+      "cpu_s": 88.281903,
+      "output": "{\"offset\":[-8.0,3.0,-9.0],\"out\":\"/tmp/mechanic-62-perf-baseline\",\"scenario\":\"worldgen-close-view\",\"seed\":42,\"target\":[-90.0,23.2,-120.0]}\n",
+      "error": ""
+    },
+    {
+      "label": "revised",
+      "returncode": 0,
+      "wall_s": 66.29906833299901,
+      "cpu_s": 88.63354199999998,
+      "output": "{\"offset\":[-8.0,3.0,-9.0],\"out\":\"/tmp/mechanic-62-perf-revised\",\"scenario\":\"worldgen-close-view\",\"seed\":42,\"target\":[-90.0,23.2,-120.0]}\n",
+      "error": ""
+    }
+  ],
+  "cliff": [
+    {
+      "label": "baseline",
+      "returncode": 0,
+      "wall_s": 75.25404274999164,
+      "cpu_s": 94.220719,
+      "output": "{\"offset\":[25.0,16.0,-20.0],\"out\":\"/tmp/mechanic-62-cliff-perf-baseline\",\"scenario\":\"worldgen-close-view\",\"seed\":7,\"target\":[-500.75,118.0,-1345.14]}\n",
+      "error": ""
+    },
+    {
+      "label": "revised",
+      "returncode": 0,
+      "wall_s": 29.388048083055764,
+      "cpu_s": 63.389028999999994,
+      "output": "{\"offset\":[25.0,16.0,-20.0],\"out\":\"/tmp/mechanic-62-cliff-perf-revised\",\"scenario\":\"worldgen-close-view\",\"seed\":7,\"target\":[-500.75,118.0,-1345.14]}\n",
+      "error": ""
+    }
+  ],
+  "superseded": true
+}

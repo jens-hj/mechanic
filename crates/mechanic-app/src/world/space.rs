@@ -104,7 +104,9 @@ pub(super) fn load_space_editors(
 pub(super) fn application_world_store() -> WorldStore {
     crate::automation::world_store().map_or_else(
         || {
-            if crate::env::is_set(crate::env::SKY_TIME) {
+            if crate::env::is_set(crate::env::SKY_TIME)
+                || crate::env::is_set(crate::env::TERRAIN_CAPTURE)
+            {
                 return WorldStore::new(
                     std::env::temp_dir()
                         .join(format!("mechanic-sky-fixture-{}", std::process::id())),
