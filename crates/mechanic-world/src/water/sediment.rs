@@ -29,17 +29,22 @@
 //! what the ground lost, less what it got back, is what the water carries
 //! and what waits to be laid.
 
-use bevy_math::DVec3;
+mod diagnostics;
+
+pub use diagnostics::{SedimentDiagnosticColumn, SedimentDiagnostics};
+
 use mechanic_core::WATER_DENSITY_KG_M3;
 use serde::{Deserialize, Serialize};
 
 use super::cells::CellMap;
+use super::grass::Turn;
 use super::{
     CLING_METRES, GRAVITY, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterGround,
     WaterWorld,
 };
 use crate::{
-    CELL_QUANTA, MATERIAL_QUANTUM_M3, SedimentApplied, SedimentChange, TerrainMaterial, WorldCell,
+    BreakageResponse, CELL_QUANTA, MATERIAL_QUANTUM_M3, SedimentApplied, SedimentChange,
+    TerrainMaterial, WorldCell,
 };
 
 /// Horizontal area of one water cell, in square metres.
@@ -104,15 +109,20 @@ const fn wears(material: TerrainMaterial) -> Option<(f64, f64)> {
         // Roots hold turf against all but a violent flood: grass-lined
         // channels stand some 80 Pa.
         TerrainMaterial::SurfaceCover => Some((80.0, 1.1e-5)),
-        TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => None,
+        // Trees stand in floods; their litter is not carried either.
+        TerrainMaterial::Rock
+        | TerrainMaterial::Iron
+        | TerrainMaterial::Graphite
+        | TerrainMaterial::Wood
+        | TerrainMaterial::Foliage => None,
     }
 }
 
-/// How fast erosion runs, for tests and benchmarks that need an hour of it
-/// in a minute.
+/// How fast erosion runs, and grass dies and grows with it, for tests,
+/// benchmarks and the dev tools that need weeks of it in minutes.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ErosionConfig {
-    /// Erosion's rate over the game's own, 1 in play.
+    /// Erosion's and grass's rate over the world's own, 1 in play.
     pub speed: f64,
 }
 
@@ -167,14 +177,16 @@ impl SedimentLoad {
     }
 }
 
-/// How cloudy water holding `volume` m³ is with what it carries, from 0 to
-/// 1: a hundredth of its volume in sediment is thick mud.
-pub(super) fn murk(load: SedimentLoad, volume: f64) -> f64 {
+/// Sediment water holding `volume` m³ carries, in kg per m³ of water:
+/// fines weigh as the soil they came from.
+pub(super) fn silt(load: SedimentLoad, volume: f64) -> f64 {
     if volume <= 0.0 {
         return 0.0;
     }
-    let carried = load.total() * MATERIAL_QUANTUM_M3 / volume;
-    1.0 - (-carried / 0.01).exp()
+    let weight = |material| BreakageResponse::for_material(material).density_kg_m3;
+    MATERIAL_QUANTUM_M3
+        * (load.sand * weight(TerrainMaterial::Sand) + load.fines * weight(TerrainMaterial::Soil))
+        / volume
 }
 
 /// One column's sediment waiting on the ground.
@@ -207,6 +219,7 @@ pub struct BedDoc {
 enum Ask {
     Take,
     Lay { sand: bool },
+    Grass(Turn),
 }
 
 /// Where water put somewhere ended up.
@@ -257,6 +270,7 @@ pub struct SedimentDoc {
 #[derive(Clone, Debug, Default)]
 pub(super) struct Sediment {
     beds: CellMap<(i32, i32), Bed>,
+    diagnostics: Option<diagnostics::Recorder>,
     config: ErosionConfig,
     /// Seconds since the ground was last asked.
     since: f64,
@@ -270,12 +284,17 @@ pub(super) struct Sediment {
 
 /// How fast running water `depth` metres deep running at `speed` m/s wears
 /// ground of a material away, in metres of bed per second; mud gives at
-/// half the drag, but soaked turf is held by its roots all the same.
-fn wear_rate(material: TerrainMaterial, depth: f64, speed: f64, mud: bool) -> f64 {
+/// half the drag, but soaked turf is held by its roots all the same, as
+/// far as they live: turf whose grass is `health` alive holds as soil does
+/// once dead.
+fn wear_rate(material: TerrainMaterial, depth: f64, speed: f64, mud: bool, health: f64) -> f64 {
     let Some((holds, rate)) = wears(material) else {
         return 0.0;
     };
-    let holds = if mud && material != TerrainMaterial::SurfaceCover {
+    let holds = if material == TerrainMaterial::SurfaceCover {
+        let soil = wears(TerrainMaterial::Soil).map_or(holds, |(soil, _)| soil);
+        soil + (holds - soil) * health.clamp(0.0, 1.0)
+    } else if mud {
         0.5 * holds
     } else {
         holds
@@ -294,6 +313,11 @@ impl WaterWorld {
     /// Sets how fast erosion runs.
     pub fn set_erosion(&mut self, config: ErosionConfig) {
         self.sediment.config = config;
+    }
+
+    /// Erosion's rate over the world's own, which grass keeps pace with.
+    pub(super) const fn erosion_speed(&self) -> f64 {
+        self.sediment.config.speed
     }
 
     /// Sediment in the books.
@@ -403,9 +427,11 @@ impl WaterWorld {
                     .length()
                     .min(FASTEST_FROUDE * (GRAVITY * depth).sqrt())
             };
+            let drag = shear(depth.max(CLING_METRES), speed);
+            self.wet_grass(ground, cell, sheet.floor(), depth, drag, dt);
             // Clean water dragging less than the softest mud holds against
             // neither wears nor drops anything.
-            if sheet.load.total() <= 0.0 && shear(depth.max(CLING_METRES), speed) <= LEAST_HOLD {
+            if sheet.load.total() <= 0.0 && drag <= LEAST_HOLD {
                 continue;
             }
             let column = (cell.x, cell.z);
@@ -413,7 +439,6 @@ impl WaterWorld {
             // carries and how fast it falls through it, and only where the
             // flow is too slack to keep it stirred up (Krone).
             let mut load = sheet.load;
-            let drag = shear(depth.max(CLING_METRES), speed);
             let settled = if depth < CLING_METRES {
                 load
             } else {
@@ -427,16 +452,12 @@ impl WaterWorld {
             };
             load.sub(settled);
             if depth >= CLING_METRES {
-                let soil = self.soil_at(ground, cell, sheet.floor());
-                let material = *soil.material.get_or_insert_with(|| {
-                    let centre = cell.centre();
-                    ground
-                        .material(DVec3::new(centre.x, sheet.floor() - 0.02, centre.z))
-                        .unwrap_or(TerrainMaterial::Rock)
-                });
-                let mud = soil.fill() > MUD_FILL;
+                let material = self.soil_material(ground, cell, sheet.floor());
+                let mud = self.soil_fill(cell.x, cell.z) > MUD_FILL;
+                let health = self.grass_health(column);
                 let carried = load.total() * MATERIAL_QUANTUM_M3 / sheet.volume;
-                let rate = wear_rate(material, depth, speed, mud) * (1.0 - carried / CAPACITY);
+                let rate =
+                    wear_rate(material, depth, speed, mud, health) * (1.0 - carried / CAPACITY);
                 if rate > 0.0 {
                     let worn = speed_up * rate * CELL_AREA_M2 * dt / MATERIAL_QUANTUM_M3;
                     let bed = self.sediment.beds.entry(column).or_default();
@@ -493,6 +514,12 @@ impl WaterWorld {
             if changes.len() >= MOST_CHANGES {
                 break;
             }
+            // Turf a take tears away lays bare what the seed laid under it.
+            let under = self
+                .under_grass(column)
+                .map_or((TerrainMaterial::Soil, None), |native| {
+                    (native.under.0, Some(native.under.1))
+                });
             let Some(bed) = self.sediment.beds.get_mut(&column) else {
                 continue;
             };
@@ -504,9 +531,13 @@ impl WaterWorld {
                 #[expect(clippy::cast_possible_truncation, reason = "a few thousand quanta")]
                 quanta: quanta.trunc() as i64,
                 material,
+                look: None,
             };
             if bed.owed >= WORTH_QUANTA {
-                changes.push(change(-bed.owed, TerrainMaterial::Soil));
+                changes.push(SedimentChange {
+                    look: under.1,
+                    ..change(-bed.owed, under.0)
+                });
                 self.sediment.asked.push((column, Ask::Take));
                 bed.owed = 0.0;
             }
@@ -542,6 +573,13 @@ impl WaterWorld {
                 bed.laying.add(part);
             }
         }
+        let mut turns = Vec::new();
+        self.grass_requests(&mut changes, &mut turns, MOST_CHANGES);
+        self.sediment.asked.extend(
+            turns
+                .into_iter()
+                .map(|(column, turn)| (column, Ask::Grass(turn))),
+        );
         changes
     }
 
@@ -553,6 +591,7 @@ impl WaterWorld {
         let asked = std::mem::take(&mut self.sediment.asked);
         for (index, (column, ask)) in asked.into_iter().enumerate() {
             let done = applied.get(index).copied().unwrap_or_default();
+            self.record_sediment(column, done);
             match ask {
                 Ask::Take => {
                     let sand = done.taken[TerrainMaterial::Sand.code() as usize];
@@ -570,6 +609,9 @@ impl WaterWorld {
                         if let Some(soil) = self.soil.get_mut(&column) {
                             soil.material = None;
                         }
+                    }
+                    if done.stripped {
+                        self.grass_stripped(column);
                     }
                     let height = self
                         .sediment
@@ -596,7 +638,11 @@ impl WaterWorld {
                         *settled += (*laying - laid).max(0.0);
                         *laying = 0.0;
                     }
+                    if laid > 0.0 {
+                        self.grass_buried(column, laid);
+                    }
                 }
+                Ask::Grass(turn) => self.grass_turned(column, turn, done.relabelled),
             }
         }
         self.sediment.beds.retain(|_, bed| {
@@ -607,8 +653,10 @@ impl WaterWorld {
     /// The ground could not be changed: what was asked waits to be asked
     /// again.
     pub fn sediment_refused(&mut self) {
-        for (column, _) in std::mem::take(&mut self.sediment.asked) {
-            if let Some(bed) = self.sediment.beds.get_mut(&column) {
+        for (column, ask) in std::mem::take(&mut self.sediment.asked) {
+            if let Ask::Grass(_) = ask {
+                self.grass_refused(column);
+            } else if let Some(bed) = self.sediment.beds.get_mut(&column) {
                 let laying = std::mem::take(&mut bed.laying);
                 bed.settled.add(laying);
             }
@@ -690,6 +738,7 @@ impl WaterWorld {
                         soil.top = floor;
                         soil.material = None;
                     }
+                    self.grass_ground_changed((cell.x, cell.z), floor);
                 }
             }
             for cell in [cell, cell.up()] {
@@ -720,7 +769,8 @@ mod tests {
 
     #[test]
     fn a_stream_cuts_soil_a_fifth_of_a_metre_an_hour_and_sand_faster() {
-        let hour = |material, depth, speed, mud| 3_600.0 * wear_rate(material, depth, speed, mud);
+        let hour =
+            |material, depth, speed, mud| 3_600.0 * wear_rate(material, depth, speed, mud, 1.0);
         let soil = hour(TerrainMaterial::Soil, 0.05, 0.5, false);
         assert!(
             (0.15..0.25).contains(&soil),
@@ -746,7 +796,7 @@ mod tests {
 
     #[test]
     fn turf_holds_against_a_stream_until_a_flood_strips_it_and_rock_never_wears() {
-        let rate = |material, depth, speed| wear_rate(material, depth, speed, false);
+        let rate = |material, depth, speed| wear_rate(material, depth, speed, false, 1.0);
         assert!(rate(TerrainMaterial::SurfaceCover, 0.05, 0.5) <= 0.0);
         // A breach's flood, half a metre deep at 3 m/s, strips it.
         assert!(rate(TerrainMaterial::SurfaceCover, 0.5, 3.0) > 0.0);
@@ -758,6 +808,16 @@ mod tests {
         ] {
             assert!(rate(material, 0.5, 5.0) <= 0.0);
         }
+    }
+
+    #[test]
+    fn turf_its_grass_dead_is_cut_like_soil() {
+        // A stream 5 cm deep at half a metre a second spares living turf.
+        let turf = |health| wear_rate(TerrainMaterial::SurfaceCover, 0.05, 0.5, false, health);
+        assert!(turf(1.0) <= 0.0);
+        assert!(turf(0.5) <= 0.0);
+        let soil = wear_rate(TerrainMaterial::Soil, 0.05, 0.5, false, 1.0);
+        assert!((turf(0.0) - soil).abs() < 1.0e-12);
     }
 
     #[test]

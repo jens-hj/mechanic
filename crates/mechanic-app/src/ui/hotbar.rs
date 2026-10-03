@@ -382,6 +382,8 @@ const fn terrain_material_label(material: mechanic_world::TerrainMaterial) -> &'
         mechanic_world::TerrainMaterial::Sand => "Sand",
         mechanic_world::TerrainMaterial::Iron => "Iron",
         mechanic_world::TerrainMaterial::Graphite => "Graphite",
+        mechanic_world::TerrainMaterial::Wood => "Wood",
+        mechanic_world::TerrainMaterial::Foliage => "Leaves",
     }
 }
 

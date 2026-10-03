@@ -45,7 +45,8 @@ pub struct BreakageResponse {
 }
 
 impl BreakageResponse {
-    /// Initial ordering for sand, soil, weaker minerals, rock and iron ore.
+    /// Initial ordering for foliage, sand, soil, weaker minerals, wood, rock
+    /// and iron ore.
     pub const fn for_material(material: TerrainMaterial) -> Self {
         let (stress_pa, work_j_m3, density_kg_m3, deposits, soft) = match material {
             TerrainMaterial::Sand => (12_000.0, 8_000.0, 1_600.0, true, true),
@@ -55,6 +56,10 @@ impl BreakageResponse {
             TerrainMaterial::Graphite => (600_000.0, 800_000.0, 2_200.0, false, false),
             TerrainMaterial::Rock => (2_000_000.0, 4_000_000.0, 2_600.0, true, false),
             TerrainMaterial::Iron => (6_000_000.0, 12_000_000.0, 4_000.0, false, false),
+            // Cut wood stays in pieces, like ore.
+            TerrainMaterial::Wood => (800_000.0, 1_500_000.0, 600.0, false, false),
+            // Foliage gives way to almost anything and crumbles into clods.
+            TerrainMaterial::Foliage => (3_000.0, 2_000.0, 80.0, true, true),
         };
         Self {
             stress_pa,

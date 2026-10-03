@@ -102,7 +102,8 @@ impl TerrainMaterial {
         match self {
             Self::Sand => Some(ConstructionMaterial::Sand),
             Self::Graphite => Some(ConstructionMaterial::Graphite),
-            Self::SurfaceCover | Self::Soil | Self::Rock | Self::Iron => None,
+            Self::Wood => Some(ConstructionMaterial::Wood),
+            Self::SurfaceCover | Self::Soil | Self::Rock | Self::Iron | Self::Foliage => None,
         }
     }
 
@@ -118,6 +119,9 @@ impl TerrainMaterial {
             Self::Iron => (0.6, 0.45, 0.01),
             Self::Sand => Self::shared_friction(ConstructionMaterial::Sand),
             Self::Graphite => Self::shared_friction(ConstructionMaterial::Graphite),
+            Self::Wood => Self::shared_friction(ConstructionMaterial::Wood),
+            // Leaves slip and drag.
+            Self::Foliage => (0.4, 0.3, 0.06),
         };
         SurfaceResponse {
             static_friction,
@@ -167,7 +171,7 @@ mod tests {
             );
             assert_eq!(ground.restitution.to_bits(), 0.0_f32.to_bits());
         }
-        assert_eq!(shared, 2);
+        assert_eq!(shared, 3);
     }
 
     #[test]

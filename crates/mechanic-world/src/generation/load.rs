@@ -5,6 +5,7 @@ use std::sync::{Arc, OnceLock};
 
 use thiserror::Error;
 
+use super::flora::SpeciesSpec;
 use super::spec::{BiomeDoc, LibraryDoc, WorldDoc};
 
 /// Why a world-generation definition could not be used.
@@ -42,12 +43,14 @@ pub struct WorldgenSpec {
     pub(crate) world: WorldDoc,
     pub(crate) library: LibraryDoc,
     pub(crate) biomes: Vec<BiomeDoc>,
+    pub(crate) flora: Vec<SpeciesSpec>,
     hash: u64,
 }
 
 const EMBEDDED: &[(&str, &str)] = &[
     ("world.ron", include_str!("../../worldgen/world.ron")),
     ("library.ron", include_str!("../../worldgen/library.ron")),
+    ("flora.ron", include_str!("../../worldgen/flora.ron")),
     (
         "biomes/verdant_hills.ron",
         include_str!("../../worldgen/biomes/verdant_hills.ron"),
@@ -108,7 +111,8 @@ impl WorldgenSpec {
         }))
     }
 
-    /// Reads `world.ron`, `library.ron`, and `biomes/<name>.ron` from `root`.
+    /// Reads `world.ron`, `library.ron`, `flora.ron`, and `biomes/<name>.ron`
+    /// from `root`.
     ///
     /// # Errors
     ///
@@ -133,6 +137,7 @@ impl WorldgenSpec {
         };
         let world: WorldDoc = parse("world.ron", &text("world.ron")?)?;
         let library: LibraryDoc = parse("library.ron", &text("library.ron")?)?;
+        let flora = SpeciesSpec::library(&text("flora.ron")?)?;
         let mut biomes = Vec::with_capacity(world.biomes.len());
         for name in &world.biomes {
             let file = format!("biomes/{name}.ron");
@@ -157,6 +162,23 @@ impl WorldgenSpec {
                 message: format!("unknown biome `{}`", world.spawn.biome),
             });
         }
+        for biome in &biomes {
+            for layer in &biome.flora {
+                if !flora.iter().any(|species| species.name == layer.species) {
+                    return Err(WorldgenError::Invalid {
+                        context: format!("biomes/{}.ron flora", biome.name),
+                        message: format!("unknown species `{}`", layer.species),
+                    });
+                }
+                if layer.cell.is_nan() || layer.cell <= 0.0 || !(0.0..=1.0).contains(&layer.chance)
+                {
+                    return Err(WorldgenError::Invalid {
+                        context: format!("biomes/{}.ron flora `{}`", biome.name, layer.species),
+                        message: "cell must be positive and chance in [0, 1]".to_owned(),
+                    });
+                }
+            }
+        }
         if world.vertical.0 >= world.vertical.1 {
             return Err(WorldgenError::Invalid {
                 context: "world.ron vertical".to_owned(),
@@ -167,6 +189,7 @@ impl WorldgenSpec {
             world,
             library,
             biomes,
+            flora,
             hash,
         })
     }
@@ -177,13 +200,33 @@ impl WorldgenSpec {
         self.hash
     }
 
+    /// This definition without trees, under its own digest so compiled
+    /// worlds are never shared with the original.
+    #[cfg(test)]
+    pub(crate) fn without_flora(&self) -> Self {
+        let mut spec = self.clone();
+        for biome in &mut spec.biomes {
+            biome.flora.clear();
+        }
+        spec.hash ^= 0x7ee1_e55e_0000_0001;
+        spec
+    }
+
+    /// Tree species in `flora.ron` order.
+    pub fn species(&self) -> &[SpeciesSpec] {
+        &self.flora
+    }
+
     /// Biome names in declaration order.
     pub fn biome_names(&self) -> impl Iterator<Item = &str> {
         self.biomes.iter().map(|biome| biome.name.as_str())
     }
 }
 
-fn parse<T: serde::de::DeserializeOwned>(file: &str, text: &str) -> Result<T, WorldgenError> {
+pub(super) fn parse<T: serde::de::DeserializeOwned>(
+    file: &str,
+    text: &str,
+) -> Result<T, WorldgenError> {
     ron::Options::default()
         .with_default_extension(
             ron::extensions::Extensions::IMPLICIT_SOME
@@ -210,7 +253,7 @@ mod tests {
                 "{file}"
             );
         }
-        assert_eq!(EMBEDDED.len(), spec.biomes.len() + 2);
+        assert_eq!(EMBEDDED.len(), spec.biomes.len() + 3);
     }
 
     #[test]

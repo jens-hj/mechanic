@@ -236,10 +236,80 @@ then measures again only the cells that changed.
 No material is made or lost: what the ground lost, less what it got back, is
 what the water carries and what waits to be laid
 (`WaterWorld::sediment_ledger`). Saves keep what each sheet and pool carries
-and what waits on each bed. Stored water carries its murk to the water
-shader, which turns water thick with silt brown and hides the ground under
-it; lakes and rivers run clear. `ErosionConfig::speed` hurries erosion for
-tests and benchmarks.
+and what waits on each bed. Stored water hands the water shader the
+sediment it carries, in kg per m³, and the shader hides the ground under it
+and turns it brown by how much silt lies in the light's path: the silt times
+the water's depth, at about 0.06 m² per gram (Kirk), so the ground fades from
+sight about as deep as a Secchi disc does. Water carrying a gram a litre,
+muddy runoff, hides its bed 2–3 cm down; a tenth of that clouds a stream
+10 cm deep; a clear stream's 10 mg/L does not show. Films thinner than the
+water's 12 mm edge fade show little either way. Lakes and rivers run clear. `ErosionConfig::speed` hurries erosion for
+tests and benchmarks, and the dev tools' `F10` steps it through 1×, 10×, 100×
+and 1000× in play. It scales only how fast running water wears its bed: the
+water still runs and settles at its own pace and carries at most its capacity,
+so faster erosion leaves murkier water and quicker cuts, never made material.
+Grass keeps pace with it (below).
+
+## Grass
+
+Grass drowns under standing water, wears under a current and is smothered by
+silt, and grows back where the world grows grass once the water leaves
+(`water/grass.rs`). It changes at the world's own pace, as erosion does, from
+real turf: grass under 5 cm of water or more dies in about two weeks, and
+under a film, or in waterlogged ground, four times slower. A current dragging
+at it wears it through in `50 h · (60 Pa / τ)²` (Hewlett et al., CIRIA 116):
+a flood half a metre deep at 3 m/s in about ten hours, a sheet over a meadow
+in months. Each 5 cm of silt laid on it costs half its life. Harmed grass
+recovers in two weeks once the water leaves, grass buried alive grows up
+through silt in a week, and bare ground where the seed grows grass grows it
+again in six. `ErosionConfig::speed`, and so the dev tools' `F10`, hurries
+grass as it hurries erosion: at 1000× grass drowns in about twenty minutes.
+
+Each column of grass water has harmed keeps how alive it is, beside the water
+and saved with it (`StoredWaterDoc::grass`); grass water never harmed keeps
+nothing. Weakened turf holds against a current from 80 Pa down to soil's 1 Pa
+as it dies, so turf a flood has weakened is then cut like soil: the grass
+dies first and the gully follows. Grass with no life left asks the ground, in
+the same ask as sediment, to turn its top into what the seed laid under its
+grass, the biome's loam where it laid any: its cells are relabelled and move
+no material. Grass is a skin of roots, so the grass cells under a top that
+dies or is torn away turn with it, 25 cm down; a cut into a meadow shows soil,
+not more grass. Grass grows back where the seed's own surface, within 30 cm
+of the ground's top, is grass, as that grass.
+
+Wilting shows before death: the wetness map's third channel carries how far
+each column's grass has wilted, and the terrain shader turns its grass toward
+straw, keeping its light and shade. The map covers 51 m around the camera;
+grass that died shows as soil at any distance.
+
+### Developer erosion heatmap
+
+With dev tools enabled, **F9** cycles Off → Accumulated → Recent, and
+**Shift+F9** clears recorded activity. Both actions can be rebound. Recording
+continues while the map is hidden; loading a world starts a new session, and
+history is never saved. The existing **F10** erosion-speed control is unchanged.
+
+Orange marks material actually removed, blue marks material actually deposited,
+and purple marks both in the same water column. Yellow hatching shows the
+**current** settled sediment waiting to be deposited, including requests whose
+terrain response is still pending. A refused edit adds no completed activity.
+Resetting history never clears actual sediment or cancels a terrain edit.
+
+Accumulated shows transfers since reset. Recent fades completed transfers with a
+10-second half-life in water simulation time; the erosion-speed multiplier does
+not speed this clock up. Pending sediment does not fade in either view. Strength
+uses a fixed logarithmic scale at 1, 10 and 100+ mm of equivalent material depth
+(volume divided by the 20 cm water cell's area), **not** mesh elevation change.
+
+The map covers 102.4 m around the camera and follows floating-origin rebases.
+Marks are restricted to the recorded bed height so they do not color cave floors
+below. Water surfaces are hidden while the map is active, but water and erosion
+keep running. Turning it off restores normal terrain and water rendering.
+Brush edits, mining and subsequent terrain slumping are not counted as erosion.
+
+The worker publishes diagnostics alongside its water view, so new transfers can
+appear one water batch after the terrain edit commits. Reset generations prevent
+older in-flight snapshots from restoring cleared history.
 
 ## Drops
 
@@ -570,6 +640,9 @@ surface crosses sample the field's density.
   with the world. A violent flood promotes every brick it wears or silts.
 - Lakes and rivers neither erode nor carry sediment; what reaches them settles
   at their edge.
+- Grass changes only where stored water has reached: nothing harms or grows
+  grass under a lake or river, and ground the player bares stays bare.
+- Grass that grows back turns a whole 20 cm column at once.
 - Foam is drawn where water churns, not carried: a fall's foam does not trail
   downstream, and only the drifting flecks hint at it.
 - Currents change from one water batch to the next, and a tile's current is

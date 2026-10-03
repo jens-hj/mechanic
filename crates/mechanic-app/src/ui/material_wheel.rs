@@ -435,7 +435,8 @@ const fn material_base_color_bytes(material: ConstructionMaterial) -> &'static [
 
 const fn terrain_base_color_bytes(material: mechanic_world::TerrainMaterial) -> &'static [u8] {
     match material {
-        mechanic_world::TerrainMaterial::SurfaceCover => include_bytes!(concat!(
+        mechanic_world::TerrainMaterial::SurfaceCover
+        | mechanic_world::TerrainMaterial::Foliage => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/terrain/grass/grass_base_color.png"
         )),
@@ -458,6 +459,10 @@ const fn terrain_base_color_bytes(material: mechanic_world::TerrainMaterial) -> 
         mechanic_world::TerrainMaterial::Graphite => include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/assets/materials/graphite/graphite_base_color.png"
+        )),
+        mechanic_world::TerrainMaterial::Wood => include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/materials/wood/wood_base_color.png"
         )),
     }
 }
@@ -551,7 +556,7 @@ mod tests {
                 mechanic_world::TerrainMaterial::Soil
             )))
             .len(),
-            mechanic_world::TerrainMaterial::ALL.len()
+            mechanic_world::TerrainMaterial::BRUSHABLE.len()
         );
         assert_eq!(
             ordered_sectors(Some(WheelChoice::ShapeMode(

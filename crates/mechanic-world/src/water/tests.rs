@@ -1244,6 +1244,7 @@ fn water_pouring_over_a_cliff_churns_where_it_lands_and_calms_after_it_stops() {
 }
 
 mod erosion;
+mod grass;
 mod terrain;
 
 #[test]

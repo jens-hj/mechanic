@@ -207,8 +207,8 @@ pub struct RunningView {
     pub depth: f64,
     /// Its current along x and z, in m/s.
     pub flow: DVec2,
-    /// How cloudy with sediment it is, from 0 to 1.
-    pub murk: f64,
+    /// Sediment it carries, in kg per m³ of water.
+    pub silt: f64,
 }
 
 impl WaterWorld {
@@ -223,7 +223,7 @@ impl WaterWorld {
                     level: surface.level,
                     depth: surface.level - sheet.floor,
                     flow: surface.flow,
-                    murk: super::sediment::murk(sheet.load, sheet.volume),
+                    silt: super::sediment::silt(sheet.load, sheet.volume),
                 })
             })
             .collect()

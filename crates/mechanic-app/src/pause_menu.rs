@@ -45,6 +45,7 @@ pub(crate) enum PauseRequest {
     OpenControls,
     Back,
     SetCameraFov(f32),
+    SetProceduralGround(bool),
     BeginBindingCapture(BindingCapture),
     ClearBinding(GameAction, usize),
     ResetControls,
@@ -154,6 +155,7 @@ impl PauseMenuState {
             PauseAction::OpenControls => PauseRequest::OpenControls,
             PauseAction::Back => PauseRequest::Back,
             PauseAction::SetCameraFov(value) => PauseRequest::SetCameraFov(value),
+            PauseAction::SetProceduralGround(enabled) => PauseRequest::SetProceduralGround(enabled),
             PauseAction::BeginBindingCapture(action, slot) => {
                 self.capturing = Some(BindingCapture { action, slot });
                 PauseRequest::BeginBindingCapture(BindingCapture { action, slot })
@@ -344,6 +346,11 @@ pub(crate) fn handle_pause_request(
         PauseRequest::Back | PauseRequest::CancelExit => pause.return_to_main(),
         PauseRequest::SetCameraFov(degrees) => {
             if let Err(error) = settings.set_camera_fov_degrees(degrees) {
+                warn!("could not save settings: {error}");
+            }
+        }
+        PauseRequest::SetProceduralGround(enabled) => {
+            if let Err(error) = settings.set_procedural_ground(enabled) {
                 warn!("could not save settings: {error}");
             }
         }

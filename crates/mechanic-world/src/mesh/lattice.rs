@@ -315,11 +315,11 @@ fn edited_lattice_sample(
     }
 }
 
-/// Density the finest mesh places at one lattice corner: the untouched
-/// ground's own density there, or the blend of the eight cells around it
-/// where any of them was edited.
+/// Density the finest mesh places at one lattice corner as water sees the
+/// ground, where leaves are open: the untouched ground's own density there,
+/// or the blend of the eight cells around it where any of them was edited.
 #[expect(clippy::cast_possible_truncation, reason = "sample densities are f32")]
-pub(crate) fn corner_density(
+pub(crate) fn corner_water_density(
     field: &TerrainField,
     edits: &impl TerrainSource,
     corner: WorldCell,
@@ -334,7 +334,7 @@ pub(crate) fn corner_density(
             }
         }
     }
-    let untouched = || field.density(corner_position(corner)) as f32;
+    let untouched = || field.water_density(corner_position(corner)) as f32;
     if cells.iter().all(|cell| edits.brick(cell.brick()).is_none()) {
         return untouched();
     }
@@ -350,6 +350,13 @@ pub(crate) fn corner_density(
     }
     if !edited.contains(&true) {
         return untouched();
+    }
+    for ((cell, sample), &edited) in cells.iter().zip(&mut samples).zip(&edited) {
+        if !edited {
+            sample.density = field.water_density(cell.centre().0) as f32;
+        } else if sample.material == TerrainMaterial::Foliage && sample.density > 0.0 {
+            sample.density = -sample.density;
+        }
     }
     blend_lattice_samples(samples, edited).sample.density
 }
@@ -435,8 +442,12 @@ pub(super) fn lattice_from_halo(
                         .iter()
                         .any(|&coordinate| coordinate == 1 || coordinate == lattice_edge);
                     // Only crossing endpoints and cap corners are ever shown.
+                    // Ground deeper than a few samples never shows in a cap,
+                    // but a tree's crown can be several metres dense there.
                     let shown = neighbours.iter().any(|&other| (other > 0.0) != solid)
-                        || (on_boundary && solid && f64::from(density) < 3.0 * spacing);
+                        || (on_boundary
+                            && solid
+                            && (f64::from(density) < 3.0 * spacing || halo.columns.has_trees()));
                     if shown {
                         let position = corner_position(WorldCell::new(
                             minimum.x + (i32::try_from(x).expect("halo fits i32") - 1) * stride,

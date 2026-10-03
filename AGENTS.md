@@ -44,6 +44,15 @@ and milestone status are documented in `docs/`, indexed by `docs/README.md`.
 
 Tasks forward extra arguments to the underlying command, for example `cargo xtask test -p mechanic-core`.
 
+### Disk Space
+
+The development machine's disk is small, and one build of this workspace fills many gigabytes, so every session keeps `target/` lean.
+
+- Build into the checkout's own `target/`. Never point `CARGO_TARGET_DIR` at a fresh directory: a temporary worktree builds with `CARGO_TARGET_DIR=<checkout>/target`, so it reuses the build already there.
+- Remove a temporary worktree with `git worktree remove` as soon as its check is done, along with anything it built.
+- Build release only when the measurement or GPU test needs it; each profile is a second full build.
+- Check free space with `df -h .` before a long build. Below 20 GB free, first delete `target/*/incremental`, then stale profiles with `cargo clean --profile <name>`, and only then all of `target/`.
+
 ## Coding Style & Naming Conventions
 
 Follow standard `rustfmt` output with four-space indentation. Use `snake_case` for modules, functions, variables, and test names; `UpperCamelCase` for types and traits; and `SCREAMING_SNAKE_CASE` for constants. Keep CPU/GPU layouts synchronized when editing ABI structs or WGSL bindings. Unsafe Rust is forbidden, public APIs should be documented, and Clippy `all` plus `pedantic` warnings are enabled workspace-wide.

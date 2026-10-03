@@ -396,3 +396,22 @@ fn dev_tools_bindings_are_persisted_but_inert_without_opt_in() {
         assert!(action.instantaneous());
     }
 }
+
+#[test]
+fn heatmap_and_reset_chords_do_not_trigger_each_other() {
+    let controls = Controls::default();
+    let mouse = ButtonInput::default();
+    for shift in [false, true] {
+        let mut keys = ButtonInput::default();
+        keys.press(KeyCode::F9);
+        if shift {
+            keys.press(KeyCode::ShiftLeft);
+        }
+        let mut input = ActionInput::without_wheel(&controls, &keys, &mouse);
+        assert!(!input.just_pressed(GameAction::DevErosionMap));
+        assert!(!input.just_pressed(GameAction::DevErosionReset));
+        input.dev_tools = true;
+        assert_eq!(input.just_pressed(GameAction::DevErosionMap), !shift);
+        assert_eq!(input.just_pressed(GameAction::DevErosionReset), shift);
+    }
+}

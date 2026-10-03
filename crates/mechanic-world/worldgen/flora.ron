@@ -1,0 +1,64 @@
+// Tree species. Every tree is grown from these few numbers and a seed; see
+// docs/flora.md for what each one does.
+Flora(species: [
+    // Narrow cone of horizontal whorls down to the ground, needles everywhere.
+    Species(
+        name: "spruce",
+        height: (18, 30), width: 0.35, girth: 0.028, stems: (1, 1), crown_base: 0.04,
+        dominance: 1.0, split_chance: 0.85, split_count: (4, 6), split_angle: 85,
+        tropism: -0.15, wobble: 0.08,
+        foliage: (look: "spruce_needles", size: 0.35, density: 0.9),
+        bark: "spruce_bark",
+        roots: (spread: 1.0, depth: 0.6),
+    ),
+    // Broad dome on a short, thick bole that dissolves into gnarled limbs.
+    Species(
+        name: "oak",
+        height: (14, 24), width: 1.1, girth: 0.07, stems: (1, 1), crown_base: 0.25,
+        dominance: 0.2, split_chance: 0.55, split_count: (2, 3), split_angle: 45,
+        tropism: 0.12, wobble: 0.45,
+        foliage: (look: "oak_leaves", size: 1.0, density: 0.8),
+        bark: "oak_bark",
+        roots: (spread: 1.2, depth: 1.8),
+    ),
+    // Slender pale stems, a light crown, drooping tips.
+    Species(
+        name: "birch",
+        height: (12, 22), width: 0.45, girth: 0.028, stems: (1, 3), crown_base: 0.35,
+        dominance: 0.7, split_chance: 0.6, split_count: (2, 3), split_angle: 40,
+        tropism: -0.35, wobble: 0.25,
+        foliage: (look: "birch_leaves", size: 0.55, density: 0.55),
+        bark: "birch_bark",
+        roots: (spread: 0.9, depth: 0.8),
+    ),
+    // Rounded crown with curtains of hanging twigs reaching low.
+    Species(
+        name: "willow",
+        height: (10, 16), width: 1.2, girth: 0.06, stems: (1, 2), crown_base: 0.3,
+        dominance: 0.25, split_chance: 0.6, split_count: (2, 4), split_angle: 40,
+        tropism: -0.95, wobble: 0.3,
+        foliage: (look: "willow_leaves", size: 0.3, density: 0.7),
+        bark: "oak_bark",
+        roots: (spread: 1.3, depth: 1.0),
+    ),
+    // A clump of straight culms, leafy near the top.
+    Species(
+        name: "bamboo",
+        height: (8, 15), width: 0.3, girth: 0.03, stems: (10, 30), crown_base: 0.5,
+        dominance: 0.9, split_chance: 0.3, split_count: (1, 3), split_angle: 50,
+        tropism: 0.3, wobble: 0.05,
+        foliage: (look: "bamboo_leaves", size: 0.3, density: 0.6),
+        bark: "bamboo_culm",
+        roots: (spread: 0.8, depth: 0.4),
+    ),
+    // Tall narrow column, every branch reaching for the sun.
+    Species(
+        name: "poplar",
+        height: (18, 28), width: 0.2, girth: 0.036, stems: (1, 1), crown_base: 0.1,
+        dominance: 0.85, split_chance: 0.6, split_count: (2, 3), split_angle: 25,
+        tropism: 0.9, wobble: 0.1,
+        foliage: (look: "birch_leaves", size: 0.5, density: 0.75),
+        bark: "birch_bark",
+        roots: (spread: 0.8, depth: 1.2),
+    ),
+])

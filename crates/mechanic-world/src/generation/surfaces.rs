@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::WorldgenError;
 use super::compile::{Scope, compile};
+use super::flora::TreeTexture;
 use super::spec::{Cond, SurfaceDoc, SurfaceRuleDoc, TextureSet};
 use super::tape::Tape;
 use crate::TerrainMaterial;
@@ -43,6 +44,9 @@ pub struct SurfaceLook {
     pub roughness: f32,
     /// Texture repeat multiplier.
     pub scale: f32,
+    /// Index into [`SurfacePalette::tree_textures`] of the procedural
+    /// texture drawn instead of `texture`, if any.
+    pub tree_texture: Option<u16>,
 }
 
 /// Every surface a world can show, indexed by [`SurfaceId`].
@@ -50,6 +54,7 @@ pub struct SurfaceLook {
 pub struct SurfacePalette {
     names: Vec<String>,
     looks: Vec<SurfaceLook>,
+    tree_textures: Vec<TreeTexture>,
 }
 
 impl SurfacePalette {
@@ -66,6 +71,7 @@ impl SurfacePalette {
                 recolor: false,
                 roughness: 1.0,
                 scale: 1.0,
+                tree_texture: None,
             });
         }
         for doc in docs {
@@ -89,6 +95,7 @@ impl SurfacePalette {
                 roughness: doc.roughness as f32,
                 #[expect(clippy::cast_possible_truncation, reason = "shader parameters are f32")]
                 scale: doc.scale as f32,
+                tree_texture: None,
             });
         }
         if looks.len() > usize::from(u16::MAX) {
@@ -97,7 +104,45 @@ impl SurfacePalette {
                 message: "too many surfaces".to_owned(),
             });
         }
-        Ok(Self { names, looks })
+        Ok(Self {
+            names,
+            looks,
+            tree_textures: Vec::new(),
+        })
+    }
+
+    /// Adds `name`, a copy of the `base` look that draws a procedural tree
+    /// texture instead of its texture set.
+    pub(crate) fn add_tree_look(
+        &mut self,
+        name: String,
+        base: SurfaceId,
+        texture: TreeTexture,
+    ) -> Result<SurfaceId, WorldgenError> {
+        let invalid = |message: &str| WorldgenError::Invalid {
+            context: format!("palette `{name}`"),
+            message: message.to_owned(),
+        };
+        if self.names.contains(&name) {
+            return Err(invalid("names a surface twice or shadows a material"));
+        }
+        let id = u16::try_from(self.looks.len())
+            .ok()
+            .filter(|&id| id < u16::MAX)
+            .ok_or_else(|| invalid("too many surfaces"))?;
+        let index = u16::try_from(self.tree_textures.len())
+            .map_err(|_| invalid("too many tree textures"))?;
+        let mut look = self.look(base);
+        look.tree_texture = Some(index);
+        self.names.push(name);
+        self.looks.push(look);
+        self.tree_textures.push(texture);
+        Ok(SurfaceId(id))
+    }
+
+    /// Procedural tree textures the palette's looks draw, by index.
+    pub fn tree_textures(&self) -> &[TreeTexture] {
+        &self.tree_textures
     }
 
     /// Look of a surface; unknown ids fall back to plain rock.

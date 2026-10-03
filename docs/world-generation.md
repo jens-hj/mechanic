@@ -48,7 +48,9 @@ contract they always did.
    or the value of any expression. The rule names
    a palette surface. That surface decides the physical `TerrainMaterial`
    (how the ground digs and compacts) and the look: texture family, tint,
-   recolour, roughness and repeat.
+   recolour, roughness and repeat. Grass, dirt and stone are drawn
+   procedurally unless the player switches it off, and ignore the repeat;
+   see [Terrain materials](terrain-materials.md).
 
 ## Water-aware surfaces
 
@@ -160,6 +162,42 @@ roof lets it breach (below 2 m) and within `visible` metres of rock, so
 sealed tunnels cost nothing far away while ravines and trenches in the sea
 floor still show. `worldgen-preview --carves` finds and draws examples of
 each layer and reports how many ramp mouths reach a tunnel.
+
+## Flora
+
+A biome's `flora` list places trees, one species per layer, on a jittered
+grid like `Scatter`:
+
+```ron
+flora: [
+    (species: "oak", cell: 14, chance: 0.35),
+    (species: "spruce", cell: 10, chance: 0.5, mask: Sub(Ref("height"), C(26))),
+],
+```
+
+`species` names an entry in `flora.ron`. `cell`, `chance`, `jitter`, and
+`seed` work as they do for `Scatter`. `mask` is an `(x, z)` expression that
+must be positive, and may use the biome's own definitions and `height`.
+
+A tree grows only where all of these hold:
+- its biome dominates;
+- the ground is dry, at least 0.2 m above standing water;
+- the sky is open up to the species' tallest height;
+- the ground 1 m out on every side lies within 0.6 m of the base.
+
+The ground is searched within 12 m of the biome's height expression.
+
+Trees are part of the terrain field:
+- **Wood and foliage** are solid cells of the `Wood` and `Foliage` materials,
+  painted with the species' `bark` and `foliage` looks from the palette.
+- **Roots** add no ground. They paint as wood the ground they run through,
+  below its top 0.3 m.
+- **Distance:** terrain sampled coarser than 20 cm shows each tree as an
+  impostor, its trunk under a solid crown of its envelope.
+- **Ground queries:** `topmost_surface` and `surface_height` find the ground
+  under the trees.
+
+[Flora](flora.md) describes the genome every tree grows from.
 
 ## Authoring loop
 
@@ -290,4 +328,5 @@ a layer's cost can be isolated by removing it from a copy.
     cost about 10× a heightfield biome per block.
   - Candidate approaches: band-limited evaluation (coarse interpolation of
     low-frequency subtrees) and batched noise.
-- **Flora and structures.** Deliberately out of scope for this system.
+- **Structures.** Deliberately out of scope for this system. Trees are
+  [flora](flora.md).

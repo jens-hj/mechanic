@@ -8,9 +8,10 @@ use bevy::prelude::*;
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    BrickCoord, SedimentApplied, SedimentChange, SurfaceTile, TerrainBrick, TerrainEditOutcome,
-    TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterCell, WaterLedger, WaterShift,
-    WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround, WorldCell, WorldStore,
+    BrickCoord, ErosionConfig, SedimentApplied, SedimentChange, SurfaceTile, TerrainBrick,
+    TerrainEditOutcome, TerrainField, TerrainOctree, TerrainWater, WaterBody, WaterCell,
+    WaterLedger, WaterShift, WaterStep, WaterSurface, WaterSurfaces, WaterWorld, WetGround,
+    WorldCell, WorldStore,
 };
 
 use super::{WorldListPhase, WorldListState, WorldRuntime};
@@ -64,6 +65,8 @@ pub(super) fn ground_changed(
 /// What the water looked like after its last batch of steps, to draw.
 #[derive(Default)]
 pub(crate) struct WaterView {
+    pub(crate) sediment: Option<mechanic_world::SedimentDiagnostics>,
+    pub(crate) sediment_generation: u64,
     /// The stored water's surface, tile by tile: tiles unchanged since the
     /// batch before carry no mesh.
     pub(crate) surface: Vec<SurfaceTile>,
@@ -81,7 +84,10 @@ pub(crate) struct WaterView {
 /// What the ground did with the changes the water asked for.
 enum GroundAnswer {
     /// What each change did, in order.
-    Applied(Vec<SedimentApplied>),
+    Applied {
+        generation: u64,
+        applied: Vec<SedimentApplied>,
+    },
     /// Terrain editing is off: nothing changed.
     Refused,
 }
@@ -103,6 +109,8 @@ struct WaterBatch {
 /// up a frame: while a batch runs the worker owns the water, and the frame
 /// draws what the last batch published.
 pub(crate) struct WaterRunner {
+    sediment_generation: u64,
+    requested_generation: u64,
     world: Option<WaterWorld>,
     task: Option<Task<WaterBatch>>,
     /// A batch finished while the water was waited for, not yet published.
@@ -136,6 +144,8 @@ impl WaterRunner {
         let view = view(&mut world, &ground, &HashMap::new());
         let drawn = fingerprints(&view);
         Self {
+            sediment_generation: 0,
+            requested_generation: 0,
             world: Some(world),
             task: None,
             finished: None,
@@ -161,7 +171,10 @@ impl WaterRunner {
     fn take_answer(&mut self, outcome: &TerrainEditOutcome, applied: Vec<SedimentApplied>) {
         self.sediment_cells
             .extend_from_slice(&outcome.sediment_cells);
-        self.answer = Some(GroundAnswer::Applied(applied));
+        self.answer = Some(GroundAnswer::Applied {
+            generation: self.requested_generation,
+            applied,
+        });
         self.hear_answer();
     }
 
@@ -171,9 +184,24 @@ impl WaterRunner {
             return;
         };
         match self.answer.take() {
-            Some(GroundAnswer::Applied(applied)) => world.sediment_applied(&applied),
+            Some(GroundAnswer::Applied {
+                generation,
+                applied,
+            }) => {
+                // Transfers committed after a reset belong to the new history.
+                // Older answers reach the books before that history is cleared.
+                if generation != self.sediment_generation {
+                    world.reset_sediment_diagnostics();
+                    self.sediment_generation = generation;
+                }
+                world.sediment_applied(&applied);
+            }
             Some(GroundAnswer::Refused) => world.sediment_refused(),
             None => {}
+        }
+        if self.sediment_generation != self.requested_generation {
+            world.reset_sediment_diagnostics();
+            self.sediment_generation = self.requested_generation;
         }
     }
 
@@ -207,6 +235,8 @@ fn view(
 ) -> WaterView {
     let surface = world.surface_tiles(ground, drawn);
     WaterView {
+        sediment: world.sediment_diagnostics(),
+        sediment_generation: 0,
         surface: surface.tiles,
         joined: world.joined_cells(),
         owned: surface.owned,
@@ -230,11 +260,14 @@ pub(super) fn step_water(
     mut runtime: ResMut<WorldRuntime>,
     list: Res<WorldListState>,
     time: Res<Time>,
+    dev: Option<Res<crate::dev_tools::DevTools>>,
 ) {
     if list.phase() != WorldListPhase::Playing || !water_enabled() {
         return;
     }
     let runtime = &mut *runtime;
+    runtime.water.requested_generation = dev.as_ref().map_or(0, |dev| dev.erosion_generation);
+    runtime.water.hear_answer();
     runtime.water_seconds = (runtime.water_seconds + time.delta_secs_f64())
         .min(f64::from(MAX_STEPS_PER_BATCH) * WATER_STEP_SECONDS);
     let done = runtime.water.finished.take().or_else(|| {
@@ -263,16 +296,26 @@ pub(super) fn step_water(
     )]
     let steps = (runtime.water_seconds / WATER_STEP_SECONDS).floor() as u32;
     runtime.water_seconds -= f64::from(steps) * WATER_STEP_SECONDS;
+    let generation = dev.as_ref().map_or(0, |dev| dev.erosion_generation);
+    world.set_sediment_diagnostics(dev.as_ref().is_some_and(|dev| dev.enabled));
+    if runtime.water.sediment_generation != generation {
+        world.reset_sediment_diagnostics();
+        runtime.water.sediment_generation = generation;
+    }
     let field = runtime.field.clone();
     let edits = runtime.edits.snapshot();
     let bricks = std::mem::take(&mut runtime.water.pending);
     let cells = std::mem::take(&mut runtime.water.sediment_cells);
     let drawn = runtime.water.drawn.clone();
+    let erosion = ErosionConfig {
+        speed: dev.as_ref().map_or(1.0, |dev| dev.erosion_speed()),
+    };
     runtime.water.task = Some(AsyncComputeTaskPool::get().spawn(async move {
         let ground = TerrainWater {
             field: &field,
             edits: &edits,
         };
+        world.set_erosion(erosion);
         world.terrain_changed(&ground, bricks);
         world.ground_cells_changed(&ground, &cells);
         let mut done = Vec::with_capacity(steps as usize);
@@ -291,8 +334,10 @@ pub(super) fn step_water(
             .collect::<Vec<_>>();
         bricks.sort_unstable();
         bricks.dedup();
+        let mut view = view(&mut world, &ground, &drawn);
+        view.sediment_generation = generation;
         WaterBatch {
-            view: view(&mut world, &ground, &drawn),
+            view,
             surfaces: world.surfaces(field.clone()),
             ledger: world.ledger(),
             untouched: bricks
@@ -341,6 +386,22 @@ fn publish(runtime: &mut WorldRuntime, batch: WaterBatch) {
 }
 
 impl WorldRuntime {
+    pub(crate) fn reset_sediment_diagnostics(&mut self, generation: u64) {
+        self.water.requested_generation = generation;
+        self.water.hear_answer();
+    }
+
+    /// Last worker snapshot, excluding results from before a requested reset.
+    pub(crate) fn sediment_diagnostics(
+        &self,
+        generation: u64,
+    ) -> Option<&mechanic_world::SedimentDiagnostics> {
+        let view = self.water.view();
+        (view.sediment_generation == generation)
+            .then_some(view.sediment.as_ref())
+            .flatten()
+    }
+
     /// Changes the ground as the water asked, as one ordinary terrain edit
     /// made on a worker: running water wears the ground and lays sediment
     /// back on it. The water measures again only the cells that changed,
@@ -492,5 +553,64 @@ mod tests {
             !runner.sediment_cells.is_empty(),
             "the water was told of no change"
         );
+    }
+    #[test]
+    fn reset_during_a_worker_batch_keeps_only_transfers_committed_after_reset() {
+        use mechanic_world::{
+            BedDoc, SedimentApplied, SedimentDoc, SedimentLoad, StoredWaterDoc, TerrainEditOutcome,
+        };
+        let field = TerrainField::new(WorldSeed(42));
+        let terrain = TerrainOctree::default();
+        let ground = TerrainWater {
+            field: &field,
+            edits: &terrain,
+        };
+        for committed_after_reset in [false, true] {
+            let doc = StoredWaterDoc {
+                sediment: SedimentDoc {
+                    beds: vec![BedDoc {
+                        column: (0, 0),
+                        height: 0.0,
+                        settled: SedimentLoad {
+                            sand: 10000.0,
+                            fines: 0.0,
+                        },
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut world = WaterWorld::from_doc(&ground, &doc);
+            world.set_sediment_diagnostics(true);
+            world.step(&ground, 5.0);
+            assert_eq!(world.sediment_requests().len(), 1);
+            let mut runner = WaterRunner::new(world, &field, &terrain);
+            // The worker owns the world when an edit finishes and reset arrives.
+            let held_by_worker = runner.world.take();
+            if committed_after_reset {
+                runner.requested_generation = 1;
+            }
+            runner.take_answer(
+                &TerrainEditOutcome::default(),
+                vec![SedimentApplied {
+                    laid: 100,
+                    ..Default::default()
+                }],
+            );
+            runner.requested_generation = 1;
+            runner.world = held_by_worker;
+            runner.hear_answer();
+            let snapshot = runner.world_mut().sediment_diagnostics().unwrap();
+            let deposited: f64 = snapshot
+                .columns
+                .iter()
+                .map(|column| column.accumulated[1])
+                .sum();
+            let expected = if committed_after_reset { 100.0 } else { 0.0 };
+            assert!((deposited - expected).abs() < f64::EPSILON);
+            assert!((runner.world_mut().sediment_ledger().laid - 100.0).abs() < f64::EPSILON);
+            assert!((snapshot.columns[0].pending - 9900.0).abs() < f64::EPSILON);
+            assert_eq!(runner.sediment_generation, 1);
+        }
     }
 }

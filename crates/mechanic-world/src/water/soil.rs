@@ -64,7 +64,12 @@ const fn holds(material: TerrainMaterial) -> (f64, f64) {
         TerrainMaterial::SurfaceCover => (0.4, 6.0e-5),
         TerrainMaterial::Soil => (0.35, 5.0e-5),
         TerrainMaterial::Sand => (0.4, 2.0e-4),
-        TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => (0.0, 0.0),
+        // Leaf litter drinks freely.
+        TerrainMaterial::Foliage => (0.6, 1.0e-3),
+        TerrainMaterial::Rock
+        | TerrainMaterial::Iron
+        | TerrainMaterial::Graphite
+        | TerrainMaterial::Wood => (0.0, 0.0),
     }
 }
 
@@ -131,6 +136,8 @@ pub struct WetGround {
     /// Water it holds, and running water standing on it, as a depth over
     /// the column, in metres: a film too thin to see adds next to nothing.
     pub soaked: f64,
+    /// How far its grass has wilted, from 0 for green to 1 for dead.
+    pub wilt: f64,
 }
 
 impl Soil {
@@ -186,7 +193,7 @@ impl WaterWorld {
     }
 
     /// Every column of wet ground, to draw: ground water has soaked into,
-    /// and ground running water stands on.
+    /// ground running water stands on, and grass water has wilted.
     ///
     /// Running water counts by its depth, and its column keeps the height
     /// its ground was measured at: the film at the front of running water
@@ -204,6 +211,7 @@ impl WaterWorld {
                         top: soil.top,
                         fill: soil.fill(),
                         soaked: soil.moisture / CELL_AREA_M2,
+                        wilt: 0.0,
                     },
                 )
             })
@@ -220,6 +228,19 @@ impl WaterWorld {
                         .map_or(sheet.floor(), |soil| soil.top),
                     fill: self.soil_fill(cell.x, cell.z),
                     soaked: depth,
+                    wilt: 0.0,
+                });
+        }
+        // Wilting grass shows whether or not the ground is wet now.
+        for (column, top, wilt) in self.wilting() {
+            wet.entry(column)
+                .and_modify(|wet| wet.wilt = wilt)
+                .or_insert(WetGround {
+                    column,
+                    top,
+                    fill: self.soil_fill(column.0, column.1),
+                    soaked: 0.0,
+                    wilt,
                 });
         }
         wet.into_values().collect()

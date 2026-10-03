@@ -14,7 +14,7 @@ pub(super) const EMPTY_DENSITY: f32 = -0.5 * TERRAIN_CELL_METERS as f32;
 
 pub(super) const BRICK_MAGIC: [u8; 4] = *b"MECB";
 
-pub(super) const BRICK_FORMAT_VERSION: u16 = 5;
+pub(super) const BRICK_FORMAT_VERSION: u16 = 6;
 
 /// Fully promoted 32³-cell brick and its density acceleration bounds.
 #[derive(Clone, Debug, PartialEq)]
@@ -156,6 +156,26 @@ impl TerrainBrick {
                 .map(|cell| cell.density)
                 .fold(f32::INFINITY, f32::min);
         }
+        true
+    }
+
+    /// Gives a solid cell another material and look, keeping its shape and
+    /// what it holds. Returns whether the cell changed.
+    pub(super) fn relabel(
+        &mut self,
+        local: IVec3,
+        material: TerrainMaterial,
+        surface: SurfaceId,
+    ) -> bool {
+        let Some(index) = local_index(local) else {
+            return false;
+        };
+        let sample = &mut self.cells[index];
+        if !sample.is_solid() || (sample.material == material && sample.surface == surface) {
+            return false;
+        }
+        sample.material = material;
+        sample.surface = surface;
         true
     }
 
