@@ -30,6 +30,7 @@ class StorageTests(unittest.TestCase):
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR',
                                  'MECHANIC_CARGO_LEASE', 'MECHANIC_CARGO_STORAGE')}
+        self.env['PYTHONFAULTHANDLER'] = '1'
         self.children = []
         self.addCleanup(self.stop_children)
 
