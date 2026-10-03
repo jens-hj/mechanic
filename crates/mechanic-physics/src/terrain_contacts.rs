@@ -42,6 +42,43 @@ use mechanic_world::{
 
 use crate::{BodyPose, PhysicsError};
 
+// How a tread on the surface a terrain contact touches changes it. Lugs bite
+// into ground that yields, so both its friction and what it still holds once
+// failed rise; on rigid ground the grooves only take area out of contact. The
+// lugs carry the load on less area either way, so they press harder.
+fn tread_contact(
+    treads: Option<&mechanic_core::CompiledTreads>,
+    pose: BodyPose,
+    point: DVec3,
+    normal: DVec3,
+    response: &mut [f64; 4],
+    failed_pa: &mut f64,
+    yielding: bool,
+) -> f64 {
+    let Some(treads) = treads else {
+        return 1.0;
+    };
+    let inverse = pose.rotation.inverse();
+    let local_point = (inverse * (point - pose.position)).as_vec3();
+    // The contact normal faces the receiving body; its own surface faces out.
+    let outward = (inverse * -normal).as_vec3();
+    let Some(tread) = treads.tread_at(local_point, outward) else {
+        return 1.0;
+    };
+    let tread = tread.response();
+    let grip = f64::from(if yielding {
+        tread.yielding_grip()
+    } else {
+        tread.firm_grip()
+    });
+    response[0] *= grip;
+    response[1] *= grip;
+    if yielding {
+        *failed_pa *= grip;
+    }
+    f64::from(tread.pressure_factor())
+}
+
 // Collider/collider friction mixing, matching the GPU route.
 fn mixed_response(first: MaterialProperties, second: MaterialProperties) -> [f64; 4] {
     [
@@ -585,6 +622,19 @@ impl TerrainContactScene {
                 let mut activation_recorded = false;
                 for (corner, point) in points.into_iter().enumerate() {
                     result.unreduced_points += 1;
+                    let mut response = response;
+                    let mut failed_pa = yield_pa[1];
+                    let pressure_factor = tread_contact(
+                        collider
+                            .treads
+                            .and_then(|row| machine.treads.get(row as usize)),
+                        pose,
+                        point.body_point,
+                        point.normal,
+                        &mut response,
+                        &mut failed_pa,
+                        yield_pa[0].is_finite(),
+                    );
                     let contact = TerrainContact {
                         feature: TerrainContactFeature {
                             topology_generation: machine.generation,
@@ -607,7 +657,8 @@ impl TerrainContactScene {
                         separation: (point.body_point - point.triangle_point).dot(point.normal),
                         response,
                         yield_pa: yield_pa[0],
-                        failed_pa: yield_pa[1],
+                        failed_pa,
+                        pressure_factor,
                     };
                     if !activation_recorded && contact.separation <= CONTACT_ACTIVATION_DISTANCE {
                         result.activation_features.push(contact.feature);
@@ -736,6 +787,7 @@ impl TerrainContactScene {
                     response,
                     yield_pa: f64::INFINITY,
                     failed_pa: f64::INFINITY,
+                    pressure_factor: 1.0,
                 };
                 if !activation_recorded && contact.separation <= PAIR_ACTIVATION_DISTANCE {
                     result.activation_features.push(contact.feature);

@@ -74,6 +74,7 @@ impl CompiledCreation {
                 compound_index: row,
                 local_center: Vec3::ZERO,
                 material_properties: body.material,
+                treads: None,
                 shape: ColliderShape::Cuboid {
                     local_rotation: Quat::IDENTITY,
                     half_extents: body.half_extents,

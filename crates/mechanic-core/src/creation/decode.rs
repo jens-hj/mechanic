@@ -73,6 +73,14 @@ pub(super) fn with_layer_docs(
     })
 }
 
+/// The treads a saved part carries, to cut once the part exists.
+pub(super) fn saved_treads(doc: &PartDoc) -> Vec<super::doc::SurfaceTreadDoc> {
+    match doc {
+        PartDoc::Cuboid { treads, .. } | PartDoc::Cylinder { treads, .. } => treads.clone(),
+        _ => Vec::new(),
+    }
+}
+
 /// Replays saved rack teeth into a cuboid's face.
 fn with_rack_doc(
     cuboid: CuboidSpec,
@@ -121,6 +129,7 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             appearance,
             layers,
             rack,
+            treads: _,
         } => {
             let core = CuboidSpec::new(dimensions, pose.into())?
                 .with_material(material)
@@ -141,6 +150,7 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
             layers,
             spiral,
             gear,
+            treads: _,
         } => {
             let core = CylinderSpec::new(
                 CylinderDimensions::new(

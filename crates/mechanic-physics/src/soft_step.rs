@@ -282,6 +282,9 @@ pub struct TerrainLoad {
     pub footprint_impulse: f64,
     /// Ground the manifold presses on.
     pub footprint: mechanic_world::LoadFootprint,
+    /// How much harder than a smooth surface the body pressed there: above
+    /// one under a tread's lugs, which carry the load on less area.
+    pub pressure_factor: f64,
 }
 
 impl TerrainLoad {
@@ -296,7 +299,8 @@ impl TerrainLoad {
             centre: mechanic_world::WorldPosition(origin + self.point),
             normal: self.normal,
             footprint: self.footprint,
-            pressure_pa: (self.normal_impulse / (TICK_SECONDS * self.footprint.area())) as f32,
+            pressure_pa: (self.pressure_factor * self.normal_impulse
+                / (TICK_SECONDS * self.footprint.area())) as f32,
             seconds: TICK_SECONDS as f32,
         }
     }
@@ -1280,6 +1284,7 @@ fn collect_terrain_loads(
                     },
                     footprint_impulse,
                     footprint: first.footprint.shape,
+                    pressure_factor: first.source.pressure_factor,
                 });
             }
         }

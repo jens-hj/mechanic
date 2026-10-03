@@ -4,10 +4,10 @@ use super::drives::{
     CoordinateActuation, coordinate_drive, resolve_coordinate_actuation, resolve_coordinate_drives,
 };
 use crate::{
-    BearingId, ConstructionGraph, DriveLimits, DriveTarget, EngineKind, GearLinkId,
-    MaterialProperties, PartId,
+    Axis, BearingId, ConstructionGraph, DriveLimits, DriveTarget, EngineKind, FaceKind, GearLinkId,
+    LayerFace, MaterialProperties, PartId, SurfaceTreads, TreadSpec,
 };
-use bevy_math::{Mat3, Quat, Vec3, Vec4};
+use bevy_math::{Mat3, Quat, Vec2, Vec3, Vec4};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use thiserror::Error;
@@ -69,8 +69,70 @@ pub struct LocalCollider {
     pub local_center: Vec3,
     /// Source part's contact response.
     pub material_properties: MaterialProperties,
+    /// Row in [`CompiledCreation::treads`] of the source part's treads, when
+    /// it has any.
+    pub treads: Option<u32>,
     /// Geometry this collider presents to the solver.
     pub shape: ColliderShape,
+}
+
+/// Normal component along a cylinder's axis beyond which a contact is on an
+/// end cap rather than a wall.
+const CAP_COSINE: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// The treads of one part, placed in its compound.
+///
+/// Every collider row of the part names the same entry, so a contact can tell
+/// which of the part's surfaces it touches without knowing how the part was
+/// cut into rows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompiledTreads {
+    /// Part envelope centre relative to the compound root.
+    pub local_center: Vec3,
+    /// Part orientation relative to the compound root.
+    pub local_rotation: Quat,
+    /// Envelope outer and inner radius of a cylinder; `None` for a cuboid.
+    pub radii: Option<[f32; 2]>,
+    /// The treads, by surface.
+    pub treads: SurfaceTreads,
+}
+
+impl CompiledTreads {
+    /// The surface a contact touches, from its point and the surface's outward
+    /// normal there, both in compound-local coordinates.
+    pub fn surface_at(&self, point: Vec3, outward: Vec3) -> LayerFace {
+        let inverse = self.local_rotation.inverse();
+        let local = inverse * (point - self.local_center);
+        let normal = inverse * outward;
+        match self.radii {
+            None => {
+                let absolute = normal.abs();
+                let axis = if absolute.x >= absolute.y && absolute.x >= absolute.z {
+                    Axis::X
+                } else if absolute.y >= absolute.z {
+                    Axis::Y
+                } else {
+                    Axis::Z
+                };
+                LayerFace::Face(FaceKind::along(axis, normal[axis.index()] > 0.0))
+            }
+            Some(_) if normal.y.abs() > CAP_COSINE => {
+                LayerFace::Face(FaceKind::along(Axis::Y, normal.y > 0.0))
+            }
+            Some([outer, inner]) => {
+                if inner > 0.0 && Vec2::new(local.x, local.z).length() < 0.5 * (outer + inner) {
+                    LayerFace::Bore
+                } else {
+                    LayerFace::OuterWall
+                }
+            }
+        }
+    }
+
+    /// The tread on the surface a contact touches, if that surface has one.
+    pub fn tread_at(&self, point: Vec3, outward: Vec3) -> Option<TreadSpec> {
+        self.treads.get(self.surface_at(point, outward))
+    }
 }
 
 /// Geometry backing one compiled collider row.
@@ -245,6 +307,8 @@ pub struct CompiledCreation {
     /// Sorted parts carrying teeth, a rack or a thread. Meshing parts never
     /// touch, so across a mesh their colliders are exempt from contact.
     pub meshing_parts: Vec<PartId>,
+    /// Every treaded part's treads, named by its collider rows.
+    pub treads: Vec<CompiledTreads>,
     /// Analytic description of every solid full cylinder, alongside the tangent
     /// boxes that represent it in `colliders`. A solver that can take a cylinder's
     /// contact exactly uses this instead of pattern-matching the box run.

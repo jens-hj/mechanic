@@ -85,6 +85,19 @@ pub(super) fn layer_docs(layers: crate::MaterialLayers) -> Vec<MaterialLayerDoc>
         .collect()
 }
 
+/// A saved part with the treads cut into it.
+pub(super) fn with_tread_docs(mut doc: PartDoc, treads: crate::SurfaceTreads) -> PartDoc {
+    if let PartDoc::Cuboid { treads: saved, .. } | PartDoc::Cylinder { treads: saved, .. } =
+        &mut doc
+    {
+        *saved = treads
+            .iter()
+            .map(|(surface, tread)| super::doc::SurfaceTreadDoc { surface, tread })
+            .collect();
+    }
+    doc
+}
+
 pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> PartDoc {
     match spec {
         PartSpec::Cuboid(cuboid) => {
@@ -100,6 +113,7 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
                     face: rack.face(),
                     along: rack.along(),
                 }),
+                treads: Vec::new(),
             }
         }
         PartSpec::Cylinder(cylinder) => {
@@ -119,6 +133,7 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
                     teeth: gear.teeth(),
                     kind: gear.kind(),
                 }),
+                treads: Vec::new(),
             }
         }
         PartSpec::PipeBend(bend) => PartDoc::PipeBend {
