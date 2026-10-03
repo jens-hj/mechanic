@@ -38,6 +38,72 @@ fn selected_cut_is_non_overlapping_and_two_to_one_balanced() {
     }
 }
 
+// Level 6 covers the band out to the horizon. A cut must stitch and balance
+// against it like any other level.
+#[test]
+fn a_node_beside_a_level_six_node_stitches_to_it() {
+    let node = TerrainNodeId::containing(BrickCoord::new(32, 0, 0), 5).unwrap();
+    let coarse = TerrainNodeId::containing(BrickCoord::new(64, 0, 0), 6).unwrap();
+    let selected = rustc_hash::FxHashSet::from_iter([node, coarse]);
+    assert_eq!(
+        super::owner_of_leaf(&selected, BrickCoord::new(64, 16, 16)),
+        Some(coarse)
+    );
+    let mask = super::selection::transition_mask(node, &selected);
+    assert!(mask.contains(TerrainFace::PositiveX));
+    assert!(!mask.contains(TerrainFace::NegativeX));
+}
+
+#[test]
+fn balancing_splits_a_level_six_node_two_levels_coarser_than_its_neighbour() {
+    let field = TerrainField::new(WorldSeed(7));
+    let terrain = TerrainOctree::default().snapshot();
+    let fine = TerrainNodeId::containing(BrickCoord::new(48, 0, 0), 4).unwrap();
+    let coarse = TerrainNodeId::containing(BrickCoord::new(64, 0, 0), 6).unwrap();
+    let mut selected = BTreeSet::from([fine, coarse]);
+    let mut members = selected
+        .iter()
+        .copied()
+        .collect::<rustc_hash::FxHashSet<_>>();
+    super::selection::balance_cut(
+        &field,
+        &terrain,
+        &mut TerrainBoundsCache::default(),
+        &mut super::selection::TerrainSelectionStats::default(),
+        (&mut selected, &mut members),
+    );
+    assert!(!selected.contains(&coarse));
+    assert!(selected.contains(&fine));
+    assert_eq!(selected.len(), members.len());
+    assert!(selected.iter().all(|node| members.contains(node)));
+}
+
+#[test]
+fn every_face_toward_a_coarser_neighbour_in_a_real_cut_is_stitched() {
+    let field = TerrainField::new(WorldSeed(7));
+    let terrain = TerrainOctree::default().snapshot();
+    let cut = select_active_nodes(&field, &terrain, WorldPosition(DVec3::new(0.0, 4.0, 0.0)));
+    let selected = cut
+        .iter()
+        .map(|node| node.id)
+        .collect::<rustc_hash::FxHashSet<_>>();
+    let mut level_six_seams = 0;
+    for node in &cut {
+        for face in TerrainFace::ALL {
+            let Some(owner) = super::adjacent_leaf(node.id, face)
+                .and_then(|leaf| super::owner_of_leaf(&selected, leaf))
+            else {
+                continue;
+            };
+            if owner.level == node.id.level + 1 {
+                assert!(node.transition_mask.contains(face), "{node:?} {face:?}");
+                level_six_seams += usize::from(owner.level == 6);
+            }
+        }
+    }
+    assert!(level_six_seams > 0, "the cut reaches level 6");
+}
+
 fn contains(outer: TerrainNodeId, inner: TerrainNodeId) -> bool {
     if outer.level <= inner.level {
         return false;
