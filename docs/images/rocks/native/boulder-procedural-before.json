@@ -1,0 +1,20 @@
+{
+  "detail_scale": 1.0,
+  "eye": [
+    -94.0,
+    25.2,
+    -124.5
+  ],
+  "frame_sample_phase": "local terrain ready",
+  "seed": 42,
+  "settle_seconds": 33.021045625,
+  "streaming_backlog": 10083,
+  "target": [
+    -90.0,
+    23.2,
+    -120.0
+  ],
+  "triangles": 1440487,
+  "material_revision": "Default procedural stone before mineral PBR blend; diagnostic capture, not visual acceptance",
+  "procedural_ground": true
+}

@@ -7,6 +7,7 @@
 )]
 
 mod brush;
+mod capture;
 mod clumps;
 mod erosion_overlay;
 mod foundations;
@@ -846,6 +847,7 @@ impl Plugin for WorldPrototypePlugin {
                     .run_if(world_list_closed),
             )
             .add_systems(Update, handle_world_list.in_set(FrameSet::WorldList));
+        capture::install(app);
         #[cfg(debug_assertions)]
         app.init_resource::<worldgen_watch::WorldgenWatch>()
             .add_systems(

@@ -43,33 +43,58 @@ fn expression(spec: &WorldgenSpec, biome: usize, expr: &Expr, seed: u64) -> Tape
 }
 
 #[test]
-fn jointed_rocks_have_planar_faces_and_broken_corners() {
+fn weathered_rocks_have_bounded_varied_surfaces() {
     let spec = WorldgenSpec::embedded();
     let local = BTreeMap::new();
     let shape = compile(
-        &Expr::Ref("jointed_rock".into()),
+        &Expr::Ref("weathered_rock".into()),
         Scope {
             local: &local,
             library: &spec.library.definitions,
             fields: None,
         },
-        &["r".into(), "chip".into()],
+        &["r", "cut", "phase", "width", "rise", "depth", "lean"].map(str::to_owned),
         42,
-        "rock faces",
+        "weathered rock",
     )
     .unwrap();
-    for radius in [1.2, 2.8, 4.0] {
-        for chip in [0.8, 1.0, 1.2] {
-            let vars = [radius, chip];
-            assert!(shape.eval([0.0; 3], &vars) > 0.0);
-            // A broad side is one plane, rather than a sphere's curved flank.
-            for y in [-0.1, 0.0, 0.1] {
-                for z in [-0.1, 0.0, 0.1] {
-                    assert!(shape.eval([1.25 * radius, y, z], &vars).abs() < 1.0e-9);
+    let mut changed = 0;
+    for phase in [0.0, 19.0, 137.0] {
+        let vars = [2.0, 0.8, phase, 1.2, 0.9, 1.0, 0.1];
+        assert!(shape.eval([0.0; 3], &vars) > 0.0);
+        for axis in 0..3 {
+            for sign in [-1.0, 1.0] {
+                let mut outside = [0.0; 3];
+                outside[axis] = sign * 4.0;
+                assert!(shape.eval(outside, &vars) < 0.0);
+            }
+        }
+        for y in -4..4 {
+            let point = [2.0, f64::from(y) * 0.2, 0.0];
+            let reference = [2.0, 0.8, 0.0, 1.2, 0.9, 1.0, 0.1];
+            changed += usize::from(
+                (shape.eval(point, &vars) - shape.eval(point, &reference)).abs() > 0.01,
+            );
+        }
+    }
+    assert!(changed > 5, "rocks must not repeat the same relief");
+    // Authored reach culls samples and streamed nodes. The largest stretched
+    // variants must fit inside the declared sphere.
+    for (reach, vars) in [
+        (6.0, [2.7, 0.96, 137.0, 1.4, 1.1, 1.2, 0.2]),
+        (13.0, [5.0, 0.96, 137.0, 1.3, 1.9, 1.25, 0.18]),
+    ] {
+        for x in -3..=3 {
+            for y in -3..=3 {
+                for z in -3..=3 {
+                    let direction = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+                    if direction.length_squared() > 0.0 {
+                        assert!(
+                            shape.eval((direction.normalize() * reach).to_array(), &vars) < 0.0
+                        );
+                    }
                 }
             }
-            assert!(shape.eval([1.2 * radius, 0.75 * radius, 0.9 * radius], &vars) < 0.0);
-            assert!(shape.eval([0.0, 0.9 * radius, 0.0], &vars) < 0.0);
         }
     }
 }
@@ -162,6 +187,7 @@ fn boulders_are_rock_that_meshes_and_excavates_through_the_terrain_octree() {
     let mut spec = (*WorldgenSpec::embedded()).clone();
     spec.biomes.retain(|b| b.name == "verdant_hills");
     spec.biomes[0].height = Expr::C(20.0);
+    spec.biomes[0].flora.clear();
     spec.biomes[0].rivers = 0.0;
     spec.biomes[0].carves = spec
         .world

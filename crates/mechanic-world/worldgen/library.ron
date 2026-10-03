@@ -3,24 +3,44 @@
 // biome name are mixed in on top.
 Library(
     definitions: {
-        // Jointed rock: planar faces with unequal oblique cuts. Scatter vars
-        // r (metres) and chip (0.8..1.2) vary size and the broken upper corner.
-        // The six axial faces bound it within 1.8*r of its origin.
-        "jointed_rock": Min([
-            Sub(Mul([Ref("r"), C(1.25)]), Abs(X)),
-            Sub(Mul([Ref("r"), C(0.8)]), Abs(Y)),
-            Sub(Ref("r"), Abs(Z)),
-            Add([Mul([Ref("r"), Ref("chip")]), Plane(normal: (1, 1.4, 0.6))]),
-            Add([Mul([Ref("r"), C(1.05)]), Plane(normal: (-1, 0.6, 1))]),
-            Add([Mul([Ref("r"), C(1.1)]), Plane(normal: (0.4, -1, -1))]),
-            Add([Mul([Ref("r"), C(1.0)]), Plane(normal: (-0.7, 1, -1))]),
+        // Weathered joint blocks in normalized rock coordinates. Broad curved
+        // shoulders meet unequal fracture faces; the cuts are not a box bevel.
+        "rock_mass": SmoothIntersect(0.035, [
+            Sphere(C(1.12)),
+            Add([C(0.72), Plane(normal: (1, 0.15, 0.3))]),
+            Add([Ref("cut"), Plane(normal: (-0.6, 1, 0.2))]),
+            Add([C(0.78), Plane(normal: (-0.5, -0.7, 1))]),
+            Add([C(0.74), Plane(normal: (0.2, 0.4, -1))]),
+            Add([C(0.84), Plane(normal: (0.8, -0.2, -0.9))]),
         ]),
-
-        // Interlocking blocks retain their joints instead of melting together.
-        "rock_cluster": Union([
-            Stretch((1, 2, 1), Ref("jointed_rock")),
-            Translate((3.5, -1.5, 1), RotateY(32, Ref("jointed_rock"))),
-            Translate((-3, -2, -1.5), RotateZ(-18, Ref("jointed_rock"))),
+        // The random domain offset changes the erosion pattern for each rock.
+        // Relative relief becomes centimetre to decimetre chips at authored scales.
+        "rock_relief": Domain(
+            x: Some(Add([X, Ref("phase")])),
+            z: Some(Sub(Z, Ref("phase"))),
+            of: Add([
+                Noise(freq: 1.7, octaves: 2, amp: 0.065, seed: 141),
+                Noise(fractal: Ridged, freq: 5.5, amp: 0.018, seed: 142),
+            ]),
+        ),
+        // A shallow, discontinuous weathered seam. It recesses the skin but
+        // never slices the entire rock into floating, disconnected pieces.
+        "rock_seam": Mul([
+            C(0.07),
+            Sub(C(1), Smoothstep(Abs(Add([
+                Plane(normal: (0.25, 1, -0.15)), C(0.15),
+                Domain(x: Some(Add([X, Ref("phase")])), of: Noise(freq: 2.8, amp: 0.045, seed: 143)),
+            ])), 0.015, 0.07)),
+            Smoothstep(X, -0.8, 0.1),
+        ]),
+        "weathered_rock": Mul([
+            Ref("r"), C(0.65),
+            Domain(
+                x: Some(Div(X, Mul([Ref("r"), Ref("width")]))),
+                y: Some(Div(Add([Y, Mul([X, Ref("lean")])]), Mul([Ref("r"), Ref("rise")]))),
+                z: Some(Div(Z, Mul([Ref("r"), Ref("depth")]))),
+                of: Sub(Add([Ref("rock_mass"), Ref("rock_relief")]), Ref("rock_seam")),
+            ),
         ]),
 
         // Gentle, familiar rolling ground.

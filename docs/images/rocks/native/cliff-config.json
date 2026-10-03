@@ -1,0 +1,45 @@
+{
+  "seed": 7,
+  "directory": "docs/images/rocks/native",
+  "views": [
+    {
+      "name": "cliff-close",
+      "eye": [
+        -488.75,
+        129,
+        -1355.14
+      ],
+      "target": [
+        -500.75,
+        124,
+        -1345.14
+      ]
+    },
+    {
+      "name": "cliff-gameplay",
+      "eye": [
+        -475.75,
+        134,
+        -1365.14
+      ],
+      "target": [
+        -500.75,
+        124,
+        -1345.14
+      ]
+    },
+    {
+      "name": "cliff-detail",
+      "eye": [
+        -492,
+        130,
+        -1351.5
+      ],
+      "target": [
+        -499.5,
+        125.8,
+        -1344.7
+      ]
+    }
+  ]
+}

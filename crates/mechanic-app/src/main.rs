@@ -187,7 +187,9 @@ fn main() {
                     task_pool_options: task_pool_options(),
                 })
                 .set(bevy::winit::WinitPlugin {
-                    prevent_activation: automation::background() || tool_fx::capture_active(),
+                    prevent_activation: automation::background()
+                        || tool_fx::capture_active()
+                        || env::is_set(env::TERRAIN_CAPTURE),
                     ..default()
                 })
                 .set(WindowPlugin {
@@ -199,7 +201,9 @@ fn main() {
                         } else {
                             (1280, 720).into()
                         },
-                        focused: !automation::background() && !tool_fx::capture_active(),
+                        focused: !automation::background()
+                            && !tool_fx::capture_active()
+                            && !env::is_set(env::TERRAIN_CAPTURE),
                         ..default()
                     }),
                     ..Default::default()
