@@ -21,6 +21,43 @@ the same. Each change was measured against the commit before the pass,
   `mesh_digest`).
 - CPU profiles: macOS `sample` at 1 ms.
 
+## Final serial comparison
+
+Run one at a time, baseline and current interleaved, with the load average
+logged before every run. Cycle counts measure work done; elapsed time
+measures what a player waits for, and only the builder runs had quiet enough
+conditions to compare it.
+
+| Workload | Runs | Load before runs | CPU cycles | Elapsed |
+|---|---|---|---|---|
+| Builder replay, 600 ticks | 3 + 3 | 6.7–7.9 | 63.4–64.5 G → 44.4–45.8 G (−29.5 %) | tick median 33.4–34.6 → 21.6–22.6 ms (−35 %); p95 48.4–49.0 → 32.0–33.2 ms (−33 %); mean 32.1–33.2 → 22.1–23.1 ms (−31 %) |
+| `terrain-cut`, titan_crags | 3 + 3 | 6.7–108 | 593–598 G → 479–483 G (−19.4 %) | not comparable: 25–41 s either way under shifting load |
+| `water-breach` | 2 + 2 | 32–120 | 455–461 G → 338–344 G (−25.6 %) | step p50 7.2–7.3 → 5.8–6.1 ms (−18 %); p95s load-dominated |
+| `terrain-cut`, nine biomes | 1 + 1 | 16 / 177 | 4,222 G → 3,439 G (−18.5 %) | not comparable |
+
+Peak memory in the same runs (maximum resident / peak footprint):
+
+| Workload | Baseline | Current |
+|---|---|---|
+| Builder replay | 114–125 / 110–122 MB | 123–124 / 119–120 MB |
+| titan_crags | 117–129 / 127–128 MB | 106–133 / 122–135 MB |
+| `water-breach` | 138–141 / 149–155 MB | 140–143 / 155 MB |
+| nine biomes | 129 / 128 MB | 137 / 140 MB |
+
+Builder and water memory are the same within run-to-run spread. The terrain
+cut's peak depends on how its ten workers' jobs overlap; with the current
+build finishing jobs faster, more can be in flight at once, and the single
+nine-biome pair differs by 8–12 MB. That is one pair under very different
+load and is not taken as a trend.
+
+Quality in the same runs: the builder's final state hash after 600 ticks is
+identical in all six runs (`9819739108337549482`), with 2,652 median contacts
+and no degraded ticks; water's ledger error (2.6e-12 m³) and eroded quanta
+(419,190) are identical; the terrain cuts have identical node counts, and
+their meshes differ only by fix 9's transition faces (titan_crags digest
+`c1d491861a604221` → `c1a23420bcb0358c`, the same as the selection-only
+variant with the fix, and unchanged by every other change).
+
 ## Baselines and results
 
 | Workload | Measure | Before | After |
@@ -154,7 +191,12 @@ overlap; four paired single-biome runs split two each way.
    added for the 640 m–1 km band, but the owner lookup still stopped at level
    5, so level-5 nodes facing level-6 ones got no transition faces and the
    2:1 balance was not enforced against level 6. Fixed; in the verdant_hills
-   cut this adds 9,294 transition triangles and no nodes.
+   cut this adds 9,294 transition triangles and no nodes, and 72,317 over the
+   nine biomes (+0.08 %). Three tests pin it, and all three fail with the old
+   range: a level-5 node beside a level-6 node stitches to it; balancing
+   splits a level-6 node two levels coarser than its neighbour; and every
+   face of a real cut toward a one-level-coarser neighbour, level 6 included,
+   carries a transition.
 
 ### Ron: opening saves with fields this build does not know
 
@@ -227,9 +269,14 @@ CPU-s).
 
 ## Correctness checks
 
+The branch is **not** all green: `mechanic-physics` has two failing tests and
+`mechanic-gpu` eleven, listed below. All but the ledge test fail identically
+at `a2cd0d0`.
+
 `cargo xtask test` on the branch, Apple M1 Pro / Metal:
 
-- `mechanic-core` 400 pass; `mechanic-world` 272 pass; `mechanic-app` 947
+- `mechanic-core` 400 pass; `mechanic-world` 275 pass (272, plus the three
+  level-6 tests added after the full run); `mechanic-app` 947
   pass, 16 ignored; `mechanic-bench`, `xtask` and the WGSL checks pass.
 - `mechanic-gpu`: 101 pass, 11 fail, all failing identically at `a2cd0d0`:
   five contact tests, four vehicle tests, the pendulum test, and
@@ -245,19 +292,51 @@ CPU-s).
 ### The ledge test
 
 `captured_blocks_dropped_across_a_ledge_come_to_rest` drops three captured
-blocks across a ledge and samples the pile after 600 ticks. The landing is
-chaotic, and the test's own comment says so. At `a2cd0d0`, raising the
-starting poses by 1–15 nm buries a block beyond the 5 mm limit in 8 of 16
-runs, two of them by about 3.8 cm. With change 1 the same sweep gives 6 of
-16, one at 3.9 cm. Change 1 moves rounding, and the unperturbed start now
-lands in a failing pose.
+blocks across a ledge, runs 600 ticks, and requires every overlap under 5 mm,
+no block below the floor, and every speed under 0.2. It fails on the branch
+and passes at `a2cd0d0`.
 
-The failures are a real solver defect, not a buried block at rest. The top
-block topples off an edge (correctly), then never settles: its contact with
-the block below alternates between a ten-point face manifold and a single edge
+**Unperturbed outcome.** Both builds reach near rest by tick 100 with 21
+contacts and 1.6 mm deepest overlap. The baseline stays there: at tick 600,
+21 contacts, 1.60 mm, fastest speed 0.0013. In the current build the top
+block, resting near the edge of the block below, starts to tip at tick 106;
+by tick 143 it is toppling at 0.78 rad/s, and from then on it never settles.
+At tick 600 it has 20 contacts, 38.9 mm overlap and 0.37 fastest speed.
+
+**What differs numerically.** The test already fails with change 1 applied
+alone to `a2cd0d0`; changes 2 and 3 keep the builder's state hash. Change 1's
+combined responses equal direct solves in exact arithmetic, but are summed in
+a different order. On this fixture 26–28 % of response entries differ, by at
+most 6.5e-16 relative (about three units in the last place). The response
+vectors are the only values change 1 computes differently. The two runs' state hashes part at tick 1 and their positions drift
+apart by rounding until the pile reaches its tipping point in one run and not
+the other. On the builder fixture the same change kept every bit for 1,749
+ticks.
+
+**Why this is not read as a regression.** The pile is balanced on a knife
+edge. Whether the top block topples, and whether it then rattles, depends on
+rounding in either build. Over 64 starts nudged by 1–32 nm along y or x:
+
+| Fixture | Build | Overlap ≥ 5 mm at tick 600 | Speed ≥ 0.2 | Median / p90 / max overlap |
+|---|---|---|---|---|
+| ledge | baseline | 30 / 64 | 21 / 64 | 4.9 / 37.5 / 38.6 mm |
+| ledge | current | 31 / 64 | 22 / 64 | 4.8 / 6.7 / 38.4 mm |
+| leaning | baseline | 3 / 64 | 3 / 64 | 2.9 / 3.6 / 36.7 mm |
+| leaning | current | 3 / 64 | 5 / 64 | 2.9 / 3.7 / 36.7 mm |
+
+The counts differ by one or two, well inside sampling noise (about ±4 at
+these rates), and the worst outcomes are the same size. So the change does not
+move the distribution; it moves which outcome the one fixed start lands on.
+That is evidence of no systematic degradation, not proof of it.
+
+**The defect behind the failures**, present in both builds: the top block
+topples off an edge (correctly), then never settles. Its contact with the
+block below alternates between a ten-point face manifold and a single edge
 point, the overlap jumps to about 3.7 cm every six or seven ticks, and the
-push-out bounces it back. Fixing that limit cycle is physics work outside
-this pass and is left as a follow-up; the test was not relaxed.
+push-out bounces it back. This is the "box hanging over a ledge" case that
+`EDGE_FACE_ALIGNMENT` addresses, failing once the tilt passes its 2.6°
+window. Fixing it is contact-model work outside this pass. The test was not
+relaxed and remains failing on this branch.
 
 ### Long builder runs
 
