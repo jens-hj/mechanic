@@ -44,7 +44,7 @@ use crate::{
 
 /// Format version written by this build. Files carrying anything else are
 /// refused rather than guessed at.
-pub const CREATION_FORMAT_VERSION: u32 = 18;
+pub const CREATION_FORMAT_VERSION: u32 = 19;
 
 /// A bearing ring placed on a face with nothing attached through it yet.
 ///
@@ -381,6 +381,7 @@ impl CreationDocument {
                 | PartDoc::Seat { pose }
                 | PartDoc::Dial { pose, .. }
                 | PartDoc::Button { pose, .. }
+                | PartDoc::Coupler { pose }
                 | PartDoc::Input { pose }
                 | PartDoc::DimensionLink { pose, .. } => pose,
             };

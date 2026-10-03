@@ -410,6 +410,10 @@ pub(crate) fn handle_build_actions(
                     state.delete_target = Some(DeleteTarget::Part(part));
                     state.feedback = Some("Release right mouse to delete Input".to_owned());
                 }
+                PartSpec::Coupler(_) => {
+                    state.delete_target = Some(DeleteTarget::Part(part));
+                    state.feedback = Some("Release right mouse to delete coupler".to_owned());
+                }
                 PartSpec::DimensionLink(_) => {
                     state.delete_target = Some(DeleteTarget::Part(part));
                     state.feedback =
@@ -811,7 +815,7 @@ pub(crate) fn handle_build_actions(
     }
 
     match tool {
-        Tool::Dial(_) | Tool::Button(_) => {}
+        Tool::Dial(_) | Tool::Button(_) | Tool::Coupler => {}
         Tool::Shape => unreachable!("shape actions are handled by handle_shape_actions"),
         Tool::Block => unreachable!("block actions are handled before this match"),
         Tool::Cylinder => unreachable!("cylinder actions are handled before this match"),

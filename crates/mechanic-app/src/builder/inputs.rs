@@ -43,6 +43,7 @@ pub(crate) fn stage_input_part(
     let command = match spec {
         PartSpec::Dial(spec) => BuildCommand::SpawnDial(spec),
         PartSpec::Button(spec) => BuildCommand::SpawnButton(spec),
+        PartSpec::Coupler(spec) => BuildCommand::SpawnCoupler(spec),
         _ => unreachable!("input placement has a physical input spec"),
     };
     let fail = |error: mechanic_core::GraphError| PlacementError::Graph(error.to_string());
@@ -102,7 +103,9 @@ pub(crate) fn validate_input_part(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mechanic_core::{BuildPose, ButtonSpec, CreationDocument, DialSpec, InputSize};
+    use mechanic_core::{
+        BuildPose, ButtonSpec, CouplerSpec, CreationDocument, DialSpec, InputSize,
+    };
 
     #[test]
     fn physical_inputs_mount_on_horizontal_vertical_and_oblique_faces() {
@@ -144,6 +147,7 @@ mod tests {
                     for spec in [
                         PartSpec::Dial(DialSpec::new(size, BuildPose::default())),
                         PartSpec::Button(ButtonSpec::new(size, BuildPose::default())),
+                        PartSpec::Coupler(CouplerSpec::new(BuildPose::default())),
                     ] {
                         for turns in 0_u8..4 {
                             let transform = input_surface_transform(

@@ -29,6 +29,7 @@ pub(crate) enum Tool {
     Input,
     Dial(InputSize),
     Button(InputSize),
+    Coupler,
     DimensionLink,
     Shape,
     Chroma,
@@ -161,6 +162,7 @@ pub(crate) enum PlaceableItem {
     Input,
     Dial(InputSize),
     Button(InputSize),
+    Coupler,
     DimensionLink,
 }
 
@@ -260,7 +262,7 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::Bearing,
         Self::LinearBearing,
         Self::Piston,
@@ -275,6 +277,7 @@ impl PlaceableItem {
         Self::Input,
         Self::Dial(InputSize::Panel),
         Self::Button(InputSize::Panel),
+        Self::Coupler,
         Self::DimensionLink,
     ];
 
@@ -310,6 +313,7 @@ impl PlaceableItem {
             Self::Input => Tool::Input,
             Self::Dial(size) => Tool::Dial(size),
             Self::Button(size) => Tool::Button(size),
+            Self::Coupler => Tool::Coupler,
             Self::DimensionLink => Tool::DimensionLink,
         }
     }
@@ -330,6 +334,7 @@ impl PlaceableItem {
             Tool::Input => Some(Self::Input),
             Tool::Dial(size) => Some(Self::Dial(size)),
             Tool::Button(size) => Some(Self::Button(size)),
+            Tool::Coupler => Some(Self::Coupler),
             Tool::DimensionLink => Some(Self::DimensionLink),
             _ => None,
         }
@@ -360,6 +365,7 @@ impl Tool {
             Self::Dial(InputSize::Panel) => "Dial · 5 cm",
             Self::Dial(InputSize::Utility) => "Dial · 10 cm",
             Self::Dial(InputSize::Industrial) => "Dial · 25 cm",
+            Self::Coupler => "Coupler",
             Self::Button(InputSize::Panel) => "Button · 5 cm",
             Self::Button(InputSize::Utility) => "Button · 10 cm",
             Self::Button(InputSize::Industrial) => "Button · 25 cm",
@@ -513,7 +519,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_bearing_is_the_second_item_and_dimension_link_the_tenth() {
+    fn item_picker_keeps_hardware_order_and_includes_coupler() {
         assert_eq!(
             PlaceableItem::ALL,
             [
@@ -531,6 +537,7 @@ mod tests {
                 PlaceableItem::Input,
                 PlaceableItem::Dial(InputSize::Panel),
                 PlaceableItem::Button(InputSize::Panel),
+                PlaceableItem::Coupler,
                 PlaceableItem::DimensionLink,
             ]
         );

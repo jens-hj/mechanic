@@ -448,6 +448,7 @@ pub(crate) fn apply_pipette_setup(
                     PartSpec::Servo(_) => Tool::Servo,
                     PartSpec::Seat(_) => Tool::Seat,
                     PartSpec::Dial(spec) => Tool::Dial(spec.size),
+                    PartSpec::Coupler(_) => Tool::Coupler,
                     PartSpec::Button(spec) => Tool::Button(spec.size),
                     PartSpec::Input(_) => Tool::Input,
                     PartSpec::DimensionLink(_) => Tool::DimensionLink,
@@ -534,6 +535,7 @@ pub(crate) fn cycle_orientation(state: &mut EditorState, tool: Tool) -> String {
             | Tool::Seat
             | Tool::Dial(_)
             | Tool::Button(_)
+            | Tool::Coupler
             | Tool::Input
     ) {
         state.authored_orientation = (state.authored_orientation + 1) % AUTHORED_ORIENTATION_COUNT;

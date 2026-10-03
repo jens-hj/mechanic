@@ -160,7 +160,9 @@ pub(crate) fn wire_end_under_cursor(
         hovered_part(state.hovered).or_else(|| state.hovered_simulation.map(|hit| hit.part))?;
     match graph.part(part) {
         Some(PartSpec::Controller(_)) => Some(WireEnd::Controller(part)),
-        Some(PartSpec::Dial(_) | PartSpec::Button(_)) => Some(WireEnd::PhysicalInput(part)),
+        Some(PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => {
+            Some(WireEnd::PhysicalInput(part))
+        }
         Some(PartSpec::Input(_)) => Some(WireEnd::Input(part)),
         Some(PartSpec::Seat(_)) => Some(WireEnd::Seat(part)),
         _ => None,
@@ -233,14 +235,14 @@ pub(crate) fn handle_connector_actions(
         WireDragStep::Idle => {}
         WireDragStep::Miss => {
             state.feedback =
-                Some("Drag Controller↔Bearing, Physical input↔Controller, Keyboard Input↔Seat, or Seat↔Controller".to_owned());
+                Some("Drag Controller↔Bearing, Input/Coupler↔Controller, Keyboard Input↔Seat, or Seat↔Controller".to_owned());
         }
         WireDragStep::Begin(from) => {
             state.wire_drag = Some(WireDrag { from, armed: false });
             state.feedback = Some(match from {
                 WireEnd::Controller(controller) => {
                     state.selected_controller = Some(controller);
-                    "Drag to a bearing, physical input, or Seat".to_owned()
+                    "Drag to a bearing, input, coupler, or Seat".to_owned()
                 }
                 WireEnd::Bearing(_) => "Drag to a control block to wire it".to_owned(),
                 WireEnd::PhysicalInput(_) => "Drag to a Controller".to_owned(),

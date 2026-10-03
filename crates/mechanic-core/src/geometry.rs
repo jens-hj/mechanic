@@ -1,4 +1,4 @@
-use crate::{ButtonSpec, DialSpec};
+use crate::{ButtonSpec, CouplerSpec, DialSpec};
 mod cylinder;
 mod face;
 mod gear;
@@ -100,6 +100,8 @@ pub enum PartSpec {
     Dial(DialSpec),
     /// Physical pushbutton.
     Button(ButtonSpec),
+    /// Half-block runtime rigid connector.
+    Coupler(CouplerSpec),
     /// Fixed-size Dimension Link portal anchor.
     DimensionLink(DimensionLinkSpec),
 }
@@ -119,6 +121,7 @@ impl PartSpec {
             Self::Seat(spec) => spec.pose,
             Self::Dial(spec) => spec.pose,
             Self::Button(spec) => spec.pose,
+            Self::Coupler(spec) => spec.pose,
             Self::Input(spec) => spec.pose,
             Self::DimensionLink(spec) => spec.pose,
         }
@@ -138,6 +141,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -157,6 +161,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => MaterialLayers::NONE,
         }
@@ -181,6 +186,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => return None,
         };
@@ -218,6 +224,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -252,6 +259,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => Err(LayerError::UnsupportedFace),
         }
@@ -319,6 +327,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -368,6 +377,10 @@ impl PartSpec {
                 spec.pose = pose;
                 Self::Dial(spec)
             }
+            Self::Coupler(mut spec) => {
+                spec.pose = pose;
+                Self::Coupler(spec)
+            }
             Self::Button(mut spec) => {
                 spec.pose = pose;
                 Self::Button(spec)
@@ -397,6 +410,7 @@ impl PartSpec {
             Self::DimensionLink(spec) => Some(spec.cuboid()),
             Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Cylinder(_)
             | Self::PipeBend(_)
             | Self::PipeJunction(_) => None,
@@ -417,6 +431,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -436,6 +451,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -455,6 +471,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -474,6 +491,7 @@ impl PartSpec {
             | Self::Seat(_)
             | Self::Dial(_)
             | Self::Button(_)
+            | Self::Coupler(_)
             | Self::Input(_)
             | Self::DimensionLink(_) => None,
         }
@@ -490,6 +508,7 @@ impl PartSpec {
             Self::Seat(spec) => spec.cuboid().size_meters(),
             Self::Dial(spec) => spec.size_meters(),
             Self::Button(spec) => spec.size_meters(),
+            Self::Coupler(spec) => spec.size_meters(),
             Self::Input(spec) => spec.cuboid().size_meters(),
             Self::DimensionLink(spec) => spec.cuboid().size_meters(),
             Self::Cylinder(spec) => Vec3::new(
@@ -758,6 +777,12 @@ impl From<DialSpec> for PartSpec {
 impl From<ButtonSpec> for PartSpec {
     fn from(value: ButtonSpec) -> Self {
         Self::Button(value)
+    }
+}
+
+impl From<CouplerSpec> for PartSpec {
+    fn from(value: CouplerSpec) -> Self {
+        Self::Coupler(value)
     }
 }
 

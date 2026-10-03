@@ -142,6 +142,7 @@ pub(crate) const fn tool_supports_free_placement(tool: Tool) -> bool {
             | Tool::Seat
             | Tool::Dial(_)
             | Tool::Button(_)
+            | Tool::Coupler
             | Tool::Input
             | Tool::DimensionLink
     )

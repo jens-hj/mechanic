@@ -108,6 +108,10 @@ fn with_wall_docs(
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive document-part to build-command mapping"
+)]
 pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError> {
     Ok(match part {
         PartDoc::Cuboid {
@@ -200,6 +204,9 @@ pub(super) fn build_command(part: PartDoc) -> Result<BuildCommand, CreationError
         PartDoc::Seat { pose } => BuildCommand::SpawnSeat(SeatSpec::new(pose.into())),
         PartDoc::Dial { size, pose } => {
             BuildCommand::SpawnDial(crate::DialSpec::new(size, pose.into()))
+        }
+        PartDoc::Coupler { pose } => {
+            BuildCommand::SpawnCoupler(crate::CouplerSpec::new(pose.into()))
         }
         PartDoc::Button { size, pose } => {
             BuildCommand::SpawnButton(crate::ButtonSpec::new(size, pose.into()))

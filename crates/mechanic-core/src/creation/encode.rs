@@ -158,6 +158,9 @@ pub(super) fn part_doc(spec: PartSpec, transmission_parent: Option<u32>) -> Part
             size: spec.size,
             pose: spec.pose.into(),
         },
+        PartSpec::Coupler(spec) => PartDoc::Coupler {
+            pose: spec.pose.into(),
+        },
         PartSpec::Button(spec) => PartDoc::Button {
             size: spec.size,
             pose: spec.pose.into(),

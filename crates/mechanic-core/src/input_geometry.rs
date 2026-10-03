@@ -1,8 +1,9 @@
-//! Baked authored input meshes, in local metres about the envelope centre.
+//! Authored controller-endpoint meshes, in local metres about the envelope centre.
 //!
 //! Regenerate with `node scripts/physical-inputs/export.mjs`. The six models
 //! retain independently authored mechanics from the approved concept. Consumers
 //! cache by kind/size and animate owners; no geometry is rebuilt during operation.
+//! The fixed-size coupler is built procedurally through the same mesh cache.
 
 use crate::ConstructionMaterial::{Aluminium, Plastic, Rubber, Steel};
 use crate::{ButtonFeedback, HardwareFinish, InputSize};
@@ -20,13 +21,15 @@ pub const INPUT_FINISHES: [HardwareFinish; 9] = [
     HardwareFinish::new("litScale", Plastic, [255, 180, 63], 0.5, 0.0),
 ];
 
-/// Geometry cache key; each family has three independent models.
+/// Geometry cache key; dials and buttons have three independent sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum InputKind {
     /// Rotary dial with a 270-degree sweep.
     Dial,
     /// Pushbutton with three cached spring poses.
     Button,
+    /// Eight-hook rigid connector, one fixed half-block size.
+    Coupler,
 }
 
 /// Independently animated or visible section of an input model.
@@ -63,12 +66,13 @@ pub struct InputMeshChunk {
     pub indices: Vec<u32>,
 }
 
-/// Decodes an authored model for the application's geometry cache.
+/// Builds an authored model for the application's geometry cache.
 ///
 /// # Panics
 /// Panics if the repository's generated asset contract is corrupted.
 pub fn input_meshes(kind: InputKind, size: InputSize) -> Vec<InputMeshChunk> {
     let data: &[u8] = match (kind, size) {
+        (InputKind::Coupler, _) => return crate::coupler_geometry::meshes(),
         (InputKind::Dial, InputSize::Panel) => {
             include_bytes!("../assets/physical-inputs/dial-5.bin")
         }
@@ -143,6 +147,9 @@ mod tests {
         for size in InputSize::ALL {
             for kind in [InputKind::Dial, InputKind::Button] {
                 let dimensions = match kind {
+                    InputKind::Coupler => {
+                        crate::CouplerSpec::new(BuildPose::default()).size_meters()
+                    }
                     InputKind::Dial => DialSpec::new(size, BuildPose::default()).size_meters(),
                     InputKind::Button => ButtonSpec::new(size, BuildPose::default()).size_meters(),
                 };

@@ -262,7 +262,7 @@ pub(crate) fn part_world_bounds(spec: PartSpec) -> (Vec3, Vec3) {
         PartSpec::Transmission(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Servo(spec) => cuboid_world_bounds(spec.cuboid()),
         PartSpec::Seat(spec) => cuboid_world_bounds(spec.cuboid()),
-        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => {
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => {
             envelope_world_bounds(spec.pose(), spec.size_meters())
         }
         PartSpec::Input(spec) => cuboid_world_bounds(spec.cuboid()),
@@ -463,11 +463,13 @@ pub(super) fn part_collision_boxes(spec: PartSpec) -> Vec<CollisionBox> {
         PartSpec::Transmission(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Servo(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Seat(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
-        spec @ (PartSpec::Dial(_) | PartSpec::Button(_)) => vec![CollisionBox {
-            center: spec.pose().translation(),
-            rotation: spec.pose().rotation.quaternion(),
-            half: spec.size_meters() * 0.5,
-        }],
+        spec @ (PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_)) => {
+            vec![CollisionBox {
+                center: spec.pose().translation(),
+                rotation: spec.pose().rotation.quaternion(),
+                half: spec.size_meters() * 0.5,
+            }]
+        }
         PartSpec::Input(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::DimensionLink(spec) => part_collision_boxes(PartSpec::Cuboid(spec.cuboid())),
         PartSpec::Cuboid(spec) => vec![CollisionBox {
