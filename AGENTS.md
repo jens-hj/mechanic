@@ -67,7 +67,8 @@ lease or copy a durable measurement binary while holding the lease.
   for a preview. Add `--apply` only after reviewing it. Cleanup takes the same
   exclusive locks as builds and skips active or quarantined slots.
 - Do not daemonize or detach child processes from a leased command. A crashed
-  supervisor quarantines its slot; `recover` requires proof of a later OS boot.
+  supervisor quarantines its slot; `recover` requires an empty recorded Unix
+  process group or proof of a later OS boot.
 - Keep release/profiling builds for tasks that need them. No profile defaults
   change. Check `df -h .` before a large build; two slots are not a byte quota.
 - Explicit isolated measurements and ordinary ephemeral CI can use

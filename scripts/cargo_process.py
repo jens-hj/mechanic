@@ -68,7 +68,20 @@ class WindowsJob:
         self.api.CloseHandle(self.handle)
 
 
-def run(command, env, gate, launcher):
+def group_is_empty(group):
+    """Only absence of the entire recorded Unix group proves it has drained."""
+    if os.name == 'nt' or not isinstance(group, int) or group <= 1:
+        return False
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        pass
+    return False
+
+
+def run(command, env, gate, launcher, record_containment):
     """Return only after the process group/job empties; forward cancellation."""
     import sys
     job = WindowsJob() if os.name == 'nt' else None
@@ -99,7 +112,9 @@ def run(command, env, gate, launcher):
         )
         if job:
             job.assign(child)
-        # Starting under a gate closes the spawn/containment race on Windows.
+        # Persist containment before permitting any build to start. A crash
+        # before this record remains conservatively quarantined until reboot.
+        record_containment({} if job else {'process_group': child.pid})
         gate.write_text('go')
         if cancelled:
             forward(cancelled[-1], None)
@@ -108,11 +123,7 @@ def run(command, env, gate, launcher):
             if job:
                 active = job.active()
             else:
-                try:
-                    os.killpg(child.pid, 0)
-                    active = True
-                except ProcessLookupError:
-                    active = False
+                active = not group_is_empty(child.pid)
             if not active:
                 break
             time.sleep(.1)

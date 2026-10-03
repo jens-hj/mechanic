@@ -118,7 +118,7 @@ class Store:
                 unexpected = set(p.name for p in self.root.iterdir()) - {'registry.lock'}
                 if unexpected:
                     raise ValueError('storage root is not empty or recognized')
-                manifest = {'format': FORMAT, 'slots': count or 2}
+                manifest = {'format': FORMAT, 'slots': 2 if count is None else count}
                 if not 1 <= manifest['slots'] <= 32:
                     raise ValueError('slot count must be 1..32')
                 write(self.root / 'store.json', manifest)

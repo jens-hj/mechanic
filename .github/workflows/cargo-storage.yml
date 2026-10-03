@@ -1,6 +1,12 @@
 name: Cargo storage
 
 on:
+  push:
+    paths:
+      - 'scripts/cargo*'
+      - 'scripts/test-cargo-storage.py'
+      - '.github/workflows/cargo-storage.yml'
+      - 'rust-toolchain.toml'
   pull_request:
     paths:
       - 'scripts/cargo*'

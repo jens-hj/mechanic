@@ -17,7 +17,7 @@ import time
 import uuid
 
 from cargo_storage import Store, boot_identity, default_root, size
-from cargo_process import run
+from cargo_process import group_is_empty, run
 
 TOKEN = 'MECHANIC_CARGO_LEASE'
 ROOT = 'MECHANIC_CARGO_STORAGE'
@@ -89,7 +89,11 @@ def execute(store, command):
                 env = {**os.environ, ROOT: str(store.root), TOKEN: token,
                        **{name: str(target) for name in TARGET_VARIABLES}}
                 emit(f'slot {index}, waited {time.monotonic()-waited:.2f}s, target {target}')
-                code = run(command, env, slot / f'gate-{token}', SELF)
+                def record_containment(containment):
+                    state.update(containment)
+                    store.save(index, state)
+
+                code = run(command, env, slot / f'gate-{token}', SELF, record_containment)
                 store.save(index, {'state': 'idle', 'checkout': affinity,
                                    'finished': time.time(), 'exit_code': code})
                 return code
@@ -162,8 +166,7 @@ def cleanup(store, args):
 
 def recover(store):
     current = boot_identity()
-    if current is None:
-        raise ValueError('cannot establish OS boot identity; recovery refused')
+    unresolved = False
     for index in range(store.count):
         with store.lock(index) as lock:
             if not lock.acquire():
@@ -172,11 +175,17 @@ def recover(store):
             state = store.state(index)
             if state['state'] == 'idle':
                 continue
-            if state.get('boot') is None or state['boot'] == current:
-                emit(f'slot {index}: quarantined until a proven subsequent OS boot')
+            if current and state.get('boot') and state['boot'] != current:
+                reason = 'reboot'
+            elif group_is_empty(state.get('process_group')):
+                reason = 'recorded process group drained'
+            else:
+                emit(f'slot {index}: quarantined; process group not proven empty and no proven reboot')
+                unresolved = True
                 continue
             store.save(index, {'state': 'idle', 'finished': time.time()})
-            emit(f'slot {index}: recovered after reboot')
+            emit(f'slot {index}: recovered after {reason}')
+    return 1 if unresolved else 0
 
 
 def main():
@@ -218,7 +227,7 @@ def main():
     if args.action == 'status':
         status(store)
     elif args.action == 'recover':
-        recover(store)
+        return recover(store)
     else:
         if args.idle_hours < 0 or args.budget_gib < 0:
             raise ValueError('retention and budget must be nonnegative')

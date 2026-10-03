@@ -78,12 +78,21 @@ arbitrary background services. Outputs must remain under the leased process tree
 Before spawning anything the supervisor persists a running record. If it crashes,
 gets SIGKILL, or encounters an uncertain lifecycle error, a released OS lock does
 **not** make the slot reusable: it is quarantined. This also covers orphaned Cargo
-children. `clean` skips quarantine. The deliberately conservative initial recovery
-policy is `python3 scripts/cargo-storage.py recover` **after an OS reboot**, with
-matching recorded/current boot identities proving the old processes cannot live.
-If either identity is unavailable, recovery is refused. There is no force-unlock
-or missing-PID heuristic. This costs availability after crashes; automatic
-same-boot orphan recovery is deferred. Never delete owner metadata to bypass it.
+children. `clean` skips quarantine. Explicit
+`python3 scripts/cargo-storage.py recover` reacquires the slot lock and checks the
+Unix process group that was persisted **before** the command's startup gate opened.
+It clears quarantine only when the entire recorded group is empty. A live orphan,
+permission failure, or reused group ID blocks recovery; an absent parent PID alone
+never clears it. This works even when boot identity is unavailable.
+
+If containment was not yet recorded when the supervisor crashed, or on Windows,
+recovery requires recorded/current boot identities proving a subsequent OS reboot.
+If those identities are unavailable, the uncertain slot remains quarantined.
+`recover` returns nonzero while any unlocked slot remains quarantined. There is no
+force-unlock, automatic eviction, or missing-parent-PID heuristic. Never delete
+owner metadata to bypass recovery. The no-daemonizing containment contract above
+also applies to same-boot recovery; escaping children are unsupported.
+
 
 ## Inventory and explicit cleanup
 
@@ -130,7 +139,8 @@ own inventory and retention policy.
 Initial macOS inventory on 2026-10-03: main target 129,867,080 KiB, coupler target
 27,417,904 KiB, about 20 GiB filesystem space available. These sizes are **not**
 proven reclaimable. This session's sandbox blocks process inspection and boot
-identity reads; worker coordination/rollout requires AO access approval. No legacy
+identity reads. AO coordination is established; shared-worker rollout remains
+pending while ordinary shared-target builds/captures are active. No legacy
 targets have been deleted. See the PR validation record for current rollout status.
 
 `python3 scripts/test-cargo-storage.py` exercises actual process locks, two occupied
@@ -160,3 +170,8 @@ macOS arm64, Rust/Cargo 1.97.1, Python 3.14.3:
 
 No full app build, runtime performance claim, profile-default change, legacy
 reclamation, or shared-worker rollout is included in this local evidence.
+
+Follow-up lifecycle validation: the killed-supervisor regression now proves that
+recovery refuses a live orphan, then safely reuses the slot after its recorded
+Unix process group drains. This removes the reboot requirement for ordinary Unix
+supervisor crashes while retaining fail-closed behavior for uncertain containment.

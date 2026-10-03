@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-from cargo_storage import Store, boot_identity, require_binary_lease
+from cargo_storage import Store, require_binary_lease
 
 LAUNCHER = Path(__file__).with_name('cargo-storage.py').resolve()
 
@@ -123,6 +123,8 @@ class StorageTests(unittest.TestCase):
         Store(self.root, 1)
         with self.assertRaises(ValueError):
             Store(self.root, 2)
+        with self.assertRaisesRegex(ValueError, 'slot count must be'):
+            Store(self.root.parent / 'invalid-count', 0)
         result = self.invoke('cargo', 'build', '--target-dir=/tmp/foreign')
         self.assertNotEqual(result.returncode, 0)
 
@@ -130,7 +132,7 @@ class StorageTests(unittest.TestCase):
         store = Store(self.root, 1)
         store.save(0, {'state': 'running', 'pid': 99999999, 'boot': None})
         result = self.invoke('recover')
-        self.assertEqual(result.returncode, 0 if boot_identity() else 1, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(store.state(0)['state'], 'running')
         self.assertIn('quarantined', self.invoke('clean', '--idle-hours', '0', '--apply').stdout)
 
@@ -155,8 +157,14 @@ class StorageTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)['slots'][0]['quarantined'])
             result = self.invoke('clean', '--idle-hours', '0', '--apply')
             self.assertIn('quarantined', result.stdout)
+            self.assertEqual(self.invoke('recover').returncode, 1)
         finally:
             release.touch()
+        self.wait_for(lambda: self.invoke('recover').returncode == 0)
+        self.assertEqual(Store(self.root).state(0)['state'], 'idle')
+        replacement = self.invoke('run', '--', sys.executable, '-c', 'print("reused safely")')
+        self.assertEqual(replacement.returncode, 0, replacement.stderr)
+        self.assertEqual(replacement.stdout.strip(), 'reused safely')
 
     def test_lease_outlives_direct_child_until_descendant_finishes(self):
         Store(self.root, 1)
