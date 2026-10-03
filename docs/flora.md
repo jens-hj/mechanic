@@ -26,8 +26,8 @@ heavier line every 5 m.
 | `split_angle` | degrees | Angle between a child and its parent. | first-order branch angle from vertical |
 | `tropism` | −1..1 | Bend per node after a lateral leaves its parent. Positive seeks the sun and negative hangs. Thin, flexible branches bend most. | mean rise of unbranched twigs |
 | `wobble` | 0..1 | Random kink per segment. | stem path length ÷ chord |
-| `foliage` | `(look, size, density)` | `look` is the surface look. `size` is the sleeve radius around terminal wood. `density` is the filled fraction of the sleeve. | foliage volume; filled fraction |
-| `bark` | look | Surface look of the wood. | — |
+| `foliage` | `(look, size, density)` | `look` is the surface look that colours the leaves. `size` is the sleeve radius around terminal wood. `density` is the filled fraction of the sleeve. | foliage volume; filled fraction |
+| `bark` | look | Surface look that colours the wood. | — |
 | `roots` | `(spread, depth)` | `spread` is root radius ÷ crown radius; `depth` is how deep the roots go before levelling off, in metres. | root radius; root depth |
 
 `cargo test -p mechanic-world flora` checks the table in
@@ -109,6 +109,42 @@ into floating shards: 933 pieces on one spruce at the finest level.
 `no_wood_or_crown_floats_at_coarse_levels_of_detail` hold both the model and
 the meshed field to this.
 
+## Bark and leaves
+
+Each species' bark and leaf maps are drawn from the same genome that grows
+it (`flora/texture.rs`). The look a species names only colours them. The maps
+hold light and shade, a normal map, and occlusion and roughness. They tile
+every 1.5 m, the terrain's texture repeat, at 512 pixels (3 mm each).
+
+**Bark** (`BarkTraits`):
+
+| Trait | Read from | Effect |
+|---|---|---|
+| Fissure depth and plate width | `girth`: a trunk thick for its height is old | Oak's furrows are 3 cm deep between 15 cm plates. Birch's are 4 mm. |
+| Plate length | `split_count`: splitting many ways at once breaks plates into scales | Spruce plates are about twice as long as wide. Birch's are over three times. |
+| How plainly plates show | old bark, or scales | Oak and spruce show plates. Birch and bamboo are smooth. |
+| Fissure wander | `wobble` | Oak's fissures wander; poplar's run straight. |
+| Lenticels | smooth bark × `dominance`, fewer where splits are many | Birch and poplar show thin dark dashes. |
+| Node rings | smooth bark × `stems` | A many-stemmed clump grows rings, one per internode: bamboo. |
+
+**Leaves** (`LeafTraits`):
+
+| Trait | Read from | Effect |
+|---|---|---|
+| Length | `foliage.size` | Oak leaves are 12 cm, spruce needles 6 cm. |
+| Breadth | `foliage.size`: a deep crown has broad leaves, a shallow one needles | Oak leaves are 1.5 times as long as wide. Spruce and willow leaves are about 6 times. |
+| Direction | `tropism` | Willow leaves hang straight down. Poplar's point up. |
+| Spread | `split_angle`, narrowed by strong tropism | Oak leaves point every way; willow's hang together. |
+| Cover | `foliage.density` | The rest is the shadowed crown behind. |
+| Lobes | `wobble` × breadth | Only the oak's leaves are lobed. |
+
+The terrain shader samples tree maps from their own texture arrays, so the
+1536-pixel ground layers stay as they are. Bark and hanging leaves need an
+up direction. On faces facing along x, the shader swaps the repeat's axes
+for tree maps, so fissures run up the trunk on every side.
+
+![Bark and leaves](flora/textures.png)
+
 ## Gallery
 
 ```
@@ -124,6 +160,8 @@ It writes these images:
   - a slice through the trunk that shows the holes in the foliage.
 - `sweep-<field>.png`: seven steps of one field on the base species, two seeds
   each.
+- `texture-<name>.png`: the species' bark and leaf maps, lit, coloured, and
+  tiled two by two. `textures.png` shows them all.
 
 It prints one JSONL line per tree, with every measure, `grow_ms`,
 `sample_ns_per_cell` and `filled_fraction`, and one per sweep step.
@@ -165,10 +203,10 @@ Final verdicts:
 
 **In the terrain field.**
 - The field's density is `max(ground, tree)`, so trees are ordinary terrain.
-- Wood is the `Wood` material, painted with the species' `bark` look. Bark
-  uses the wood texture, recoloured per species.
-- Leaves are `Foliage`, painted with its `foliage` look on the recoloured
-  grass texture.
+- Wood is the `Wood` material. Leaves are `Foliage`.
+- Each species a biome grows gets two palette looks of its own,
+  `<species>/bark` and `<species>/foliage`. Each is a copy of the look the
+  genome names, drawing the species' own maps.
 - Digging, breakage, clumps and the matter books treat both like any other
   ground:
   - **Wood** is strong, light (600 kg/m³) and stays in pieces when cut, like
@@ -218,6 +256,11 @@ extraction.
 
 Selection takes about 1 s longer per cut, from tree placement.
 
+After wood was thickened to its lattice and foliage holes became
+slope-limited dents (2026-10-03, same machine under load), Verdant Hills
+costs 175.8 s without trees and 206.2 s with them: 1.17×. Its triangles went
+from 9.7 M to 15.8 M, fewer than before because the holes are larger.
+
 Measure a change by copying `crates/mechanic-world/worldgen` with the
 `flora` lists removed and running `terrain-cut --worldgen <dir>` against
 both.
@@ -226,8 +269,7 @@ both.
 
 - Twigs are drawn as thick as the lattice can hold them, so distant trees
   look stouter: twigs are 36 cm across at the 20 cm stride.
-- Bark and leaf looks recolour the wood and grass textures; there are no
-  dedicated bark or leaf maps.
+- Reloading worldgen while the app runs keeps the tree maps it started with.
 - There is no growth, felling, or tree-specific harvesting: trees are part of
   the seed's ground.
 - Saved worlds made before trees are outdated by the new worldgen digest and
@@ -285,8 +327,28 @@ both.
   - Without the sky check, trees grew through carve roofs.
   - Without the footing check, trees stood on ledge edges.
   - The footing check replaced a local slope probe.
-- **Bark uses the shipped wood texture** (`TextureSet::Wood`) rather than
-  recoloured stone.
+- **Bark and leaves are procedural, per species.**
+  - The first version recoloured the shipped wood and grass textures.
+  - The maps are drawn on background threads when a world is entered, one
+    thread per map, while the ground layers load. In release, under load on
+    the M1 Pro, bark takes about 80 ms and leaves 55–170 ms; spruce needles
+    are the slowest (`texture_ms` in the gallery's JSONL).
+  - They live in their own 512-pixel arrays, about 33 MB for the four
+    species the default biomes grow. In the 1536-pixel ground arrays they
+    would have cost about 300 MB.
+- **Chunk caps through crowns are painted.** A chunk's cap faces close it
+  where it meets its neighbours. Meshing painted only cap corners within
+  three samples of a surface, and left deeper ones as plain rock. Impostor
+  crowns are metres dense, so their caps drew grey stone blended into the
+  leaves, which read as camouflage on every distant crown.
+  - Even painted, a corner fell back to ground rules about half the time.
+    The lattice stores densities as f32, so rounding up let the stored
+    value beat the very tree that set it. Trees now compare at f32
+    precision (`crowns_and_their_chunk_caps_are_painted_as_trees`).
+- **Extra surfaces merge by what they draw.** A chunk holds eight surfaces.
+  Rarer ones merged into one with the same texture set, so leaves (Grass)
+  could become the meadow. They now merge into one that draws the same map,
+  else the same material, else the same set.
 - **Foliage holes are as wide as the leaves are deep.**
   - First version: 0.15 m holes. The finer sponge tripled a woodland's
     triangles.

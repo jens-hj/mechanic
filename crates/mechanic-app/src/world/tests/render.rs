@@ -141,15 +141,18 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
         &mut app.world_mut().resource_mut::<Assets<Image>>(),
     );
     let material = TerrainRenderMaterial {
-        base_color,
-        normal,
-        orm,
+        base_color: base_color.clone(),
+        normal: normal.clone(),
+        orm: orm.clone(),
         tint_mask,
         surfaces,
         wetness,
         wet_window: Vec4::ZERO,
         erosion_map,
         erosion_window: Vec4::ZERO,
+        tree_base_color: base_color.clone(),
+        tree_normal: normal.clone(),
+        tree_orm: orm.clone(),
     };
     let material = app
         .world_mut()
@@ -675,15 +678,18 @@ fn grass_pixel(wilt: f32) -> Vec<u8> {
         &mut app.world_mut().resource_mut::<Assets<Image>>(),
     );
     let material = TerrainRenderMaterial {
-        base_color,
-        normal,
-        orm,
+        base_color: base_color.clone(),
+        normal: normal.clone(),
+        orm: orm.clone(),
         tint_mask,
         surfaces,
         wetness,
         wet_window: Vec4::new(-10.0, -10.0, 20.0, 0.0),
         erosion_map,
         erosion_window: Vec4::ZERO,
+        tree_base_color: base_color.clone(),
+        tree_normal: normal.clone(),
+        tree_orm: orm.clone(),
     };
     let material = app
         .world_mut()

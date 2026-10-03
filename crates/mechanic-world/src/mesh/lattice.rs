@@ -442,8 +442,12 @@ pub(super) fn lattice_from_halo(
                         .iter()
                         .any(|&coordinate| coordinate == 1 || coordinate == lattice_edge);
                     // Only crossing endpoints and cap corners are ever shown.
+                    // Ground deeper than a few samples never shows in a cap,
+                    // but a tree's crown can be several metres dense there.
                     let shown = neighbours.iter().any(|&other| (other > 0.0) != solid)
-                        || (on_boundary && solid && f64::from(density) < 3.0 * spacing);
+                        || (on_boundary
+                            && solid
+                            && (f64::from(density) < 3.0 * spacing || halo.columns.has_trees()));
                     if shown {
                         let position = corner_position(WorldCell::new(
                             minimum.x + (i32::try_from(x).expect("halo fits i32") - 1) * stride,

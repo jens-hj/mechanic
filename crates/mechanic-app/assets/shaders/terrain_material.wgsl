@@ -34,6 +34,11 @@ struct Surface {
 // Independent removal, deposition, pending amount, and relative bed height.
 @group(#{MATERIAL_BIND_GROUP}) @binding(9) var erosion_map: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(10) var<uniform> erosion_window: vec4<f32>;
+// Procedural bark and leaf maps, drawn from each species' genome. Mirrors
+// `TerrainRenderMaterial::tree_base_color` and its neighbours.
+@group(#{MATERIAL_BIND_GROUP}) @binding(11) var tree_base_color_maps: texture_2d_array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(12) var tree_normal_maps: texture_2d_array<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(13) var tree_orm_maps: texture_2d_array<f32>;
 
 fn sediment_heatmap(position: vec3<f32>, lit: vec3<f32>) -> vec3<f32> {
     if erosion_window.z <= 0.0 { return lit; }
@@ -157,10 +162,14 @@ const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 // The grass texture's layer: `TextureSet::Grass.layer()`.
 const GRASS_LAYER: i32 = 0;
 
+// Layers from here on are tree texture layers. Mirrors `TREE_LAYER_BASE` in
+// world/terrain_render.rs.
+const TREE_LAYER_BASE: i32 = 64;
+
 // Hue of dead grass, straw, as a multiple of its luminance.
 const STRAW: vec3<f32> = vec3<f32>(1.3, 1.0, 0.45);
 
-fn hash_corner(corner: vec3<f32>) -> f32 {
+fn hash_bits(corner: vec3<f32>) -> u32 {
     // The odd multipliers are the collision kernel's cell hash, mixing three
     // lattice coordinates into one well-distributed word.
     var state = bitcast<u32>(i32(corner.x)) * 0x8da6b343u
@@ -169,7 +178,11 @@ fn hash_corner(corner: vec3<f32>) -> f32 {
     state ^= state >> 16u;
     state *= 0x7feb352du;
     state ^= state >> 15u;
-    return f32(state) * (1.0 / 4294967296.0);
+    return state;
+}
+
+fn hash_corner(corner: vec3<f32>) -> f32 {
+    return f32(hash_bits(corner)) * (1.0 / 4294967296.0);
 }
 
 fn value_noise(point: vec3<f32>) -> f32 {
@@ -257,6 +270,15 @@ struct TerrainSample {
 }
 
 fn sample_projection(layer: i32, uv: vec2<f32>, masked: bool) -> array<vec4<f32>, 4> {
+    if layer >= TREE_LAYER_BASE {
+        let tree = layer - TREE_LAYER_BASE;
+        return array<vec4<f32>, 4>(
+            textureSample(tree_base_color_maps, terrain_sampler, uv, tree),
+            textureSample(tree_orm_maps, terrain_sampler, uv, tree),
+            textureSample(tree_normal_maps, terrain_sampler, uv, tree),
+            vec4<f32>(1.0),
+        );
+    }
     // Untinted and unmasked surfaces skip the mask lookup entirely.
     var mask = vec4<f32>(1.0);
     if masked {
@@ -284,12 +306,18 @@ fn sample_layer(
     let geometry = normalize(geometric_normal);
     let direction = select(vec3<f32>(-1.0), vec3<f32>(1.0), geometry >= vec3<f32>(0.0));
     var sampled: TerrainSample;
+    // Bark fissures and hanging leaves run up their maps, so tree textures
+    // keep up on the x-facing sides too, as they do on the z-facing ones.
+    let upright = layer >= TREE_LAYER_BASE;
     if projection.x > 0.001 {
-        let maps = sample_projection(layer, coordinates.yz, masked);
+        let maps = sample_projection(layer, select(coordinates.yz, coordinates.zy, upright), masked);
         sampled.color += maps[0] * projection.x;
         sampled.surface += maps[1].rgb * projection.x;
         sampled.mask += maps[3].r * projection.x;
-        let tangent = normalize(maps[2].rgb * 2.0 - 1.0);
+        var tangent = normalize(maps[2].rgb * 2.0 - 1.0);
+        if upright {
+            tangent = vec3<f32>(tangent.y, tangent.x, tangent.z);
+        }
         sampled.normal += vec3<f32>(
             abs(tangent.z) * geometry.x,
             tangent.x + geometry.y,

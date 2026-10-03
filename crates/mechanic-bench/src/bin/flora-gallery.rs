@@ -5,7 +5,8 @@
 //! two seeds larger. Unless `--no-voxels`, `voxels-<name>.png` shows the first
 //! seed as the terrain field holds it: the front-most solid cells at 5 cm, the
 //! same at the 20 cm stride of a coarser level of detail, and a slice through
-//! the trunk. With `--sweep <field>` or `--sweep all`, `sweep-<field>.png`
+//! the trunk. `texture-<name>.png` shows its bark and leaf maps, lit and
+//! coloured, and `textures.png` all of them. With `--sweep <field>` or `--sweep all`, `sweep-<field>.png`
 //! grows the base species (`--species`, oak by default) at seven values of
 //! that field from its smallest to its largest, two seeds each. Emits one
 //! JSONL line per tree and per sweep step, then a summary.
@@ -28,13 +29,17 @@ use std::time::Instant;
 use bevy_math::DVec3;
 use mechanic_bench::images::write_png;
 use mechanic_world::{
-    GenomeSweep, Part, SpeciesSpec, TERRAIN_CELL_METERS, TreeMetrics, TreeModel, grow_tree,
+    GenomeSweep, Part, SpeciesSpec, TERRAIN_CELL_METERS, TREE_TEXTURE_LUMA, TreeMetrics, TreeModel,
+    TreeSurface, TreeTexture, grow_tree,
 };
 
 const PANEL_WIDTH: usize = 300;
 const PANEL_HEIGHT: usize = 420;
 const SWEEP_STEPS: usize = 7;
 const SWEEP_SEEDS: u64 = 2;
+/// Pixels per repeat of the texture swatches, and repeats shown per side.
+const TEXTURE_EDGE: u32 = 512;
+const TEXTURE_REPEATS: usize = 2;
 const FILL_SAMPLES: u32 = 4_000;
 
 const SKY: [f32; 3] = [0.87, 0.90, 0.93];
@@ -87,12 +92,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     write_sheet(&out, &rows)?;
+    let mut swatches = Vec::new();
     for (species, trees) in &rows {
         write_close_up(&out, species, trees)?;
         if voxels && let Some(tree) = trees.first() {
             write_voxels(&out, species, tree)?;
         }
+        swatches.push(write_textures(&out, species)?);
     }
+    write_texture_sheet(&out, &swatches)?;
 
     if let Some(sweep) = value("--sweep") {
         let base_name = value("--species").unwrap_or_else(|| "oak".to_owned());
@@ -553,6 +561,98 @@ fn write_voxels(out: &Path, species: &SpeciesSpec, tree: &TreeModel) -> Result<(
         }
     }
     canvas.write(&out.join(format!("voxels-{}.png", species.name)))
+}
+
+/// The species' bark and foliage maps, each repeated two by two at half
+/// size, coloured with its looks and lit from the upper left.
+fn write_textures(out: &Path, species: &SpeciesSpec) -> Result<Canvas, Box<dyn Error>> {
+    let edge = TEXTURE_EDGE as usize;
+    let shown = edge / TEXTURE_REPEATS;
+    let mut canvas = Canvas::new(2 * edge + 16, edge, [1.0; 3]);
+    let linear = |value: f32| {
+        if value <= 0.040_45 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let encode = |value: f32| {
+        if value <= 0.003_130_8 {
+            value * 12.92
+        } else {
+            1.055 * value.powf(1.0 / 2.4) - 0.055
+        }
+    };
+    let light = [-0.45_f32, 0.55, 0.7];
+    for (panel, surface) in [TreeSurface::Bark, TreeSurface::Foliage]
+        .into_iter()
+        .enumerate()
+    {
+        let started = Instant::now();
+        let maps = TreeTexture {
+            species: species.clone(),
+            surface,
+        }
+        .maps(TEXTURE_EDGE);
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": "texture",
+                "species": species.name,
+                "surface": format!("{surface:?}"),
+                "edge": TEXTURE_EDGE,
+                "texture_ms": started.elapsed().as_secs_f64() * 1_000.0,
+            })
+        );
+        let colour = match surface {
+            TreeSurface::Bark => bark_colour(species),
+            TreeSurface::Foliage => foliage_colour(species),
+        };
+        for y in 0..edge {
+            for x in 0..edge {
+                // Rows run up the repeat; the image runs down.
+                let (u, v) = ((x % shown) * TEXTURE_REPEATS, (y % shown) * TEXTURE_REPEATS);
+                let index = ((edge - 1 - v) * edge + u) * 4;
+                let grey = linear(f32::from(maps.base_color[index]) / 255.0) / TREE_TEXTURE_LUMA;
+                let normal =
+                    [0, 1, 2].map(|axis| f32::from(maps.normal[index + axis]) / 127.5 - 1.0);
+                let lit = 0.35
+                    + 0.65
+                        * (normal[0] * light[0] + normal[1] * light[1] + normal[2] * light[2])
+                            .max(0.0);
+                let occlusion = f32::from(maps.orm[index]) / 255.0;
+                let shade = grey * lit * occlusion;
+                canvas.paint(
+                    panel * (edge + 16) + x,
+                    y,
+                    colour.map(|channel| encode(linear(channel) * shade)),
+                );
+            }
+        }
+    }
+    canvas.write(&out.join(format!("texture-{}.png", species.name)))?;
+    Ok(canvas)
+}
+
+/// Every species' swatches at half size, one row each, in `flora.ron` order.
+fn write_texture_sheet(out: &Path, swatches: &[Canvas]) -> Result<(), Box<dyn Error>> {
+    let Some(first) = swatches.first() else {
+        return Ok(());
+    };
+    let (width, height) = (first.width / 2, first.height / 2);
+    let mut sheet = Canvas::new(width, (height + 8) * swatches.len(), [1.0; 3]);
+    for (row, swatch) in swatches.iter().enumerate() {
+        for y in 0..height {
+            for x in 0..width {
+                sheet.paint(
+                    x,
+                    row * (height + 8) + y,
+                    swatch.rgb[2 * y * swatch.width + 2 * x],
+                );
+            }
+        }
+    }
+    sheet.write(&out.join("textures.png"))
 }
 
 fn write_sweep(out: &Path, base: &SpeciesSpec, field: &GenomeSweep) -> Result<(), Box<dyn Error>> {

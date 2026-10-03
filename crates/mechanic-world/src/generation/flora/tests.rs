@@ -3,6 +3,7 @@ mod field;
 mod genome;
 mod library;
 mod sweeps;
+mod texture;
 
 use bevy_math::DVec3;
 

@@ -303,6 +303,9 @@ mod tests {
                 wet_window: Vec4::ZERO,
                 erosion_map: default(),
                 erosion_window: Vec4::ZERO,
+                tree_base_color: default(),
+                tree_normal: default(),
+                tree_orm: default(),
             });
         app.world_mut()
             .resource_mut::<WorldRuntime>()

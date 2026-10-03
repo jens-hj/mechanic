@@ -16,6 +16,7 @@ mod model;
 mod noise;
 mod species;
 mod sweep;
+mod texture;
 
 pub(crate) use self::forest::{
     Forest, ForestLayer, ForestSpecies, MAX_GROWN_STRIDE, TREE_DENSITY_CEILING, Tree, TreeHit,
@@ -27,6 +28,10 @@ pub use self::model::{Axis, FoliageBlob, Part, Segment, TreeModel};
 pub(crate) use self::model::{Parts, wood_floor};
 pub use self::species::{FoliageSpec, RootsSpec, SpeciesSpec};
 pub use self::sweep::GenomeSweep;
+pub use self::texture::{
+    BarkTraits, LeafTraits, TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TreeSurface, TreeTexture,
+    TreeTextureMaps,
+};
 
 use crate::TERRAIN_CELL_METERS;
 

@@ -48,8 +48,9 @@ use crate::{
 };
 
 pub use self::flora::{
-    Axis, FoliageBlob, FoliageSpec, GenomeSweep, Part, RootsSpec, Segment, SpeciesSpec,
-    TreeMetrics, TreeModel, grow_tree,
+    Axis, BarkTraits, FoliageBlob, FoliageSpec, GenomeSweep, LeafTraits, Part, RootsSpec, Segment,
+    SpeciesSpec, TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TreeMetrics, TreeModel, TreeSurface,
+    TreeTexture, TreeTextureMaps, grow_tree,
 };
 pub use self::load::{WorldgenError, WorldgenSpec};
 pub use self::spec::TextureSet;
@@ -433,6 +434,17 @@ pub(crate) struct LatticeColumns {
     carved: Vec<u8>,
     dims: [usize; 3],
     trees: LatticeTrees,
+}
+
+impl LatticeColumns {
+    /// Whether any tree reaches the lattice.
+    pub(crate) const fn has_trees(&self) -> bool {
+        match &self.trees {
+            LatticeTrees::None => false,
+            LatticeTrees::Grown(trees, _) => !trees.is_empty(),
+            LatticeTrees::Impostors(instances, _) => !instances.is_empty(),
+        }
+    }
 }
 
 /// The trees reaching one lattice, gathered once for all its points.
@@ -1209,7 +1221,7 @@ impl CompiledWorld {
                 message: format!("at most {MAX_BIOMES} biomes are supported"),
             });
         }
-        let palette = SurfacePalette::new(&world.palette)?;
+        let mut palette = SurfacePalette::new(&world.palette)?;
         if world.carves.len() > MAX_CARVES {
             return Err(WorldgenError::Invalid {
                 context: "world.ron carves".to_owned(),
@@ -1253,7 +1265,7 @@ impl CompiledWorld {
             mix(base ^ 6) as i32,
         );
         let id = NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let forest = compile_forest(spec, library, &palette, base, id)?;
+        let forest = compile_forest(spec, library, &mut palette, base, id)?;
         let mut compiled = Self {
             id,
             climate,
@@ -1815,9 +1827,16 @@ impl CompiledWorld {
         // grass and water. Wood and leaves show wherever they are the nearest
         // solid, on the air side of their surface too: meshing paints a
         // crossing with its open corner's look.
+        // Lattices hold f32 densities, so a tree raised into one compares at
+        // that precision: rounded up, the lattice's value would beat its own
+        // tree.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "compared as lattices store them"
+        )]
         let shows = match hit.part {
             Part::Root => hit.density > 0.0 && density > ROOT_COVER_METRES,
-            Part::Wood | Part::Foliage => hit.density >= density,
+            Part::Wood | Part::Foliage => hit.density as f32 >= density as f32,
         };
         shows.then_some(hit)
     }
@@ -2568,37 +2587,64 @@ fn biome_seed(doc: &BiomeDoc, base: u64) -> u64 {
 fn compile_forest(
     spec: &WorldgenSpec,
     library: &std::collections::BTreeMap<String, Expr>,
-    palette: &SurfacePalette,
+    palette: &mut SurfacePalette,
     base: u64,
     id: u64,
 ) -> Result<Forest, WorldgenError> {
-    let look = |species: &SpeciesSpec, name: &str, material: TerrainMaterial| {
-        let invalid = |message: String| WorldgenError::Invalid {
-            context: format!("flora.ron species `{}`", species.name),
-            message,
+    let look =
+        |palette: &SurfacePalette, species: &SpeciesSpec, name: &str, material: TerrainMaterial| {
+            let invalid = |message: String| WorldgenError::Invalid {
+                context: format!("flora.ron species `{}`", species.name),
+                message,
+            };
+            let surface = palette
+                .id(name)
+                .ok_or_else(|| invalid(format!("unknown look `{name}`")))?;
+            if palette.look(surface).material != material {
+                return Err(invalid(format!(
+                    "look `{name}` must be a {} surface",
+                    material.name()
+                )));
+            }
+            Ok(surface)
         };
-        let surface = palette
-            .id(name)
-            .ok_or_else(|| invalid(format!("unknown look `{name}`")))?;
-        if palette.look(surface).material != material {
-            return Err(invalid(format!(
-                "look `{name}` must be a {} surface",
-                material.name()
-            )));
-        }
-        Ok(surface)
-    };
-    let species = spec
-        .flora
-        .iter()
-        .map(|species| {
-            Ok(ForestSpecies::new(
-                species.clone(),
-                look(species, &species.bark, TerrainMaterial::Wood)?,
-                look(species, &species.foliage.look, TerrainMaterial::Foliage)?,
-            ))
+    // Species a biome grows draw their own bark and leaves, read from their
+    // genome and coloured by the looks they name.
+    let grown = |species: &SpeciesSpec| {
+        spec.biomes.iter().any(|biome| {
+            biome
+                .flora
+                .iter()
+                .any(|layer| layer.species == species.name)
         })
-        .collect::<Result<Vec<_>, WorldgenError>>()?;
+    };
+    let mut species = Vec::with_capacity(spec.flora.len());
+    for genome in &spec.flora {
+        let mut bark = look(palette, genome, &genome.bark, TerrainMaterial::Wood)?;
+        let mut foliage = look(
+            palette,
+            genome,
+            &genome.foliage.look,
+            TerrainMaterial::Foliage,
+        )?;
+        if grown(genome) {
+            let texture = |surface| TreeTexture {
+                species: genome.clone(),
+                surface,
+            };
+            bark = palette.add_tree_look(
+                format!("{}/bark", genome.name),
+                bark,
+                texture(TreeSurface::Bark),
+            )?;
+            foliage = palette.add_tree_look(
+                format!("{}/foliage", genome.name),
+                foliage,
+                texture(TreeSurface::Foliage),
+            )?;
+        }
+        species.push(ForestSpecies::new(genome.clone(), bark, foliage));
+    }
     let mut layers = Vec::new();
     for (biome, doc) in spec.biomes.iter().enumerate() {
         let seed = biome_seed(doc, base);

@@ -15,8 +15,11 @@ use bevy::render::render_resource::{
 };
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::{ShaderDefVal, ShaderRef};
+use bevy::tasks::futures::check_ready;
+use bevy::tasks::{AsyncComputeTaskPool, Task, TaskPool};
 use mechanic_world::{
-    SurfaceId, SurfacePalette, TerrainMeshChunk, TerrainSpatialIndex, TerrainStreamer, TextureSet,
+    SurfaceId, SurfacePalette, TREE_TEXTURE_LUMA, TerrainMeshChunk, TerrainSpatialIndex,
+    TerrainStreamer, TextureSet, TreeTexture,
 };
 
 /// The terrain's vertex stage and full material.
@@ -47,6 +50,14 @@ const SURFACE_SLOTS: usize = 8;
 const TERRAIN_LAYER_EDGE: u32 = 1_536;
 /// Edge of one tint-mask layer; masks are soft and need less detail.
 const TERRAIN_MASK_EDGE: u32 = 768;
+/// Edge of one procedural tree texture layer: a 1.5 m repeat at 3 mm.
+const TREE_LAYER_EDGE: u32 = 512;
+/// Layer numbers from here on name tree texture layers. Mirrors
+/// `TREE_LAYER_BASE` in the terrain shader.
+const TREE_LAYER_BASE: u32 = 64;
+/// Map kinds a tree texture has: base colour, normal, and ORM. Trees tint
+/// everywhere, so they need no mask.
+const TREE_MAP_KINDS: usize = 3;
 
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, PartialEq)]
 pub(crate) struct TerrainRenderMaterial {
@@ -78,6 +89,13 @@ pub(crate) struct TerrainRenderMaterial {
     /// A zero edge disables diagnostics.
     #[uniform(10)]
     pub(crate) erosion_window: Vec4,
+    /// Procedural bark and leaf maps, one layer per palette tree texture.
+    #[texture(11, dimension = "2d_array")]
+    pub(super) tree_base_color: Handle<Image>,
+    #[texture(12, dimension = "2d_array")]
+    pub(super) tree_normal: Handle<Image>,
+    #[texture(13, dimension = "2d_array")]
+    pub(super) tree_orm: Handle<Image>,
 }
 
 /// A wetness map of dry ground, for terrain drawn before water has run.
@@ -101,10 +119,36 @@ pub(crate) fn terrain_surface_buffer(
     palette: &SurfacePalette,
     layer_luma: &[f32; TextureSet::ALL.len()],
 ) -> ShaderBuffer {
-    let surfaces = palette
+    ShaderBuffer::from(terrain_surfaces(palette, layer_luma))
+}
+
+/// Every palette surface as the shader reads it, in id order.
+fn terrain_surfaces(
+    palette: &SurfacePalette,
+    layer_luma: &[f32; TextureSet::ALL.len()],
+) -> Vec<TerrainSurfaceGpu> {
+    palette
         .looks()
         .iter()
         .map(|look| {
+            if let Some(tree) = look.tree_texture {
+                // Tree textures are drawn to a shared mean brightness.
+                return TerrainSurfaceGpu {
+                    tint: Vec4::new(
+                        look.tint[0],
+                        look.tint[1],
+                        look.tint[2],
+                        if look.recolor { 1.0 } else { 0.0 },
+                    ),
+                    params: Vec4::new(
+                        (TREE_LAYER_BASE + u32::from(tree)) as f32,
+                        0.0,
+                        look.roughness,
+                        look.scale,
+                    ),
+                    shade: Vec4::new(TREE_TEXTURE_LUMA, 0.0, 0.0, 0.0),
+                };
+            }
             let layer = look.texture.layer();
             TerrainSurfaceGpu {
                 tint: Vec4::new(
@@ -122,8 +166,7 @@ pub(crate) fn terrain_surface_buffer(
                 shade: Vec4::new(layer_luma[layer as usize], 0.0, 0.0, 0.0),
             }
         })
-        .collect::<Vec<_>>();
-    ShaderBuffer::from(surfaces)
+        .collect()
 }
 
 /// Vertex attributes the terrain shader's own vertex stage reads. Every mesh
@@ -265,7 +308,16 @@ pub(crate) struct TerrainTextureBuild {
     /// Mean base-colour luminance per layer.
     luma: [f32; TextureSet::ALL.len()],
     surfaces: Handle<ShaderBuffer>,
+    /// Tree layers being drawn off the main thread.
+    tree_task: Option<Task<TreeLayers>>,
+    /// Tree arrays the material already binds.
+    tree_targets: [Handle<Image>; TREE_MAP_KINDS],
+    /// Whether the tree arrays are published.
+    trees_done: bool,
 }
+
+/// Finished tree layers, with mip chains, per map kind.
+type TreeLayers = [Vec<Vec<u8>>; TREE_MAP_KINDS];
 
 const MAP_KINDS: usize = 4;
 const MAP_NAMES: [&str; MAP_KINDS] = ["base_color", "normal", "orm", "tint"];
@@ -320,6 +372,8 @@ pub(crate) fn terrain_render_material(
         })
         .collect();
     let targets: [Handle<Image>; MAP_KINDS] = core::array::from_fn(|_| images.reserve_handle());
+    let tree_targets: [Handle<Image>; TREE_MAP_KINDS] =
+        core::array::from_fn(|_| images.reserve_handle());
     let luma = [0.5; TextureSet::ALL.len()];
     let surfaces = surface_buffers.add(terrain_surface_buffer(palette, &luma));
     let material = TerrainRenderMaterial {
@@ -332,6 +386,9 @@ pub(crate) fn terrain_render_material(
         wet_window: Vec4::ZERO,
         erosion_map: super::erosion_overlay::empty_map(images),
         erosion_window: Vec4::ZERO,
+        tree_base_color: tree_targets[0].clone(),
+        tree_normal: tree_targets[1].clone(),
+        tree_orm: tree_targets[2].clone(),
     };
     (
         material,
@@ -341,6 +398,9 @@ pub(crate) fn terrain_render_material(
             targets,
             luma,
             surfaces,
+            tree_task: Some(draw_tree_layers(palette.tree_textures().to_vec())),
+            tree_targets,
+            trees_done: false,
         },
     )
 }
@@ -378,6 +438,9 @@ pub(crate) fn advance_terrain_textures(
     build: &mut TerrainTextureBuild,
     images: &mut Assets<Image>,
 ) -> Result<bool, String> {
+    if !build.trees_done {
+        advance_tree_textures(build, images)?;
+    }
     let layer_count = TextureSet::ALL.len();
     // Layers are produced strictly in order so each array stays layer-major.
     let next = (0..MAP_KINDS).find_map(|kind| {
@@ -435,6 +498,75 @@ pub(crate) fn advance_terrain_textures(
         .layers
         .iter()
         .all(|layers| layers.len() == layer_count))
+}
+
+/// Starts drawing every tree texture's maps off the main thread, each on its
+/// own thread: a species' leaves take up to a few hundred milliseconds. A
+/// world without trees gets one blank layer, as an array needs one.
+fn draw_tree_layers(textures: Vec<TreeTexture>) -> Task<TreeLayers> {
+    AsyncComputeTaskPool::get_or_init(TaskPool::new).spawn(async move {
+        let edge = TREE_LAYER_EDGE;
+        let drawn: Vec<[Vec<u8>; TREE_MAP_KINDS]> = std::thread::scope(|scope| {
+            let threads = textures
+                .iter()
+                .map(|texture| {
+                    scope.spawn(move || {
+                        let maps = texture.maps(edge);
+                        [maps.base_color, maps.normal, maps.orm]
+                            .map(|top| full_mip_chain(&top, edge, edge))
+                    })
+                })
+                .collect::<Vec<_>>();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().expect("drawing a tree texture panicked"))
+                .collect()
+        });
+        let mut layers = TreeLayers::default();
+        if drawn.is_empty() {
+            let blank = [
+                [255_u8, 255, 255, 255],
+                [128, 128, 255, 255],
+                [255, 230, 0, 255],
+            ];
+            for (kind, pixel) in blank.iter().enumerate() {
+                let top = pixel.repeat((edge * edge) as usize);
+                layers[kind].push(full_mip_chain(&top, edge, edge));
+            }
+        }
+        for maps in drawn {
+            for (kind, chain) in maps.into_iter().enumerate() {
+                layers[kind].push(chain);
+            }
+        }
+        layers
+    })
+}
+
+/// Publishes the tree arrays once their maps are drawn.
+fn advance_tree_textures(
+    build: &mut TerrainTextureBuild,
+    images: &mut Assets<Image>,
+) -> Result<(), String> {
+    let Some(layers) = build.tree_task.as_mut().and_then(check_ready) else {
+        return Ok(());
+    };
+    build.tree_task = None;
+    for (kind, layers) in layers.into_iter().enumerate() {
+        let format = if kind == 0 {
+            TextureFormat::Rgba8UnormSrgb
+        } else {
+            TextureFormat::Rgba8Unorm
+        };
+        images
+            .insert(
+                build.tree_targets[kind].id(),
+                texture_array(layers, TREE_LAYER_EDGE, format),
+            )
+            .map_err(|error| format!("tree texture array: {error}"))?;
+    }
+    build.trees_done = true;
+    Ok(())
 }
 
 /// Rewrites the palette buffer after the definition changed.
@@ -643,7 +775,9 @@ pub(super) fn terrain_mesh_is_renderable(chunk: &TerrainMeshChunk, index_count: 
 
 /// Chooses up to [`SURFACE_SLOTS`] surfaces for a chunk and maps every vertex
 /// surface to one of them. Rare extras merge into the most common kept
-/// surface drawn from the same texture, or failing that the most common one.
+/// surface that draws the same texture, or failing that one of the same
+/// material, then one from the same texture set, then the most common one:
+/// a distant crown stays leaves rather than turning into the meadow below.
 pub(super) fn surface_slots(
     surfaces: &[SurfaceId],
     palette: &SurfacePalette,
@@ -665,10 +799,24 @@ pub(super) fn surface_slots(
         .map(|(slot, surface)| (*surface, slot))
         .collect::<std::collections::BTreeMap<_, _>>();
     for (surface, _) in ranked.iter().skip(SURFACE_SLOTS) {
-        let texture = palette.look(*surface).texture;
-        let slot = kept
-            .iter()
-            .position(|candidate| palette.look(*candidate).texture == texture)
+        let look = palette.look(*surface);
+        let kept_looks = kept.iter().map(|candidate| palette.look(*candidate));
+        let draws = |candidate: &mechanic_world::SurfaceLook| {
+            candidate.tree_texture == look.tree_texture && candidate.texture == look.texture
+        };
+        let slot = kept_looks
+            .clone()
+            .position(|candidate| draws(&candidate))
+            .or_else(|| {
+                kept_looks
+                    .clone()
+                    .position(|candidate| candidate.material == look.material)
+            })
+            .or_else(|| {
+                kept_looks
+                    .clone()
+                    .position(|candidate| candidate.texture == look.texture)
+            })
             .unwrap_or(0);
         slots.insert(*surface, slot);
     }
@@ -771,6 +919,9 @@ mod tests {
                 targets: core::array::from_fn(|_| images.reserve_handle()),
                 luma: [0.5; TextureSet::ALL.len()],
                 surfaces: Handle::default(),
+                tree_task: None,
+                tree_targets: core::array::from_fn(|_| images.reserve_handle()),
+                trees_done: true,
             };
             advance_terrain_textures(&mut build, &mut images).unwrap();
             assert_eq!(build.layers[0].len(), 1, "source must produce a layer");
@@ -781,5 +932,53 @@ mod tests {
             );
             // Leaving the world drops the build before the next entry.
         }
+    }
+
+    #[test]
+    fn every_grown_species_gets_its_own_bark_and_leaf_layers() {
+        let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(42))
+            .palette()
+            .clone();
+        let trees = palette.tree_textures().len();
+        assert!(trees >= 2, "{trees} tree textures in the default world");
+        let mut images = Assets::<Image>::default();
+        let mut build = TerrainTextureBuild {
+            sources: Vec::new(),
+            layers: Default::default(),
+            targets: core::array::from_fn(|_| images.reserve_handle()),
+            luma: [0.5; TextureSet::ALL.len()],
+            surfaces: Handle::default(),
+            tree_task: Some(draw_tree_layers(palette.tree_textures().to_vec())),
+            tree_targets: core::array::from_fn(|_| images.reserve_handle()),
+            trees_done: false,
+        };
+        let started = std::time::Instant::now();
+        while !build.trees_done && started.elapsed() < std::time::Duration::from_mins(2) {
+            advance_tree_textures(&mut build, &mut images).unwrap();
+            std::thread::yield_now();
+        }
+        assert!(build.trees_done, "tree textures never finished");
+        for target in &build.tree_targets {
+            let array = images.get(target).expect("tree array published");
+            assert_eq!(
+                array.texture_descriptor.size.depth_or_array_layers as usize,
+                trees
+            );
+        }
+        // Each tree look samples its own layer, at the shared brightness.
+        let surfaces = terrain_surfaces(&palette, &[0.5; TextureSet::ALL.len()]);
+        let mut layers = palette
+            .looks()
+            .iter()
+            .zip(&surfaces)
+            .filter_map(|(look, gpu)| look.tree_texture.map(|tree| (tree, gpu)))
+            .map(|(tree, gpu)| {
+                assert!((gpu.shade.x - TREE_TEXTURE_LUMA).abs() < 1.0e-6);
+                (gpu.params.x as u32, TREE_LAYER_BASE + u32::from(tree))
+            })
+            .collect::<Vec<_>>();
+        layers.dedup();
+        assert_eq!(layers.len(), trees);
+        assert!(layers.iter().all(|(sampled, expected)| sampled == expected));
     }
 }

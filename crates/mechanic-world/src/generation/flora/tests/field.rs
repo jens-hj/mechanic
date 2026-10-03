@@ -322,3 +322,56 @@ fn trees_appear_in_terrain_meshes() {
         );
     }
 }
+
+#[test]
+fn crowns_and_their_chunk_caps_are_painted_as_trees() {
+    let field = TerrainField::new(WorldSeed(42));
+    let tree = trees_near_spawn(&field, 60.0)[0];
+    let snapshot = crate::TerrainOctree::default().snapshot();
+    let trunk = WorldPosition(tree.origin() + DVec3::Y * 1.2);
+    let brick = trunk.cell().expect("inside the world").brick();
+    let unpainted = crate::SurfaceId::plain(TerrainMaterial::Rock);
+    // Impostor crowns are metres dense where a chunk's cap cuts them.
+    for level in [0, 1, 2, 3, 4, 5] {
+        let node = crate::TerrainNodeId::containing(brick, level).expect("inside the world");
+        let chunk = crate::mesh_chunk(
+            &field,
+            &snapshot,
+            crate::TerrainMeshRequest {
+                node,
+                generation: 0,
+                transition_mask: crate::TerrainTransitionMask::default(),
+            },
+        );
+        let bare = chunk
+            .surfaces
+            .iter()
+            .filter(|&&surface| surface == unpainted)
+            .count();
+        assert_eq!(bare, 0, "{bare} unpainted vertices at level {level}");
+        // Whatever stands well clear of the ground is a tree. A coarse
+        // lattice places the ground itself up to a sample off.
+        let palette = field.palette();
+        let clear = (f64::from(1_u32 << level) * crate::TERRAIN_CELL_METERS * 2.0).max(1.0);
+        let mut ground = 0;
+        for (vertex, surface) in chunk.vertices.iter().zip(&chunk.surfaces) {
+            let point = chunk.origin.0
+                + DVec3::new(
+                    f64::from(vertex[0]),
+                    f64::from(vertex[1]),
+                    f64::from(vertex[2]),
+                );
+            let top = field.topmost_surface(point.x, point.z).unwrap_or(point.y);
+            let material = palette.look(*surface).material;
+            if point.y > top + clear
+                && !matches!(material, TerrainMaterial::Wood | TerrainMaterial::Foliage)
+            {
+                ground += 1;
+            }
+        }
+        assert_eq!(
+            ground, 0,
+            "{ground} ground vertices in the air at level {level}"
+        );
+    }
+}
