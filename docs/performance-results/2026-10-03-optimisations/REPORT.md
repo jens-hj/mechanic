@@ -2,9 +2,13 @@
 
 A broad audit of CPU physics, world generation and streaming, water, GPU
 physics, construction edits and the app, followed by changes that leave every
-system's output unchanged or, where the arithmetic order moved, statistically
-the same. Each change was measured against the commit before the pass,
-`a2cd0d0`.
+system's output unchanged. Each change was measured against the commit before
+the pass, `a2cd0d0`.
+
+PR #67 first shipped a contact-row change that reordered arithmetic and
+altered the builder's long-run behaviour. The follow-up below replaces it
+with exact row solves; builder figures marked "PR #67" are that superseded
+state, kept as history.
 
 ## Conditions
 
@@ -74,12 +78,13 @@ conditions to compare it.
 
 | Workload | Runs | Load before runs | CPU cycles | Elapsed |
 |---|---|---|---|---|
-| Builder replay, 600 ticks | 3 + 3 | 6.7–7.9 | 63.4–64.5 G → 44.4–45.8 G (−29.5 %) | tick median 33.4–34.6 → 21.6–22.6 ms (−35 %); p95 48.4–49.0 → 32.0–33.2 ms (−33 %); mean 32.1–33.2 → 22.1–23.1 ms (−31 %) |
+| Builder replay, 600 ticks, exact rows (current) | 2 + 2 | 2.6–9 | 62.5–62.9 G → 49.7 G (−21 %) | tick median 33.0–33.4 → 25.9–26.1 ms (−22 %); p95 46.7–46.9 → 36.4–36.6 ms (−22 %); mean 31.5 → 24.8 ms (−21 %) |
+| Builder replay, PR #67 shared basis (superseded) | 3 + 3 | 6.7–7.9 | 63.4–64.5 G → 44.4–45.8 G (−29.5 %) | tick median 33.4–34.6 → 21.6–22.6 ms (−35 %); p95 48.4–49.0 → 32.0–33.2 ms (−33 %) |
 | `terrain-cut`, titan_crags | 3 + 3 | 6.7–108 | 593–598 G → 479–483 G (−19.4 %) | not comparable: 25–41 s either way under shifting load |
 | `water-breach` | 2 + 2 | 32–120 | 455–461 G → 338–344 G (−25.6 %) | step p50 7.2–7.3 → 5.8–6.1 ms (−18 %); p95s load-dominated |
 | `terrain-cut`, nine biomes | 1 + 1 | 16 / 177 | 4,222 G → 3,439 G (−18.5 %) | not comparable |
 
-After the lone-body change, two further interleaved builder runs per build
+History, PR #67: after the lone-body change, two further interleaved builder runs per build
 (load 7.5–18): baseline 63.7–63.9 G cycles, tick median 33.6–33.9 ms; before
 the change 44.9–45.1 G, 21.95–22.03 ms; after it 44.87–44.91 G, 21.82–21.90 ms.
 All six runs ended on the same state hash.
@@ -88,7 +93,8 @@ Peak memory in the same runs (maximum resident / peak footprint):
 
 | Workload | Baseline | Current |
 |---|---|---|
-| Builder replay | 114–125 / 110–122 MB | 123–124 / 119–120 MB |
+| Builder replay, exact rows | 130 / 126 MB (one run) | 123 / 120 MB (one run) |
+| Builder replay, PR #67 shared basis | 114–125 / 110–122 MB | 123–124 / 119–120 MB |
 | titan_crags | 117–129 / 127–128 MB | 106–133 / 122–135 MB |
 | `water-breach` | 138–141 / 149–155 MB | 140–143 / 155 MB |
 | nine biomes | 129 / 128 MB | 137 / 140 MB |
@@ -111,10 +117,10 @@ variant with the fix, and unchanged by every other change).
 
 | Workload | Measure | Before | After |
 |---|---|---|---|
-| `cpu-physics --scenario builder-scale --copies 1`, 600 ticks (13 bodies, 1,744 colliders, ~2,650 contacts) | CPU cycles | 64.0 G | 45.4–46.1 G (−28 %) |
-| same | tick median / p95 | 34.5 / 49.3 ms | 23.0 / 34.5 ms |
-| same | contact rows / query, median | 16.3 / 17.6 ms | 7.5 / 14.9 ms |
-| same | contacts, degraded ticks | 2,652, 0 | 2,652, 0 |
+| `cpu-physics --scenario builder-scale --copies 1`, 600 ticks (13 bodies, 1,744 colliders, ~2,650 contacts) | CPU cycles | 62.5–62.9 G | 49.7 G (−21 %) |
+| same | tick median / p95 | 33.0–33.4 / 46.7–46.9 ms | 25.9–26.1 / 36.4–36.6 ms |
+| same | contact rows / query, median | 16.1 / 16.9 ms | 11.4 / 13.4 ms |
+| same | contacts, degraded ticks, state hash | 2,652, 0 | 2,652, 0, identical |
 | `terrain-cut --seed 42`, all nine biomes (108,408 nodes) | CPU cycles | 4,334 G | 3,503 G (−19 %) |
 | same | instructions | 17,994 G | 14,354 G (−20 %) |
 | same | sampling / extraction CPU | 5,773 / 1,066 s | 4,062 / 537 s |
@@ -125,7 +131,7 @@ variant with the fix, and unchanged by every other change).
 | `mechanic-bench --scenario terrain_dig` | cached selection p95 | 27–33 ms | 17–18 ms |
 | same | terrain stage p50 | 29–32 ms | 19 ms |
 
-### Builder replay by phase
+### Builder replay by phase (PR #67 shared basis, superseded)
 
 Full replays of the same fixture, same flags, same hardware, two interleaved
 repetitions per build, stopping when any contact overlaps by more than 10 cm

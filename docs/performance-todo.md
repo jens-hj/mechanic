@@ -8,7 +8,7 @@ historical; they do not pause the authorized CPU/GPU and production-rendering wo
 ## Optimisation pass (2026-10-03)
 
 [Evidence](performance-results/2026-10-03-optimisations/REPORT.md). Builder
-CPU tick 34.5 → 23.0 ms median; full terrain cut −19 % cycles with identical
+CPU tick 33.2 → 26.0 ms median with identical state; full terrain cut −19 % cycles with identical
 meshes; water −26 % cycles; cached terrain selection p95 about 30 → 17 ms.
 
 - [x] Contact rows from six basis responses per touched body; replaced by
