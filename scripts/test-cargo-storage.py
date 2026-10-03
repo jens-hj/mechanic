@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,9 @@ from cargo_storage import Store, require_binary_lease, size
 from cargo_process import is_msvc_service
 
 LAUNCHER = Path(__file__).with_name('cargo-storage.py').resolve()
+TOOLCHAIN = (subprocess.check_output(['rustup', 'show', 'active-toolchain'],
+                                   cwd=LAUNCHER.parent.parent, text=True).split()[0]
+             if shutil.which('rustup') else None)
 
 spec = importlib.util.spec_from_file_location('launcher', LAUNCHER)
 launcher = importlib.util.module_from_spec(spec)
@@ -32,6 +36,8 @@ class StorageTests(unittest.TestCase):
                     if k not in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR',
                                  'MECHANIC_CARGO_LEASE', 'MECHANIC_CARGO_STORAGE')}
         self.env['PYTHONFAULTHANDLER'] = '1'
+        if TOOLCHAIN:
+            self.env['RUSTUP_TOOLCHAIN'] = TOOLCHAIN
         self.children = []
         self.addCleanup(self.stop_children)
 
@@ -55,10 +61,11 @@ class StorageTests(unittest.TestCase):
         except subprocess.TimeoutExpired as error:
             self.fail(f'{error}\nstdout: {error.stdout!r}\nstderr: {error.stderr!r}')
 
-    def start(self, source):
+    def start(self, source, cwd=None):
         child = subprocess.Popen([sys.executable, str(LAUNCHER), '--root', str(self.root),
                                   'run', '--', sys.executable, '-c', source],
-                                 env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                 env=self.env, cwd=cwd, text=True, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
         self.children.append(child)
         return child
 
@@ -103,7 +110,7 @@ class StorageTests(unittest.TestCase):
 
     def test_cleanup_skips_active_lease_and_preserves_reports(self):
         store = Store(self.root, 1)
-        target = store.slot(0) / 'target'
+        target = store.target(0)
         cache = target / 'debug/incremental'
         cache.mkdir(parents=True)
         (cache / 'generated').write_bytes(b'x' * 4096)
@@ -126,7 +133,7 @@ class StorageTests(unittest.TestCase):
 
     def test_cleanup_estimate_counts_hardlinks_once_and_excludes_retained_links(self):
         store = Store(self.root, 1)
-        target = store.slot(0) / 'target'
+        target = store.target(0)
         deps = target / 'debug/deps'
         incremental = target / 'debug/incremental'
         deps.mkdir(parents=True)
@@ -183,8 +190,19 @@ class StorageTests(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX SIGKILL; Windows job kills children on supervisor exit')
     def test_killed_supervisor_quarantines_live_orphan(self):
         Store(self.root, 1)
+        source = self.root.parent / 'crash-fixture'
+        (source / 'src').mkdir(parents=True)
+        (source / 'Cargo.toml').write_text(
+            '[package]\nname="crash-fixture"\nversion="0.1.0"\nedition="2021"\n[workspace]\n')
+        (source / 'src/main.rs').write_text('fn main() {}')
+        build = self.invoke('cargo', 'build', '--quiet', '--offline',
+                            '--manifest-path', str(source / 'Cargo.toml'))
+        self.assertEqual(build.returncode, 0, build.stderr)
         child, marker, release = self.hold('crash')
         self.wait_for(marker.exists)
+        stale = Store(self.root).target(0) / 'debug/stale-artifact'
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text('uncertain checkout output')
         child.kill()
         child.wait(timeout=5)
         try:
@@ -200,6 +218,7 @@ class StorageTests(unittest.TestCase):
         replacement = self.invoke('run', '--', sys.executable, '-c', 'print("reused safely")')
         self.assertEqual(replacement.returncode, 0, replacement.stderr)
         self.assertEqual(replacement.stdout.strip(), 'reused safely')
+        self.assertFalse(stale.exists())
 
     @unittest.skipUnless(os.name == 'nt', 'Windows Job Object lifecycle')
     def test_killed_windows_supervisor_terminates_descendant(self):
@@ -250,7 +269,7 @@ class StorageTests(unittest.TestCase):
 
     def test_slot_binary_cannot_run_outside_its_lease(self):
         store = Store(self.root, 1)
-        binary = store.slot(0) / 'target/debug/app'
+        binary = store.target(0) / 'debug/app'
         binary.parent.mkdir(parents=True)
         binary.touch()
         with self.assertRaisesRegex(ValueError, 'active lease'):
@@ -271,7 +290,7 @@ class StorageTests(unittest.TestCase):
 
     def test_budget_can_evict_recent_idle_cache_but_retention_preserves_it(self):
         store = Store(self.root, 1)
-        cache = store.slot(0) / 'target/debug/deps'
+        cache = store.target(0) / 'debug/deps'
         cache.mkdir(parents=True)
         (cache / 'generated').write_bytes(b'x' * 8192)
         store.save(0, {'state': 'idle', 'finished': time.time()})
@@ -300,14 +319,94 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(result.stdout.strip(), name)
         self.assertEqual(len(list(self.root.glob('slot-*'))), 1)
 
+    def test_checkout_cannot_replace_binary_between_build_and_execution(self):
+        import shutil
+        if not shutil.which('cargo'):
+            self.skipTest('Cargo unavailable')
+        Store(self.root, 1)
+        checkouts = []
+        for name in ('first', 'second'):
+            source = self.root.parent / name
+            (source / 'src').mkdir(parents=True)
+            (source / 'Cargo.toml').write_text(
+                '[package]\nname="collision-smoke"\nversion="0.1.0"\nedition="2021"\n[workspace]\n')
+            (source / 'src/lib.rs').write_text(
+                'pub fn value() -> &' + "'static str { \"first\" }" if name == 'first'
+                else 'pub fn value() -> usize { 2 }')
+            (source / 'src/main.rs').write_text(
+                'fn main() { let value: ' + ('&str' if name == 'first' else 'usize') +
+                '=collision_smoke::value(); assert_eq!(value, ' +
+                ('"first"' if name == 'first' else '2') + '); println!("' + name + '"); }')
+            (source / 'src/bin').mkdir()
+            (source / 'src/bin/xtask.rs').write_text(
+                'fn main() { assert!(std::process::Command::new("cargo")'
+                '.args(["build", "--quiet", "--offline", "--bin", "collision-smoke"])'
+                '.status().unwrap().success()); }')
+            (source / '.cargo').mkdir()
+            (source / '.cargo/config.toml').write_text(
+                '[alias]\nxtask="run --quiet --offline --bin xtask --"\n')
+            checkouts.append(source)
+        built = self.root.parent / 'built'
+        release = self.root.parent / 'release'
+        entered = self.root.parent / 'second-entered'
+        pipeline = (
+            'import os,subprocess,time; from pathlib import Path; '
+            f'subprocess.run([{sys.executable!r}, {str(LAUNCHER)!r}, "cargo", "xtask"], check=True); '
+            'binary=Path(os.environ["CARGO_TARGET_DIR"])/"debug"/'
+            '("collision-smoke.exe" if os.name == "nt" else "collision-smoke"); ')
+        first = self.start(pipeline +
+                           f'Path({str(built)!r}).touch(); '
+                           f'\nwhile not Path({str(release)!r}).exists(): time.sleep(.03)'
+                           '\nsubprocess.run([str(binary)], check=True)', cwd=checkouts[0])
+        self.wait_for(built.exists)
+        second = self.start(f'from pathlib import Path; Path({str(entered)!r}).touch(); ' +
+                            pipeline + 'subprocess.run([str(binary)], check=True)',
+                            cwd=checkouts[1])
+        try:
+            time.sleep(.4)
+            self.assertIsNone(second.poll())
+            self.assertFalse(entered.exists())
+        finally:
+            release.touch()
+        first_out, first_err = first.communicate(timeout=30)
+        second_out, second_err = second.communicate(timeout=30)
+        self.assertEqual(first.returncode, 0, first_err)
+        self.assertEqual(second.returncode, 0, second_err)
+        self.assertEqual(first_out.strip(), 'first')
+        self.assertEqual(second_out.strip(), 'second')
+        report = self.root / 'slot-0/target/report.json'
+        report.write_text('preserve')
+        cleaned = self.invoke('clean', '--idle-hours', '0', '--apply')
+        self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+        for expected_clean in (True, False):
+            last = self.start(pipeline + 'subprocess.run([str(binary)], check=True)',
+                              cwd=checkouts[0])
+            output, errors = last.communicate(timeout=30)
+            self.assertEqual(last.returncode, 0, errors)
+            self.assertEqual(output.strip(), 'first')
+            self.assertEqual('checkout reassignment' in errors, expected_clean)
+            self.assertEqual(report.read_text(), 'preserve')
+
+    def test_failed_reassignment_never_launches_or_blesses_new_checkout(self):
+        store = Store(self.root, 1)
+        target = store.target(0)
+        target.mkdir(parents=True)
+        (target / 'unrecognized').write_text('not a Cargo target')
+        store.save(0, {'state': 'idle', 'checkout': 'another-checkout'})
+        with patch.object(launcher, 'run', return_value=101) as run:
+            for _ in range(2):
+                self.assertEqual(launcher.execute(store, [sys.executable, '-c', 'pass']), 101)
+                self.assertIn('_reassign', run.call_args.args[0])
+                self.assertIsNone(store.state(0)['checkout'])
+
     @unittest.skipIf(os.name == 'nt', 'symlink creation requires privileges on Windows')
     def test_cleanup_refuses_symlinked_profile(self):
         store = Store(self.root, 1)
         source = self.root.parent / 'source'
         source.mkdir()
         (source / 'incremental').mkdir()
-        target = store.slot(0) / 'target'
-        target.mkdir()
+        target = store.target(0)
+        target.mkdir(parents=True)
         (target / 'debug').symlink_to(source, target_is_directory=True)
         result = self.invoke('clean', '--idle-hours', '0', '--apply')
         self.assertNotEqual(result.returncode, 0)

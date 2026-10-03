@@ -39,7 +39,7 @@ def inherited(store):
             with store.lock(index) as lock:
                 if lock.acquire():
                     raise ValueError('inherited lease has lost its supervisor; slot quarantined')
-            target = str(store.slot(index) / 'target')
+            target = str(store.target(index))
             if any(os.environ.get(name) != target for name in TARGET_VARIABLES):
                 raise ValueError('nested command changed CARGO_TARGET_DIR')
             return index
@@ -77,10 +77,10 @@ def execute(store, command):
                 if previous['state'] != 'idle':
                     continue
                 slot = store.slot(index)
-                target = slot / 'target'
-                if target.is_symlink():
+                target = store.target(index)
+                if target.is_symlink() or target.parent.is_symlink():
                     raise ValueError('target must not be a symlink')
-                target.mkdir(exist_ok=True)
+                target.parent.mkdir(parents=True, exist_ok=True)
                 token = uuid.uuid4().hex
                 state = {'state': 'running', 'pid': os.getpid(), 'token': token,
                          'boot': boot_identity(), 'checkout': affinity,
@@ -95,8 +95,26 @@ def execute(store, command):
                     state.update(containment)
                     store.save(index, state)
 
-                code = run(command, env, slot / f'gate-{token}', SELF, record_containment)
-                store.save(index, {'state': 'idle', 'checkout': affinity,
+                # Reassignment must invalidate both final and intermediate artifacts.
+                # Run Cargo's supported clean boundary inside the same containment
+                # as the command: a crash cannot expose a still-running cleaner.
+                prepared = command
+                if (previous.get('checkout') != affinity and target.exists()
+                        and any(target.iterdir())):
+                    manifest_dir = slot / 'clean-manifest'
+                    if any(p.is_symlink() for p in (manifest_dir,
+                           manifest_dir / 'Cargo.toml', manifest_dir / 'lib.rs')):
+                        raise ValueError('cleanup manifest must not contain symlinks')
+                    manifest_dir.mkdir(exist_ok=True)
+                    (manifest_dir / 'Cargo.toml').write_text(
+                        '[package]\nname="slot-clean"\nversion="0.0.0"\nedition="2021"\n'
+                        '[lib]\npath="lib.rs"\n[workspace]\n')
+                    (manifest_dir / 'lib.rs').write_text('')
+                    emit(f'slot {index}: checkout reassignment; invalidating Cargo artifacts')
+                    prepared = [sys.executable, str(SELF), '_reassign',
+                                str(manifest_dir / 'Cargo.toml'), *command]
+                code = run(prepared, env, slot / f'gate-{token}', SELF, record_containment)
+                store.save(index, {'state': 'idle', 'checkout': affinity if code == 0 else None,
                                    'finished': time.time(), 'exit_code': code})
                 return code
         now = time.monotonic()
@@ -115,13 +133,14 @@ def status(store):
             state = store.state(index)
             rows.append({'slot': index, 'locked': not available,
                          'quarantined': available and state['state'] != 'idle',
-                         'bytes': size(store.slot(index) / 'target'), 'owner': state})
+                         'bytes': size(store.target(index)), 'owner': state})
     print(json.dumps({'root': str(store.root), 'slots': rows}, indent=2))
 
 
 def candidates(target):
     """Only Cargo-owned names; custom reports/captures at target root survive."""
-    names = ['.rustc_info.json', 'CACHEDIR.TAG']
+    # Cargo requires its ownership tag for later full reassignment cleanup.
+    names = ['.rustc_info.json']
     for profile in ('debug', 'release', 'profiling'):
         names.extend(f'{profile}/{name}' for name in
                      ('deps', '.fingerprint', 'build', 'incremental', 'examples'))
@@ -138,7 +157,7 @@ def candidates(target):
 
 
 def cleanup(store, args):
-    total = sum(size(store.slot(i) / 'target') for i in range(store.count))
+    total = sum(size(store.target(i)) for i in range(store.count))
     rows = []
     reclaimable_bytes = 0
     indices = sorted(range(store.count), key=lambda i: store.state(i).get('finished', 0))
@@ -155,7 +174,7 @@ def cleanup(store, args):
             if age < args.idle_hours and total <= args.budget_gib * 1024**3:
                 rows.append({'slot': index, 'skip': 'within retention and budget'})
                 continue
-            paths = candidates(store.slot(index) / 'target')
+            paths = candidates(store.target(index))
             estimate = reclaimable(paths)
             seen = set()
             for path in paths:
@@ -208,6 +227,15 @@ def main():
             # contains every subprocess; CreateProcess also preserves quoting.
             return subprocess.call(sys.argv[4:])
         os.execvpe(sys.argv[4], sys.argv[4:], os.environ)
+    if len(sys.argv) > 1 and sys.argv[1] == '_reassign':
+        # The dedicated cargo subtree contains compiler artifacts only. Reports
+        # and durable captures belong alongside it, never within it.
+        result = subprocess.call(['cargo', 'clean', '--manifest-path', sys.argv[2],
+                                  '--target-dir', os.environ['CARGO_TARGET_DIR']])
+        if result:
+            return result
+        code = subprocess.call(sys.argv[3:])
+        return 128 - code if code < 0 else code
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=os.environ.get(ROOT))
     parser.add_argument('--slots', type=int)

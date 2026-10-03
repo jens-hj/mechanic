@@ -60,6 +60,10 @@ wrap the **entire** pipeline with `cargo-storage.py run -- <command>`, and resol
 binaries beneath the inherited `CARGO_TARGET_DIR`. Keep captures/reports outside
 that directory. Never run a slot binary after its lease ends; rebuild under a
 lease or copy a durable measurement binary while holding the lease.
+Slot reassignment to a different checkout runs `cargo clean` within the lease
+before building. Same-checkout reuse stays warm; changing checkouts can require
+a full dependency rebuild. Cargo output is confined to `slot-N/target/cargo`.
+Old storage-format roots are refused, never migrated while workers use them.
 
 - Existing builds finish on their existing targets before adoption. Never clean
   another worker's target or change global Cargo configuration.

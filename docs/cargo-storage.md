@@ -30,10 +30,25 @@ on Windows). Metadata names the command, checkout, PID, start time, and token.
 Nested launchers validate the token and lock and inherit the target without
 acquiring another slot. Cargo's own locks remain in effect inside the lease.
 
-Both final and intermediate Cargo artifacts stay in the slot: the launcher sets
+Checkout affinity is an absolute worktree path, not Cargo's package hash. On
+reassignment to another checkout (or after uncertain/crashed ownership), the
+launcher runs `cargo clean` before the new command, under the same exclusive lease
+and process containment. Failed cleanup never blesses the new identity. The clean
+uses a tiny slot-owned manifest and explicit target directory, with the same
+intermediate build-directory environment. It invalidates all profiles and local
+path dependencies, including incompatible APIs, without relying on timestamps.
+Same-checkout successful invocations retain their cache. Two slots retain at most
+two checkout caches; switching more checkouts sacrifices dependency reuse and may
+require a full rebuild. There is no per-checkout cache directory accumulation.
+
+Both final and intermediate Cargo artifacts stay in `slot-N/target/cargo`: the launcher sets
 `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, and `CARGO_BUILD_BUILD_DIR` for its
 children. This explicitly covers Cargo's separate [intermediate build directory](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
-without changing global configuration. Existing directory environment overrides
+without changing global configuration. That subtree is exclusively disposable
+Cargo output: keep reports, captures and authored files outside it (for example,
+`slot-N/target/report.json` survives reassignment). Store format v2 refuses old v1
+roots instead of migrating or deleting their contents; no active root is upgraded.
+Existing directory environment overrides
 require unsetting them or using `--unmanaged`.
 
 The lease covers the command's complete process tree. Build and direct-run or
@@ -97,7 +112,7 @@ If containment was not yet recorded when the supervisor crashed, or on Windows,
 recovery requires recorded/current boot identities proving a subsequent OS reboot.
 If those identities are unavailable, the uncertain slot remains quarantined.
 `recover` returns nonzero while any unlocked slot remains quarantined. There is no
-force-unlock, automatic eviction, or missing-parent-PID heuristic. Never delete
+force-unlock, automatic budget eviction, or missing-parent-PID heuristic. Never delete
 owner metadata to bypass recovery. The no-daemonizing containment contract above
 also applies to same-boot recovery; escaping children are unsupported.
 
@@ -122,8 +137,9 @@ Lock files and ownership metadata are never cleanup candidates.
 Idle slots qualify when older than retention **or** the total recognized store
 exceeds the configured budget, oldest first. Busy and quarantined slots always
 survive, so the budget is a cleanup target, not a hard allocation cap. Preview is
-advisory: apply reacquires locks and recomputes eligibility. No automatic eviction
-runs. Status sizes count each inode once (allocated file bytes on Unix, logical bytes
+advisory: apply reacquires locks and recomputes eligibility. No automatic budget eviction
+runs. Correctness invalidation on checkout reassignment is separate from this
+optional retention cleanup and cleans the entire dedicated Cargo subtree. Status sizes count each inode once (allocated file bytes on Unix, logical bytes
 on Windows). Cleanup reports `reclaimable_file_bytes_estimate` separately from
 per-path sizes: it excludes any file whose hardlinks survive outside the deletion
 set. Filesystem metadata, shared clone extents, and concurrent activity can still
@@ -164,6 +180,42 @@ Incremental-off and reduced-debug experiments remain opt-in. No optimizer, debug
 assertion, or profile defaults change. Measure cold and warm builds separately in
 an isolated target (including disk size and elapsed time); a tiny launcher smoke
 fixture cannot establish the Bevy workspace's build-speed/storage tradeoff.
+
+Operational cost evidence (2026-10-03): mechanic-7 reported an 8m29s sky-capture
+compile after incremental caches were cleared during the disk-full event; its
+earlier test execution took about 20s. These are worker-reported observations,
+not a controlled before/after compilation measurement or independently verified
+cleanup causality. Compilation and test execution are different phases, so these
+times do not establish a slowdown ratio. Evaluate retained incremental caches,
+cache eviction, incremental-off, and reduced debug information with separate cold
+and warm rebuild measurements before changing defaults. Reclamation can impose a
+substantial rebuild cost; it is not free. Active sky-test and capture storage must
+remain untouched during this evaluation.
+
+Rollout blocker found in subsequent validation: two pre-created checkouts with
+the same package name/version can reuse the wrong top-level executable after a
+successful Cargo build. The lease correctly prevents replacement during the
+first checkout's build-and-execution pipeline, but does not establish checkout
+freshness after handoff. The failing regression
+`test_checkout_cannot_replace_binary_between_build_and_execution` supersedes the
+earlier sequential checkout-isolation claim below. Shared-slot adoption is paused
+until the fix passes lifecycle CI; existing active targets remain in place.
+Before the fix, the original regression failed with `AssertionError: 'first' !=
+'second'` after B's successful build. Reassignment invalidation now passes locally:
+pre-created unchanged A/B/A sources with incompatible library return types, nested
+`cargo xtask` bootstrap/build, queued build-and-execution pipelines, and a fourth
+warm A invocation. The test does not touch source files between invocations or
+use delays to establish build correctness; its short delay checks only queuing.
+
+Reassignment measurement on Cargo 1.97.1/macOS arm64 (single dependency-free
+binary, not representative of Bevy): cold A 0.942s, reassigned B 0.616s,
+reassigned A 0.660s, warm A 0.225s. Each completed invocation retained 1,097,728
+allocated file bytes in its one Cargo subtree; A/B caches did not accumulate.
+These single observations include launcher overhead and do not establish a
+general slowdown ratio. Eighteen local lifecycle tests pass (one Windows-only
+case skipped); removing only reassignment invalidation reproduces
+`AssertionError: 'first' != 'second'` on pinned Cargo 1.97.1. Cross-platform
+verification of this revision is pending; adoption remains suspended.
 
 ### Local validation, 2026-10-03
 

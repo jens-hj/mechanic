@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import time
 
-FORMAT = 'mechanic-cargo-slots-v1'
+FORMAT = 'mechanic-cargo-slots-v2'
 
 
 class Lock:
@@ -135,6 +135,9 @@ class Store:
 
     def slot(self, index):
         return self.root / f'slot-{index}'
+
+    def target(self, index):
+        return self.slot(index) / 'target' / 'cargo'
 
     def lock(self, index):
         return Lock(self.slot(index) / 'lease.lock')
