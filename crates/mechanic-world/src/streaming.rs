@@ -26,6 +26,7 @@ use std::{
 };
 
 use bevy_math::DVec3;
+use rustc_hash::FxHashSet;
 
 use crate::{TerrainNodeId, WorldPosition};
 
@@ -519,7 +520,7 @@ impl TerrainStreamer {
 
     fn rebuild_seam_dependencies(&mut self) {
         self.seam_dependencies.clear();
-        let selected = self.desired.keys().copied().collect::<BTreeSet<_>>();
+        let selected = self.desired.keys().copied().collect::<FxHashSet<_>>();
         for node in self.desired.values() {
             if node.transition_mask == TerrainTransitionMask::NONE {
                 continue;

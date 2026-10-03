@@ -487,13 +487,7 @@ enum Lane<'a> {
     Splat(f64),
 }
 
-fn apply(
-    op: &Op,
-    registers: &Arguments,
-    values: &[f64],
-    point: [f64; 3],
-    inputs: &[f64],
-) -> f64 {
+fn apply(op: &Op, registers: &Arguments, values: &[f64], point: [f64; 3], inputs: &[f64]) -> f64 {
     if let Op::Input(index) | Op::Varying(index) = op {
         return inputs[*index as usize];
     }
