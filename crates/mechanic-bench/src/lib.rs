@@ -2,5 +2,6 @@
 //! statistics every report uses.
 
 pub mod finite_support;
+pub mod images;
 pub mod scenarios;
 pub mod stats;

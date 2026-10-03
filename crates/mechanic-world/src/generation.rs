@@ -10,6 +10,7 @@
 
 mod compile;
 mod fields;
+mod flora;
 mod interval;
 mod load;
 mod noise;
@@ -40,6 +41,10 @@ use crate::{
     WorldGeneratorVersion, WorldPosition, WorldSeed,
 };
 
+pub use self::flora::{
+    Axis, FoliageBlob, FoliageSpec, GenomeSweep, Part, RootsSpec, Segment, SpeciesSpec,
+    TreeMetrics, TreeModel, grow_tree,
+};
 pub use self::load::{WorldgenError, WorldgenSpec};
 pub use self::spec::TextureSet;
 pub use self::surfaces::{SurfaceId, SurfaceLook, SurfacePalette};

@@ -21,13 +21,12 @@
 )]
 
 use std::error::Error;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use bevy_math::DVec3;
+use mechanic_bench::images::write_png;
 use mechanic_world::{
     SurfaceLook, TerrainField, TextureSet, WorldPosition, WorldSeed, WorldgenSpec,
 };
@@ -713,16 +712,4 @@ fn mix(first: [f64; 3], second: [f64; 3], amount: f64) -> [f64; 3] {
 
 fn to_bytes(colour: [f64; 3]) -> [u8; 3] {
     colour.map(|channel| (channel.clamp(0.0, 1.0) * 255.0).round() as u8)
-}
-
-fn write_png(path: &Path, width: usize, height: usize, rgb: &[u8]) -> Result<(), Box<dyn Error>> {
-    let mut encoder = png::Encoder::new(
-        BufWriter::new(File::create(path)?),
-        u32::try_from(width)?,
-        u32::try_from(height)?,
-    );
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.write_header()?.write_image_data(rgb)?;
-    Ok(())
 }

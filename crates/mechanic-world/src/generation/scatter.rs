@@ -281,11 +281,11 @@ fn rotation(yaw: f64, tilt: f64, tilt_axis: f64) -> [[f64; 3]; 3] {
 }
 
 /// Deterministic per-cell random stream.
-struct Hash(u64);
+pub(crate) struct Hash(u64);
 
 impl Hash {
     #[expect(clippy::cast_sign_loss, reason = "cell indices are hashed bit for bit")]
-    fn new(seed: u64, x: i64, z: i64) -> Self {
+    pub(crate) fn new(seed: u64, x: i64, z: i64) -> Self {
         let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
         state = mix(state ^ (x as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9));
         state = mix(state ^ (z as u64).wrapping_mul(0x94d0_49bb_1331_11eb));
@@ -296,12 +296,12 @@ impl Hash {
         clippy::cast_precision_loss,
         reason = "53 random bits map exactly onto the unit interval"
     )]
-    fn unit(&mut self) -> f64 {
+    pub(crate) fn unit(&mut self) -> f64 {
         self.0 = mix(self.0.wrapping_add(0x9e37_79b9_7f4a_7c15));
         (self.0 >> 11) as f64 / (1_u64 << 53) as f64
     }
 
-    fn between(&mut self, lo: f64, hi: f64) -> f64 {
+    pub(crate) fn between(&mut self, lo: f64, hi: f64) -> f64 {
         (hi - lo).mul_add(self.unit(), lo)
     }
 }

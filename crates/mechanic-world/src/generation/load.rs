@@ -183,7 +183,10 @@ impl WorldgenSpec {
     }
 }
 
-fn parse<T: serde::de::DeserializeOwned>(file: &str, text: &str) -> Result<T, WorldgenError> {
+pub(super) fn parse<T: serde::de::DeserializeOwned>(
+    file: &str,
+    text: &str,
+) -> Result<T, WorldgenError> {
     ron::Options::default()
         .with_default_extension(
             ron::extensions::Extensions::IMPLICIT_SOME

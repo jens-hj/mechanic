@@ -12,6 +12,7 @@ follows.
 - [Gameplay design](gameplay-design.md): what the game is for and what that rules in and out.
 - [World generation](world-generation.md): declarative 3D biomes, rivers, caves, and how to author them.
 - [Water](water.md): the sea, lakes and rivers, and the voxel water they grow into.
+- [Flora](flora.md): trees grown from one species genome, and the gallery that tunes them.
 
 ## Features
 

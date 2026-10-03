@@ -43,9 +43,10 @@ pub use edits::{
 };
 pub use footprint::LoadFootprint;
 pub use generation::{
-    LakeBasin, Outflow, RiverReach, SurfaceId, SurfaceLook, SurfacePalette, TerrainField,
-    TerrainMaterial, TerrainSample, TextureSet, WaterBody, WaterSurface, WorldgenError,
-    WorldgenSpec,
+    Axis, FoliageBlob, FoliageSpec, GenomeSweep, LakeBasin, Outflow, Part, RiverReach, RootsSpec,
+    Segment, SpeciesSpec, SurfaceId, SurfaceLook, SurfacePalette, TerrainField, TerrainMaterial,
+    TerrainSample, TextureSet, TreeMetrics, TreeModel, WaterBody, WaterSurface, WorldgenError,
+    WorldgenSpec, grow_tree,
 };
 pub use material_response::TerrainMaterialError;
 pub use mesh::{

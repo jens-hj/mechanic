@@ -943,7 +943,7 @@ checksum = "bff34eb29ff4b8a8688bc7299f14fb6b597461ca80fec03ed7d22939ab33e48f"
 
 [[package]]
 name = "bevy_mosaic"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "arboard",
  "bevy",
@@ -2970,7 +2970,7 @@ dependencies = [
 
 [[package]]
 name = "mechanic-app"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bevy",
  "bevy_mosaic",
@@ -2994,7 +2994,7 @@ dependencies = [
 
 [[package]]
 name = "mechanic-bench"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bevy_math",
  "mechanic-core",
@@ -3010,7 +3010,7 @@ dependencies = [
 
 [[package]]
 name = "mechanic-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bevy_math",
  "ron",
@@ -3020,7 +3020,7 @@ dependencies = [
 
 [[package]]
 name = "mechanic-gpu"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bevy_math",
  "bytemuck",
@@ -3035,7 +3035,7 @@ dependencies = [
 
 [[package]]
 name = "mechanic-physics"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bevy_math",
  "mechanic-core",
@@ -3046,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "mechanic-world"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bevy_math",
  "fastnoise-lite",
@@ -5770,7 +5770,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.2.3"
+version = "0.2.4"
 
 [[package]]
 name = "yazi"
