@@ -240,6 +240,10 @@ impl ArticulatedFactor {
     /// [`Self::solve_ranges`] for several right-hand sides at once. Each side
     /// sees exactly the arithmetic a lone solve gives it; the sweeps only share
     /// the walk over the bodies, so each body's joint data is read once.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the batched twin of solve_active, kept step for step alike"
+    )]
     pub(super) fn solve_ranges_many(
         &self,
         values: &mut [Vec<f64>],
@@ -286,7 +290,7 @@ impl ArticulatedFactor {
                     let own = index * sides + side;
                     let rhs = values[body.row] - dot(motion, scratch[own]);
                     values[body.row] = rhs;
-                    if rhs == 0.0 && scratch[own] == [0.0; 6] {
+                    if rhs == 0.0 && scratch[own].iter().all(|value| *value == 0.0) {
                         continue;
                     }
                     let mut wrench = scratch[own];
@@ -387,7 +391,7 @@ impl ArticulatedFactor {
                 values[body.row] = rhs;
                 // A body with no load of its own and none from below passes
                 // nothing up: a contact row only loads its body's ancestors.
-                if rhs == 0.0 && scratch[index] == [0.0; 6] {
+                if rhs == 0.0 && scratch[index].iter().all(|value| *value == 0.0) {
                     continue;
                 }
                 let mut wrench = scratch[index];
