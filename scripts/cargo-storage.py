@@ -16,7 +16,7 @@ import sys
 import time
 import uuid
 
-from cargo_storage import Store, boot_identity, default_root, size
+from cargo_storage import Store, boot_identity, default_root, reclaimable, size
 from cargo_process import group_is_empty, run
 
 TOKEN = 'MECHANIC_CARGO_LEASE'
@@ -138,6 +138,7 @@ def candidates(target):
 def cleanup(store, args):
     total = sum(size(store.slot(i) / 'target') for i in range(store.count))
     rows = []
+    reclaimable_bytes = 0
     indices = sorted(range(store.count), key=lambda i: store.state(i).get('finished', 0))
     for index in indices:
         with store.lock(index) as lock:
@@ -152,16 +153,21 @@ def cleanup(store, args):
             if age < args.idle_hours and total <= args.budget_gib * 1024**3:
                 rows.append({'slot': index, 'skip': 'within retention and budget'})
                 continue
-            for path in candidates(store.slot(index) / 'target'):
-                count = size(path)
+            paths = candidates(store.slot(index) / 'target')
+            estimate = reclaimable(paths)
+            seen = set()
+            for path in paths:
+                count = size(path, seen)
                 rows.append({'slot': index, 'path': str(path), 'bytes': count, 'deleted': args.apply})
                 if args.apply:
                     if path.is_dir():
                         shutil.rmtree(path)
                     else:
                         path.unlink()
-                total -= count
-    print(json.dumps({'apply': args.apply, 'remaining_bytes_estimate': total, 'actions': rows}, indent=2))
+            total -= estimate
+            reclaimable_bytes += estimate
+    print(json.dumps({'apply': args.apply, 'remaining_bytes_estimate': total,
+                      'reclaimable_file_bytes_estimate': reclaimable_bytes, 'actions': rows}, indent=2))
 
 
 def recover(store):
@@ -194,6 +200,11 @@ def main():
         gate = Path(sys.argv[2])
         while not gate.exists():
             time.sleep(.01)
+        if os.name == 'nt':
+            # Windows CRT execvpe crashes on the supported CI Python and does
+            # not provide POSIX exec semantics. The assigned Job Object already
+            # contains every subprocess; CreateProcess also preserves quoting.
+            return subprocess.call(sys.argv[4:])
         os.execvpe(sys.argv[4], sys.argv[4:], os.environ)
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--root', type=Path, default=os.environ.get(ROOT))

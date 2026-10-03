@@ -115,8 +115,11 @@ Idle slots qualify when older than retention **or** the total recognized store
 exceeds the configured budget, oldest first. Busy and quarantined slots always
 survive, so the budget is a cleanup target, not a hard allocation cap. Preview is
 advisory: apply reacquires locks and recomputes eligibility. No automatic eviction
-runs. Status/preview sizes are allocated file bytes on Unix and logical bytes on
-Windows; hardlinks and concurrent activity may affect accounting.
+runs. Status sizes count each inode once (allocated file bytes on Unix, logical bytes
+on Windows). Cleanup reports `reclaimable_file_bytes_estimate` separately from
+per-path sizes: it excludes any file whose hardlinks survive outside the deletion
+set. Filesystem metadata, shared clone extents, and concurrent activity can still
+make the observed free-space delta differ from this estimate.
 
 Two slots limit duplicated working caches, not all historical artifacts or peak
 build size. Branches, features, profiles, compiler changes and dependency path
@@ -140,8 +143,8 @@ Initial macOS inventory on 2026-10-03: main target 129,867,080 KiB, coupler targ
 27,417,904 KiB, about 20 GiB filesystem space available. These sizes are **not**
 proven reclaimable. This session's sandbox blocks process inspection and boot
 identity reads. AO coordination is established; shared-worker rollout remains
-pending while ordinary shared-target builds/captures are active. No legacy
-targets have been deleted. See the PR validation record for current rollout status.
+pending while ordinary shared-target builds/captures are active. The urgent recovery below later removed only the independently verified-idle
+retired incremental cache. Shared-slot adoption remains separate from recovery.
 
 `python3 scripts/test-cargo-storage.py` exercises actual process locks, two occupied
 slots plus a queued third, nested reuse, exit status, cancellation, crash quarantine,
@@ -161,9 +164,10 @@ macOS arm64, Rust/Cargo 1.97.1, Python 3.14.3:
 - 13 focused storage tests passed, including real Cargo checkout/binary isolation.
 - Outer leased `cargo xtask consistency`, `scripts-test`, and `fmt` passed.
   The script suite contains 44 tests including the 13 storage tests.
-- Real xtask cache cleanup: 17,080,320 allocated bytes before; preview selected
-  16,359,424 bytes; apply reclaimed exactly 16,359,424; 720,896 bytes remained.
-  This was a fresh test-owned temporary root, not a legacy or active worker target.
+- Real xtask cache cleanup was exercised in a fresh test-owned temporary root.
+  The initial per-path totals overstated physical reclaim where Cargo hardlinked
+  cache files. The later inode-aware accounting regression and recovery audit
+  below supersede those initial byte claims.
 - `cargo metadata --no-deps --locked --offline` validates the 0.4.2 manifest/lock bump.
 - Added a dedicated three-platform lifecycle CI job with tiny Cargo fixtures and
   no private workspace dependencies. Linux/Windows results are pending CI.
@@ -175,3 +179,29 @@ Follow-up lifecycle validation: the killed-supervisor regression now proves that
 recovery refuses a live orphan, then safely reuses the slot after its recorded
 Unix process group drains. This removes the reboot requirement for ordinary Unix
 supervisor crashes while retaining fail-closed behavior for uncertain containment.
+
+### Urgent legacy-cache recovery, 2026-10-03
+
+After a reported disk-full event, fresh inspection already showed about 56.7 GiB
+available before this session deleted anything. Main and mechanic-5 targets still
+had live compiler users and were excluded. The retired mechanic-4 target had no
+open users. Recovery acquired its existing `.cargo-lock`, `.cargo-build-lock`, and
+`.cargo-artifact-lock` exclusively, then repeated the open-user check while holding
+those locks. Only `target/debug/incremental` was removed: 25,384 compiler files
+(`.bc`, `.o`, `.bin`, `.lock`, `.rmeta`), with no symlinks or unrecognized file types.
+Source, reports/captures, binaries, dependency artifacts, and lock files survived.
+
+- Candidate: 19,765,223,424 unique allocated file bytes.
+- Expected reclaim after retained hardlinks: 14,601,969,664 bytes.
+- Free immediately before/after: 60,303,097,856 / 74,897,154,048 bytes.
+- Observed free-space gain: 14,594,056,192 bytes (13.59 GiB).
+- Immediate remaining space: 69.75 GiB; subsequent reading about 68.7 GiB as other
+  work continued. This is current capacity, not a guarantee for additional builds.
+
+This was explicit, narrowly scoped legacy recovery under independent Cargo locks,
+not managed-slot cleanup or evidence of completed shared-worker rollout.
+
+The expanded lifecycle suite defines 15 tests, including hardlink accounting and a
+Windows-specific descendant-handle test. Lightweight Linux/macOS CI passed before
+the Windows fix. Windows CI exposed a native Python `os.execvpe` crash; its gated
+child now uses `subprocess` within the Job Object. Verification of that fix is pending.

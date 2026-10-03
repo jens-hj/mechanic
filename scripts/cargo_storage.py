@@ -146,23 +146,48 @@ class Store:
         write(self.slot(index) / 'owner.json', state)
 
 
-def size(path):
-    """Allocated bytes where supported, without following symlinks."""
-    total = 0
-    if path.is_symlink():
-        return 0
-    if not path.exists():
-        return 0
+def file_stats(path):
+    """Yield regular file metadata without following symlinks."""
+    if path.is_symlink() or not path.exists():
+        return
     if path.is_file():
-        stat = path.stat()
-        return stat.st_blocks * 512 if hasattr(stat, 'st_blocks') else stat.st_size
+        yield path.stat()
+        return
     for directory, _, files in os.walk(path, followlinks=False):
         for name in files:
             file = Path(directory) / name
             with contextlib.suppress(FileNotFoundError):
-                stat = file.lstat()
-                total += getattr(stat, 'st_blocks', 0) * 512 if hasattr(stat, 'st_blocks') else stat.st_size
+                if not file.is_symlink() and file.is_file():
+                    yield file.stat()
+
+
+def allocated_bytes(stat):
+    return stat.st_blocks * 512 if hasattr(stat, 'st_blocks') else stat.st_size
+
+
+def size(path, seen=None):
+    """Allocated file bytes (logical on Windows), counting each inode once."""
+    seen = set() if seen is None else seen
+    total = 0
+    for stat in file_stats(path):
+        key = (stat.st_dev, stat.st_ino)
+        if key not in seen:
+            seen.add(key)
+            total += allocated_bytes(stat)
     return total
+
+
+def reclaimable(paths):
+    """Exclude file blocks whose hardlinks survive outside the deletion set."""
+    entries = {}
+    for path in paths:
+        for stat in file_stats(path):
+            key = (stat.st_dev, stat.st_ino)
+            if key not in entries:
+                entries[key] = [stat, 0]
+            entries[key][1] += 1
+    return sum(allocated_bytes(stat) for stat, count in entries.values()
+               if count == stat.st_nlink)
 
 
 def require_binary_lease(binary):

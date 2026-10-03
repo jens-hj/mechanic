@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-from cargo_storage import Store, require_binary_lease
+from cargo_storage import Store, require_binary_lease, size
 
 LAUNCHER = Path(__file__).with_name('cargo-storage.py').resolve()
 
@@ -120,6 +120,29 @@ class StorageTests(unittest.TestCase):
         self.assertFalse(cache.exists())
         self.assertEqual(report.read_text(), 'retain me')
 
+    def test_cleanup_estimate_counts_hardlinks_once_and_excludes_retained_links(self):
+        store = Store(self.root, 1)
+        target = store.slot(0) / 'target'
+        deps = target / 'debug/deps'
+        incremental = target / 'debug/incremental'
+        deps.mkdir(parents=True)
+        incremental.mkdir()
+        original = deps / 'object.o'
+        original.write_bytes(b'x' * 8192)
+        os.link(original, incremental / 'object.o')
+        file_size = size(original)
+        self.assertEqual(size(target), file_size)
+        result = self.invoke('clean', '--idle-hours', '0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['reclaimable_file_bytes_estimate'], file_size)
+        protected = target / 'debug/retained-binary'
+        os.link(original, protected)
+        result = self.invoke('clean', '--idle-hours', '0', '--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['reclaimable_file_bytes_estimate'], 0)
+        self.assertEqual(protected.read_bytes(), b'x' * 8192)
+        self.assertEqual(size(target), file_size)
+
     def test_conflicting_count_and_target_override_are_refused(self):
         Store(self.root, 1)
         with self.assertRaises(ValueError):
@@ -166,6 +189,36 @@ class StorageTests(unittest.TestCase):
         replacement = self.invoke('run', '--', sys.executable, '-c', 'print("reused safely")')
         self.assertEqual(replacement.returncode, 0, replacement.stderr)
         self.assertEqual(replacement.stdout.strip(), 'reused safely')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job Object lifecycle')
+    def test_killed_windows_supervisor_terminates_descendant(self):
+        import ctypes
+        from ctypes import wintypes
+        Store(self.root, 1)
+        marker = self.root.parent / 'windows-descendant-pid'
+        release = self.root.parent / 'windows-release'
+        child = self.start(
+            f'import os,time; from pathlib import Path; Path({str(marker)!r}).write_text(str(os.getpid())); '
+            f'\nwhile not Path({str(release)!r}).exists(): time.sleep(.03)')
+        self.wait_for(marker.exists)
+        api = ctypes.WinDLL('kernel32', use_last_error=True)
+        api.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        api.OpenProcess.restype = wintypes.HANDLE
+        api.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        api.WaitForSingleObject.restype = wintypes.DWORD
+        api.CloseHandle.argtypes = [wintypes.HANDLE]
+        # Open a handle while alive: this assertion never relies on PID reuse.
+        handle = api.OpenProcess(0x100000, False, int(marker.read_text()))
+        self.assertTrue(handle)
+        try:
+            child.kill()
+            child.wait(timeout=5)
+            self.assertEqual(api.WaitForSingleObject(handle, 5000), 0)
+            result = self.invoke('status')
+            self.assertTrue(json.loads(result.stdout)['slots'][0]['quarantined'])
+        finally:
+            release.touch()
+            api.CloseHandle(handle)
 
     def test_lease_outlives_direct_child_until_descendant_finishes(self):
         Store(self.root, 1)
