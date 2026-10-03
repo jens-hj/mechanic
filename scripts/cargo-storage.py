@@ -88,6 +88,8 @@ def execute(store, command):
                 store.save(index, state)
                 env = {**os.environ, ROOT: str(store.root), TOKEN: token,
                        **{name: str(target) for name in TARGET_VARIABLES}}
+                if os.name == 'nt':
+                    env['_MSPDBSRV_ENDPOINT_'] = f'mechanic-{token}'
                 emit(f'slot {index}, waited {time.monotonic()-waited:.2f}s, target {target}')
                 def record_containment(containment):
                     state.update(containment)

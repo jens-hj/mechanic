@@ -67,7 +67,14 @@ interface, not a sandbox: scripts must honor the target and lifecycle contract.
 Unix commands run in a fresh process group; cancellation is forwarded to the group
 and ownership remains until it empties. Windows assigns a gated child to a Job
 Object before allowing it to launch the command. The job retains descendants and
-kills them if the supervisor disappears. Assignment failure fails closed. Child
+kills them if the supervisor disappears. MSVC receives a unique
+`_MSPDBSRV_ENDPOINT_` for each lease, following [Microsoft's per-invocation
+isolation](https://github.com/microsoft/BuildXL/blob/main/Public/Sdk/Experimental/Msvc/Native/Tools/Link/Link.dsc).
+After the main command and all ordinary descendants exit, a job containing only
+`mspdbsrv.exe` is terminated so the idle compiler service cannot pin the slot.
+Process images and job membership are checked through handles; uncertain members
+keep the lease. Do not override the endpoint inside a leased command.
+Assignment failure fails closed. Child
 exit codes are preserved; Unix signal termination maps to `128 + signal`.
 A child that ignores cancellation keeps its lease until it exits.
 

@@ -87,3 +87,7 @@ internal inherited token: do not set it manually. The launcher sets
 for the whole leased process tree; nested launchers verify it.
 The background capture script resolves its default binary from that target.
 An existing external `CARGO_TARGET_DIR` requires explicit `--unmanaged` mode.
+
+On Windows the launcher sets `_MSPDBSRV_ENDPOINT_` to a unique per-lease value so
+its MSVC PDB helper cannot be shared with another build. Nested commands inherit
+that endpoint; do not override it. No user-global environment is changed.

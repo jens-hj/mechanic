@@ -47,9 +47,12 @@ class StorageTests(unittest.TestCase):
             child.stderr.close()
 
     def invoke(self, *args):
-        return subprocess.run([sys.executable, str(LAUNCHER), '--root', str(self.root), *args],
-                              env=self.env, text=True, capture_output=True,
-                              timeout=60 if args[:1] == ('cargo',) else 10)
+        try:
+            return subprocess.run([sys.executable, str(LAUNCHER), '--root', str(self.root), *args],
+                                  env=self.env, text=True, capture_output=True,
+                                  timeout=60 if args[:1] == ('cargo',) else 10)
+        except subprocess.TimeoutExpired as error:
+            self.fail(f'{error}\nstdout: {error.stdout!r}\nstderr: {error.stderr!r}')
 
     def start(self, source):
         child = subprocess.Popen([sys.executable, str(LAUNCHER), '--root', str(self.root),
