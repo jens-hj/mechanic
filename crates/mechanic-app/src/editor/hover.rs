@@ -469,6 +469,7 @@ pub(crate) fn update_hover(
             | Tool::Seat
             | Tool::Dial(_)
             | Tool::Button(_)
+            | Tool::Coupler
             | Tool::Input
             | Tool::DimensionLink
             | Tool::Shape
@@ -1537,6 +1538,7 @@ pub(crate) fn refresh_tool_preview_with_cylinder(
         (
             Tool::Dial(_)
             | Tool::Button(_)
+            | Tool::Coupler
             | Tool::Weld
             | Tool::Hammer
             | Tool::Connector

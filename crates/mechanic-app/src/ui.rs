@@ -139,6 +139,7 @@ pub(crate) enum PauseAction {
     OpenControls,
     Back,
     SetCameraFov(f32),
+    SetProceduralGround(bool),
     BeginBindingCapture(GameAction, usize),
     ClearBinding(GameAction, usize),
     ResetControls,
@@ -484,7 +485,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
             if worlds_model.with(|model| model.open) {
                 WorldList handles:(worlds_panel.clone())
             }
-            if dev_model.with(|model| model.enabled) {
+            if dev_model.with(|model| model.enabled)
+                && !worlds_model.with(|model| model.open) {
                 DevOverlay model:(dev_model) viewport:(dev_viewport)
             }
             if performance_model.with(performance::Model::is_open)
@@ -707,6 +709,7 @@ pub(crate) fn push(
         open: pause.is_open(),
         page: pause.page(),
         camera_fov_degrees: settings.camera_fov_degrees(),
+        procedural_ground: settings.procedural_ground(),
         controls: settings.controls().clone(),
         capture: pause.binding_capture(),
         vehicle_conflicts: if pause.is_open() {

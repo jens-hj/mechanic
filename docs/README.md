@@ -12,6 +12,8 @@ follows.
 - [Gameplay design](gameplay-design.md): what the game is for and what that rules in and out.
 - [World generation](world-generation.md): declarative 3D biomes, rivers, caves, and how to author them.
 - [Water](water.md): the sea, lakes and rivers, and the voxel water they grow into.
+- [Flora](flora.md): trees grown from one species genome, and the gallery that tunes them.
+- [Terrain materials](terrain-materials.md): procedural grass, dirt and stone from a world-space field cache.
 
 ## Features
 
@@ -22,6 +24,7 @@ follows.
 - [Physical input design and archived concept](physical-inputs/README.md)
 - [Spirals on cylinders](spiral-tool.md)
 - [Gears and meshes](gears.md)
+- [Coupler: live welding](coupler.md)
 - [Feature weld placement](feature-weld-placement.md)
 - [Live construction editing and dimension-link freezing](live-construction-editing.md)
 - [Multitool guide](multitool/GUIDE.md)

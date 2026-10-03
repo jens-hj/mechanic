@@ -16,6 +16,8 @@ mod persistence;
 mod query;
 mod soil;
 mod streaming;
+#[cfg(test)]
+mod testing;
 mod transvoxel;
 mod water;
 
@@ -43,9 +45,11 @@ pub use edits::{
 };
 pub use footprint::LoadFootprint;
 pub use generation::{
-    LakeBasin, Outflow, RiverReach, SurfaceId, SurfaceLook, SurfacePalette, TerrainField,
-    TerrainMaterial, TerrainSample, TextureSet, WaterBody, WaterSurface, WorldgenError,
-    WorldgenSpec,
+    Axis, BarkTraits, FoliageBlob, FoliageSpec, GenomeSweep, LakeBasin, LeafTraits, Outflow, Part,
+    RiverReach, RootsSpec, Segment, SpeciesSpec, SurfaceId, SurfaceLook, SurfacePalette,
+    TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TerrainField, TerrainMaterial, TerrainSample,
+    TextureSet, TreeMetrics, TreeModel, TreeSurface, TreeTexture, TreeTextureMaps, WaterBody,
+    WaterSurface, WorldgenError, WorldgenSpec, grow_tree,
 };
 pub use material_response::TerrainMaterialError;
 pub use mesh::{
@@ -78,9 +82,10 @@ pub use streaming::{
     terrain_loading_worker_count, terrain_worker_count,
 };
 pub use water::{
-    BedDoc, ErosionConfig, JoinedCellDoc, PoolDoc, PoolView, RunningView, SURFACE_TILE_COLUMNS,
-    SedimentDoc, SedimentLedger, SedimentLoad, SheetDoc, SoilDoc, StoredSurface, StoredWaterDoc,
-    SurfaceTile, SurplusDoc, TerrainWater, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell,
-    WaterGround, WaterLedger, WaterNetwork, WaterPhases, WaterShift, WaterStep, WaterSurfaces,
-    WaterWorld, WetGround,
+    BedDoc, ErosionConfig, GrassDoc, JoinedCellDoc, NativeGrass, PoolDoc, PoolView, RunningView,
+    SURFACE_TILE_COLUMNS, SedimentDiagnosticColumn, SedimentDiagnostics, SedimentDoc,
+    SedimentLedger, SedimentLoad, SheetDoc, SoilDoc, StoredSurface, StoredWaterDoc, SurfaceTile,
+    SurplusDoc, TerrainWater, WATER_CELL_EDGE_CELLS, WATER_CELL_METRES, WaterCell, WaterGround,
+    WaterLedger, WaterNetwork, WaterPhases, WaterShift, WaterStep, WaterSurfaces, WaterWorld,
+    WetGround,
 };

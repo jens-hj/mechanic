@@ -15,6 +15,7 @@ mod camera;
 mod chroma;
 mod control_panel;
 mod controls;
+mod coupler;
 mod cpu_physics;
 mod creation_menu;
 mod creation_store;
@@ -212,7 +213,7 @@ fn main() {
         .add_plugins(StreamingMeshAllocatorPlugin)
         .add_plugins(OneShotEnvironmentMapPlugin)
         .add_plugins(sky::SkyPlugin)
-        .add_plugins(MaterialPlugin::<world::TerrainRenderMaterial>::default())
+        .add_plugins(world::TerrainRenderPlugin)
         .add_plugins(MaterialPlugin::<world::WaterRenderMaterial>::default())
         .add_plugins(MaterialPlugin::<ConstructionRenderMaterial>::default())
         // After DefaultPlugins: the overlay's render pass installs into the

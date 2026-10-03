@@ -22,6 +22,9 @@ pub(crate) enum GameAction {
     DevTimeEarlier,
     DevTimeLater,
     DevTimePause,
+    DevErosion,
+    DevErosionMap,
+    DevErosionReset,
 
     MoveForward,
     MoveBackward,
@@ -113,10 +116,13 @@ impl GameAction {
                 | Self::DevTimeEarlier
                 | Self::DevTimeLater
                 | Self::DevTimePause
+                | Self::DevErosion
+                | Self::DevErosionMap
+                | Self::DevErosionReset
         )
     }
 
-    pub(crate) const ALL: [Self; 82] = [
+    pub(crate) const ALL: [Self; 85] = [
         Self::DevNoclip,
         Self::DevSpectator,
         Self::DevSpeedDecrease,
@@ -125,6 +131,9 @@ impl GameAction {
         Self::DevTimeEarlier,
         Self::DevTimeLater,
         Self::DevTimePause,
+        Self::DevErosion,
+        Self::DevErosionMap,
+        Self::DevErosionReset,
         Self::MoveForward,
         Self::MoveBackward,
         Self::MoveLeft,
@@ -259,6 +268,9 @@ impl GameAction {
             Self::DevTimeEarlier => "Dev Time Earlier",
             Self::DevTimeLater => "Dev Time Later",
             Self::DevTimePause => "Dev Day Cycle Pause",
+            Self::DevErosion => "Dev Erosion Speed",
+            Self::DevErosionMap => "Dev Erosion Heatmap",
+            Self::DevErosionReset => "Dev Erosion History Reset",
             Self::MoveForward => "Move Forward",
             Self::MoveBackward => "Move Backward",
             Self::MoveLeft => "Move Left",
@@ -348,7 +360,10 @@ impl GameAction {
             | Self::DevSpeedReset
             | Self::DevTimeEarlier
             | Self::DevTimeLater
-            | Self::DevTimePause => "Dev Tools",
+            | Self::DevTimePause
+            | Self::DevErosion
+            | Self::DevErosionMap
+            | Self::DevErosionReset => "Dev Tools",
             Self::MoveForward
             | Self::MoveBackward
             | Self::MoveLeft
@@ -764,6 +779,13 @@ impl Default for Controls {
             None,
         );
         set(A::DevTimePause, Some(InputChord::key(K::F8)), None);
+        set(A::DevErosion, Some(InputChord::key(K::F10)), None);
+        set(A::DevErosionMap, Some(InputChord::key(K::F9)), None);
+        set(
+            A::DevErosionReset,
+            Some(InputChord::key(K::F9).with_shift()),
+            None,
+        );
         set(A::MoveForward, Some(InputChord::key(K::KeyW)), None);
         set(A::MoveBackward, Some(InputChord::key(K::KeyS)), None);
         set(A::MoveLeft, Some(InputChord::key(K::KeyA)), None);

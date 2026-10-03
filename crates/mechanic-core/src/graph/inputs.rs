@@ -8,12 +8,12 @@ use crate::{
 use std::collections::BTreeSet;
 
 impl ConstructionGraph {
-    /// Persistent configuration of a physical input, including its controller link.
+    /// Persistent configuration of an input or coupler, including its controller link.
     pub fn input_configuration(&self, input: PartId) -> Option<&InputConfiguration> {
         self.physical_inputs.get(&input)
     }
 
-    /// Configured physical inputs in stable part order.
+    /// Configured physical inputs and couplers in stable part order.
     pub fn physical_inputs(&self) -> impl Iterator<Item = (PartId, &InputConfiguration)> {
         self.physical_inputs
             .iter()
@@ -88,7 +88,7 @@ impl ConstructionGraph {
     ) -> Result<(), GraphError> {
         let part = self.part(input).ok_or(GraphError::MissingPart(input))?;
         let is_dial = matches!(part, PartSpec::Dial(_));
-        if !is_dial && !matches!(part, PartSpec::Button(_)) {
+        if !is_dial && !matches!(part, PartSpec::Button(_) | PartSpec::Coupler(_)) {
             return Err(InputBindingError::InvalidTarget.into());
         }
         let previous = self
@@ -283,7 +283,7 @@ impl ConstructionGraph {
         configs.retain(|&input, config| {
             if !matches!(
                 self.part(input),
-                Some(PartSpec::Dial(_) | PartSpec::Button(_))
+                Some(PartSpec::Dial(_) | PartSpec::Button(_) | PartSpec::Coupler(_))
             ) {
                 return false;
             }

@@ -33,9 +33,9 @@ const REFERENCE: &str = include_str!("../fixtures/terrain_material_reference.wgs
 const CANDIDATE: &str = include_str!("../../../assets/shaders/terrain_material.wgsl");
 
 #[derive(Resource, Default)]
-struct Pixels(Vec<u8>);
+pub(super) struct Pixels(pub(super) Vec<u8>);
 
-fn frame(app: &mut App) {
+pub(super) fn frame(app: &mut App) {
     app.update();
     app.sub_app(RenderApp)
         .world()
@@ -45,6 +45,13 @@ fn frame(app: &mut App) {
 }
 
 fn fixture() -> (App, Handle<Shader>, Entity, Entity) {
+    scene(WIDTH, HEIGHT)
+}
+
+/// A headless app drawing one terrain mesh with the real material into a
+/// `width` × `height` image that is read back every frame: the app, the
+/// terrain shader, the terrain entity and the readback entity.
+pub(super) fn scene(width: u32, height: u32) -> (App, Handle<Shader>, Entity, Entity) {
     let mut app = App::new();
     app.add_plugins(
         DefaultPlugins
@@ -64,10 +71,7 @@ fn fixture() -> (App, Handle<Shader>, Entity, Entity) {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<PipelinedRenderingPlugin>(),
     )
-    .add_plugins((
-        MaterialPlugin::<TerrainRenderMaterial>::default(),
-        RenderTimingsPlugin,
-    ))
+    .add_plugins((crate::world::TerrainRenderPlugin, RenderTimingsPlugin))
     .init_resource::<Pixels>();
     app.finish();
     app.cleanup();
@@ -111,7 +115,7 @@ fn fixture() -> (App, Handle<Shader>, Entity, Entity) {
         .world_mut()
         .spawn((Mesh3d(mesh), MeshMaterial3d(material)))
         .id();
-    let mut target = Image::new_target_texture(WIDTH, HEIGHT, TextureFormat::Rgba8UnormSrgb, None);
+    let mut target = Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
     target.texture_descriptor.usage |= TextureUsages::COPY_SRC;
     let target = app.world_mut().resource_mut::<Assets<Image>>().add(target);
     let readback = app
@@ -133,6 +137,9 @@ fn fixture() -> (App, Handle<Shader>, Entity, Entity) {
         Msaa::Sample4,
         Transform::from_xyz(0.0, 4.0, 8.0).looking_at(Vec3::new(0.0, 0.0, -8.0), Vec3::Y),
     ));
+    // Procedural ground starts switched off: the paired comparison below
+    // checks the textured path against its frozen reference.
+    app.insert_resource(crate::world::terrain_cache::TerrainCacheFocus(None));
     app.world_mut().spawn((
         DirectionalLight {
             illuminance: 18_000.0,
@@ -207,7 +214,7 @@ fn terrain_patch(blended: bool, side: u32) -> Mesh {
     mesh
 }
 
-fn measure(
+pub(super) fn measure(
     app: &mut App,
     shader: &Handle<Shader>,
     source: &str,
@@ -252,12 +259,23 @@ fn measure(
 fn save_pixels(pixels: &[u8], name: &str) {
     let directory =
         std::env::temp_dir().join(format!("mechanic-terrain-shader-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).unwrap();
+    let path = save_png(pixels, UVec2::new(WIDTH, HEIGHT), &directory, name);
+    eprintln!("Terrain comparison image: {}", path.display());
+}
+
+/// Writes read-back sRGB pixels as `<directory>/<name>.png`.
+pub(super) fn save_png(
+    pixels: &[u8],
+    size: UVec2,
+    directory: &std::path::Path,
+    name: &str,
+) -> std::path::PathBuf {
+    std::fs::create_dir_all(directory).unwrap();
     let path = directory.join(format!("{name}.png"));
     Image::new(
         Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
+            width: size.x,
+            height: size.y,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -269,7 +287,7 @@ fn save_pixels(pixels: &[u8], name: &str) {
     .unwrap()
     .save(&path)
     .unwrap();
-    eprintln!("Terrain comparison image: {}", path.display());
+    path
 }
 
 #[test]

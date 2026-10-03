@@ -382,6 +382,8 @@ const fn terrain_material_label(material: mechanic_world::TerrainMaterial) -> &'
         mechanic_world::TerrainMaterial::Sand => "Sand",
         mechanic_world::TerrainMaterial::Iron => "Iron",
         mechanic_world::TerrainMaterial::Graphite => "Graphite",
+        mechanic_world::TerrainMaterial::Wood => "Wood",
+        mechanic_world::TerrainMaterial::Foliage => "Leaves",
     }
 }
 
@@ -717,6 +719,12 @@ pub(super) fn icon(tool: Tool) -> Element {
                     fill:accent.key stroke:(width:2px color:ink.fg)
                 line from:(x:14px y:14px) to:(x:26px y:14px)
                     stroke:(width:2px cap:round color:bar.slot)
+            }
+        },
+        Tool::Coupler => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                circle at:(x:20px y:20px) radius:13px exponent:1 stroke:(width:4px color:ink.fg)
+                circle at:(x:20px y:20px) radius:7px exponent:1 stroke:(width:2px color:accent.key)
             }
         },
         Tool::DimensionLink => view! {

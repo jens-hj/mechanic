@@ -23,6 +23,14 @@ struct SettingsDocument {
     camera_fov_degrees: f32,
     #[serde(default)]
     controls: Controls,
+    /// Grass, dirt and stone drawn from the procedural field cache rather
+    /// than their tiling textures.
+    #[serde(default = "procedural_ground_by_default")]
+    procedural_ground: bool,
+}
+
+const fn procedural_ground_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Error)]
@@ -43,6 +51,7 @@ pub(crate) struct AppSettings {
     path: PathBuf,
     camera_fov_degrees: f32,
     controls: Controls,
+    procedural_ground: bool,
 }
 
 impl Default for AppSettings {
@@ -53,23 +62,33 @@ impl Default for AppSettings {
 
 impl AppSettings {
     fn load(path: PathBuf) -> Self {
-        let (camera_fov_degrees, controls) = match read_document(&path) {
+        let defaults = || {
+            (
+                DEFAULT_CAMERA_FOV_DEGREES,
+                Controls::default(),
+                procedural_ground_by_default(),
+            )
+        };
+        let (camera_fov_degrees, controls, procedural_ground) = match read_document(&path) {
             Ok(mut document) => {
                 document.controls.normalize();
-                (normalized_fov(&document), document.controls)
+                (
+                    normalized_fov(&document),
+                    document.controls,
+                    document.procedural_ground,
+                )
             }
-            Err(SettingsError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-                (DEFAULT_CAMERA_FOV_DEGREES, Controls::default())
-            }
+            Err(SettingsError::Io(error)) if error.kind() == io::ErrorKind::NotFound => defaults(),
             Err(error) => {
                 warn!("could not load settings from {}: {error}", path.display());
-                (DEFAULT_CAMERA_FOV_DEGREES, Controls::default())
+                defaults()
             }
         };
         Self {
             path,
             camera_fov_degrees,
             controls,
+            procedural_ground,
         }
     }
 
@@ -86,12 +105,24 @@ impl AppSettings {
         &self.controls
     }
 
+    /// Whether grass, dirt and stone are drawn procedurally.
+    pub(crate) const fn procedural_ground(&self) -> bool {
+        self.procedural_ground
+    }
+
+    /// Applies and atomically persists the ground drawing preference.
+    pub(crate) fn set_procedural_ground(&mut self, enabled: bool) -> Result<(), SettingsError> {
+        self.procedural_ground = enabled;
+        self.save()
+    }
+
     /// Applies and atomically persists a camera field of view.
     pub(crate) fn set_camera_fov_degrees(&mut self, degrees: f32) -> Result<(), SettingsError> {
         self.camera_fov_degrees = normalized_fov(&SettingsDocument {
             version: SETTINGS_VERSION,
             camera_fov_degrees: degrees,
             controls: self.controls.clone(),
+            procedural_ground: self.procedural_ground,
         });
         self.save()
     }
@@ -125,6 +156,7 @@ impl AppSettings {
             version: SETTINGS_VERSION,
             camera_fov_degrees: self.camera_fov_degrees,
             controls: self.controls.clone(),
+            procedural_ground: self.procedural_ground,
         };
         let text = ron::ser::to_string_pretty(&document, ron::ser::PrettyConfig::default())?;
         let temporary = self.path.with_extension("ron.tmp");
@@ -183,11 +215,24 @@ mod tests {
                 version: SETTINGS_VERSION,
                 camera_fov_degrees: value,
                 controls: Controls::default(),
+                procedural_ground: true,
             })
             .expect("fixture encodes");
             fs::write(&path, text).expect("fixture writes");
             assert_eq!(AppSettings::from_path(path).camera_fov_degrees(), expected);
         }
+    }
+
+    #[test]
+    fn procedural_ground_is_on_by_default_and_persists_when_switched_off() {
+        let temporary = TempDir::created("settings");
+        let path = temporary.0.join(SETTINGS_FILE);
+        let mut settings = AppSettings::from_path(path.clone());
+        assert!(settings.procedural_ground());
+        settings
+            .set_procedural_ground(false)
+            .expect("settings save");
+        assert!(!AppSettings::from_path(path).procedural_ground());
     }
 
     #[test]

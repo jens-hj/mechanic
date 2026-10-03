@@ -168,5 +168,15 @@ World(
         (name: "seabed_silt", material: Sand, texture: Sand, tint: "#8e9e8c", recolor: true),
         (name: "coastal_grass", material: SurfaceCover, texture: Grass, tint: "#c6dc96"),
         (name: "sea_cliff", material: Rock, texture: Stone, tint: "#aca89e"),
+        // Trees: bark and foliage looks named by flora.ron
+        (name: "oak_bark", material: Wood, texture: Wood, tint: "#6e5a46", recolor: true, roughness: 0.9),
+        (name: "spruce_bark", material: Wood, texture: Wood, tint: "#5c4434", recolor: true, roughness: 0.9),
+        (name: "birch_bark", material: Wood, texture: Wood, tint: "#e8e4dc", recolor: true, roughness: 0.8),
+        (name: "bamboo_culm", material: Wood, texture: Wood, tint: "#a8b45c", recolor: true, roughness: 0.5, scale: 0.5),
+        (name: "oak_leaves", material: Foliage, texture: Grass, tint: "#44702c", recolor: true, masked: false),
+        (name: "birch_leaves", material: Foliage, texture: Grass, tint: "#7cac3c", recolor: true, masked: false),
+        (name: "willow_leaves", material: Foliage, texture: Grass, tint: "#94b44c", recolor: true, masked: false),
+        (name: "spruce_needles", material: Foliage, texture: Grass, tint: "#24482e", recolor: true, masked: false),
+        (name: "bamboo_leaves", material: Foliage, texture: Grass, tint: "#6c9c34", recolor: true, masked: false),
     ],
 )

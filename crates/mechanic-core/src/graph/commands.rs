@@ -150,6 +150,8 @@ pub enum BuildCommand {
     SpawnDial(crate::DialSpec),
     /// Spawn a pushbutton at its actual dimensions.
     SpawnButton(crate::ButtonSpec),
+    /// Spawn a half-block coupler.
+    SpawnCoupler(crate::CouplerSpec),
     /// Replace authored configuration; changing controllers clears bindings.
     SetInputConfiguration {
         /// Physical input part.

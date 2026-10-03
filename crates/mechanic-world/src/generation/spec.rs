@@ -343,11 +343,13 @@ pub enum TextureSet {
     Graphite,
     /// Copper ore.
     Copper,
+    /// Wood grain, for bark and cut wood.
+    Wood,
 }
 
 impl TextureSet {
     /// Every texture set in array-layer order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Grass,
         Self::Dirt,
         Self::Stone,
@@ -355,6 +357,7 @@ impl TextureSet {
         Self::Iron,
         Self::Graphite,
         Self::Copper,
+        Self::Wood,
     ];
 
     /// Texture-array layer.
@@ -367,6 +370,7 @@ impl TextureSet {
             Self::Iron => 4,
             Self::Graphite => 5,
             Self::Copper => 6,
+            Self::Wood => 7,
         }
     }
 }
@@ -488,6 +492,30 @@ pub struct BiomeDoc {
     pub carves: BTreeMap<String, f64>,
     /// Ordered surface rules.
     pub surface: Vec<SurfaceRuleDoc>,
+    /// Trees this biome grows where it dominates.
+    #[serde(default)]
+    pub flora: Vec<FloraDoc>,
+}
+
+/// Trees of one species on a jittered grid.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct FloraDoc {
+    /// Species name from `flora.ron`.
+    pub species: String,
+    /// Grid spacing in metres; at most one tree per cell.
+    pub cell: f64,
+    /// Probability that a cell holds a tree.
+    #[serde(default = "one")]
+    pub chance: f64,
+    /// Fraction of the cell a tree may wander, in `[0, 1]`.
+    #[serde(default = "jitter")]
+    pub jitter: f64,
+    /// Trees grow only where this `(x, z)` expression is positive.
+    #[serde(default)]
+    pub mask: Option<Expr>,
+    /// Decorrelates otherwise identical layers.
+    #[serde(default)]
+    pub seed: u32,
 }
 
 /// Climate channels, each an `(x, z)` expression roughly in `[-1, 1]`.

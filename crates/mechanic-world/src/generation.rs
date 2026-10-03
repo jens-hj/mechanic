@@ -10,6 +10,8 @@
 
 mod compile;
 mod fields;
+mod flora;
+mod grid;
 mod interval;
 mod load;
 mod noise;
@@ -27,6 +29,11 @@ use serde::{Deserialize, Serialize};
 
 use self::compile::{Scope, compile, compile_planar, compile_varying};
 use self::fields::WorldFields;
+use self::flora::{
+    Forest, ForestLayer, ForestSpecies, MAX_GROWN_STRIDE, Parts, TREE_DENSITY_CEILING, Tree,
+    TreeHit, TreeInstance, wood_floor,
+};
+use self::grid::JitterGrid;
 use self::interval::Interval;
 use self::noise::NoiseGen;
 use self::rivers::{DRAINAGE_CELL_METRES, RIVER_LIFT_METRES, RiverNetwork, drainage_side};
@@ -40,6 +47,11 @@ use crate::{
     WorldGeneratorVersion, WorldPosition, WorldSeed,
 };
 
+pub use self::flora::{
+    Axis, BarkTraits, FoliageBlob, FoliageSpec, GenomeSweep, LeafTraits, Part, RootsSpec, Segment,
+    SpeciesSpec, TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TreeMetrics, TreeModel, TreeSurface,
+    TreeTexture, TreeTextureMaps, grow_tree,
+};
 pub use self::load::{WorldgenError, WorldgenSpec};
 pub use self::spec::TextureSet;
 pub use self::surfaces::{SurfaceId, SurfaceLook, SurfacePalette};
@@ -60,11 +72,28 @@ pub enum TerrainMaterial {
     Iron,
     /// Raw carbon mineral.
     Graphite,
+    /// Trunks, branches and roots of trees.
+    Wood,
+    /// Leaves and needles: solid, but light and brittle.
+    Foliage,
 }
 
 impl TerrainMaterial {
     /// Every material terrain cells can carry, in selector order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
+        Self::SurfaceCover,
+        Self::Soil,
+        Self::Sand,
+        Self::Rock,
+        Self::Iron,
+        Self::Graphite,
+        Self::Wood,
+        Self::Foliage,
+    ];
+
+    /// The materials the terrain brush lays, in selector order. Trees grow;
+    /// the brush does not paint them.
+    pub const BRUSHABLE: [Self; 6] = [
         Self::SurfaceCover,
         Self::Soil,
         Self::Sand,
@@ -74,17 +103,19 @@ impl TerrainMaterial {
     ];
 
     /// Every material in `code()` order.
-    pub const BY_CODE: [Self; 6] = [
+    pub const BY_CODE: [Self; 8] = [
         Self::SurfaceCover,
         Self::Soil,
         Self::Rock,
         Self::Sand,
         Self::Iron,
         Self::Graphite,
+        Self::Wood,
+        Self::Foliage,
     ];
 
     /// Number of independently represented terrain materials.
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 8;
 
     /// Stable binary representation used in edited-brick files.
     pub const fn code(self) -> u8 {
@@ -95,6 +126,8 @@ impl TerrainMaterial {
             Self::Sand => 3,
             Self::Iron => 4,
             Self::Graphite => 5,
+            Self::Wood => 6,
+            Self::Foliage => 7,
         }
     }
 
@@ -107,6 +140,8 @@ impl TerrainMaterial {
             3 => Some(Self::Sand),
             4 => Some(Self::Iron),
             5 => Some(Self::Graphite),
+            6 => Some(Self::Wood),
+            7 => Some(Self::Foliage),
             _ => None,
         }
     }
@@ -120,18 +155,21 @@ impl TerrainMaterial {
             Self::Sand => "sand",
             Self::Iron => "iron",
             Self::Graphite => "graphite",
+            Self::Wood => "wood",
+            Self::Foliage => "foliage",
         }
     }
 
     /// Texture family of the material's plain surface.
     pub const fn plain_texture(self) -> TextureSet {
         match self {
-            Self::SurfaceCover => TextureSet::Grass,
+            Self::SurfaceCover | Self::Foliage => TextureSet::Grass,
             Self::Soil => TextureSet::Dirt,
             Self::Rock => TextureSet::Stone,
             Self::Sand => TextureSet::Sand,
             Self::Iron => TextureSet::Iron,
             Self::Graphite => TextureSet::Graphite,
+            Self::Wood => TextureSet::Wood,
         }
     }
 }
@@ -190,6 +228,35 @@ const BAND_FADE_METRES: f64 = 8.0;
 /// surface.
 const CARVE_REACH_METRES: f64 = 16.0;
 
+/// A tree's ground is searched this far above and below its column's blended
+/// height.
+const TREE_GROUND_SEARCH_METRES: f64 = 12.0;
+
+/// Step of that search before bisection.
+const TREE_GROUND_STEP_METRES: f64 = 1.0;
+
+/// Solid ground a tree needs below its base.
+const TREE_FOOTING_METRES: f64 = 0.3;
+
+/// How far above standing water a tree's ground must lie.
+const TREE_DRY_METRES: f64 = 0.2;
+
+/// How far out the footing under a tree is probed, and how far the ground
+/// there may lie above or below the base.
+const TREE_FOOTING_REACH_METRES: f64 = 1.0;
+const TREE_FOOTING_STEP_METRES: f64 = 0.6;
+
+/// How far a tree's base sits below its ground, so the flare grows out of it.
+const TREE_SINK_METRES: f64 = 0.1;
+
+/// Ground this deep over a root keeps its own material: roots run below the
+/// topsoil that grass, water and erosion work.
+const ROOT_COVER_METRES: f64 = 0.3;
+
+/// Boxes whose tree search would visit more grid cells than this are assumed
+/// to hold trees when they hold ground nearby.
+const TREE_SEARCH_CELLS: f64 = 2_048.0;
+
 /// Seen from far away, a layer only shows where its roof lies below this, so
 /// voids under a solid roof are skipped.
 const DISTANT_ROOF_METRES: f64 = 2.0;
@@ -244,6 +311,7 @@ struct CompiledWorld {
     vertical: (f64, f64),
     sea_level: f64,
     dither: NoiseGen,
+    forest: Forest,
 }
 
 /// Biome blend weights at one column, in biome order.
@@ -365,6 +433,62 @@ pub(crate) struct LatticeColumns {
     columns: Vec<Column>,
     carved: Vec<u8>,
     dims: [usize; 3],
+    trees: LatticeTrees,
+}
+
+impl LatticeColumns {
+    /// Whether any tree reaches the lattice.
+    pub(crate) const fn has_trees(&self) -> bool {
+        match &self.trees {
+            LatticeTrees::None => false,
+            LatticeTrees::Grown(trees, _) => !trees.is_empty(),
+            LatticeTrees::Impostors(instances, _) => !instances.is_empty(),
+        }
+    }
+}
+
+/// The trees reaching one lattice, gathered once for all its points.
+#[derive(Clone, Debug, Default)]
+pub(crate) enum LatticeTrees {
+    #[default]
+    None,
+    Grown(Vec<Arc<Tree>>, TreeDetail),
+    Impostors(Vec<TreeInstance>, TreeDetail),
+}
+
+/// Where a sample finds its trees: looked up around the point at a level of
+/// detail, or among those gathered for its lattice.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TreeSource<'a> {
+    Lookup(TreeDetail),
+    Among(&'a LatticeTrees),
+}
+
+/// How trees appear at a lattice spacing: grown where twigs can show, as
+/// impostors where the samples are too coarse for them, and either way no
+/// thinner than the lattice holds in one piece.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TreeDetail {
+    stride: i32,
+}
+
+impl TreeDetail {
+    /// Trees as the finest lattice, one cell apart, holds them.
+    pub(crate) const FINEST: Self = Self { stride: 1 };
+
+    pub(crate) const fn for_stride(stride: i32) -> Self {
+        Self { stride }
+    }
+
+    /// Whether the lattice is fine enough for grown trees.
+    const fn grown(self) -> bool {
+        self.stride <= MAX_GROWN_STRIDE
+    }
+
+    /// Thinnest wood the lattice holds in one piece, in metres.
+    fn floor(self) -> f64 {
+        wood_floor(self.stride)
+    }
 }
 
 /// World position of a cell corner, rounded exactly as [`Lattice`] rounds.
@@ -683,20 +807,21 @@ impl TerrainField {
             .then_some(height)
     }
 
-    /// Height of the highest ground in a column, or the bottom of the world
-    /// when the column is open all the way down.
+    /// Height of the highest ground in a column, under any trees, or the
+    /// bottom of the world when the column is open all the way down.
     pub fn surface_height(&self, x: f64, z: f64) -> f64 {
         self.topmost_surface(x, z).unwrap_or(self.world.vertical.0)
     }
 
-    /// Height where a ray cast straight down from the sky first meets ground.
+    /// Height where a ray cast straight down from the sky first meets the
+    /// ground, passing through trees.
     pub fn topmost_surface(&self, x: f64, z: f64) -> Option<f64> {
         let (bottom, top) = self.world.vertical;
         let column = self.world.column(x, z);
         if !column.inside {
             return None;
         }
-        let density = |y: f64| self.world.density_in_column(&column, DVec3::new(x, y, z));
+        let density = |y: f64| self.world.density_parts(&column, DVec3::new(x, y, z)).0;
         let mut y = top;
         let mut value = density(y);
         if value > 0.0 {
@@ -804,7 +929,14 @@ impl TerrainField {
             (neighbour(IVec3::Y) - neighbour(IVec3::NEG_Y)) / (2.0 * TERRAIN_CELL_METERS),
             (neighbour(IVec3::Z) - neighbour(IVec3::NEG_Z)) / (2.0 * TERRAIN_CELL_METERS),
         ];
-        world.sample(&column, centre, density, gradient, carved)
+        world.sample(
+            &column,
+            centre,
+            density,
+            gradient,
+            carved,
+            TreeSource::Lookup(TreeDetail::FINEST),
+        )
     }
 
     /// Samples untouched terrain at a continuous global position.
@@ -821,7 +953,14 @@ impl TerrainField {
             (world.density(point + axis * h) - world.density(point - axis * h)) / (2.0 * h)
         };
         let gradient = [along(DVec3::X), along(DVec3::Y), along(DVec3::Z)];
-        world.sample(&column, point, density, gradient, carved)
+        world.sample(
+            &column,
+            point,
+            density,
+            gradient,
+            carved,
+            TreeSource::Lookup(TreeDetail::FINEST),
+        )
     }
 
     /// Samples every cell in `[minimum, minimum + dims)`, x fastest. Each
@@ -861,6 +1000,7 @@ impl TerrainField {
                         densities[index(x, y, z)],
                         gradient,
                         carved[index(x, y, z)],
+                        TreeSource::Lookup(TreeDetail::FINEST),
                     ));
                 }
             }
@@ -874,6 +1014,21 @@ impl TerrainField {
         self.world.density_lattice(lattice, false, true).0
     }
 
+    /// Densities over a lattice as water sees the ground, each equal to
+    /// [`Self::water_density`] bit for bit: leaves are open.
+    pub(crate) fn water_density_lattice(&self, lattice: &Lattice) -> Vec<f64> {
+        let trees = self.world.lattice_trees(lattice, Parts::Wood);
+        self.world
+            .density_lattice_parts(lattice, false, true, &trees, Parts::Wood)
+            .0
+    }
+
+    /// Untouched density as water sees the ground: trunks, branches and
+    /// roots are solid, leaves are not.
+    pub(crate) fn water_density(&self, position: DVec3) -> f64 {
+        self.world.water_density(position)
+    }
+
     /// Densities for meshing a lattice, with the columns needed to paint its
     /// points. With `cull`, blocks far from any untouched surface carry only a
     /// bound of the right sign, so edited regions must not cull. Without
@@ -885,13 +1040,18 @@ impl TerrainField {
         cull: bool,
         enclosed: bool,
     ) -> (Vec<f64>, LatticeColumns) {
-        let (densities, columns, carved) = self.world.density_lattice(lattice, cull, enclosed);
+        // Gathered with their roots, which paint the ground they run through.
+        let trees = self.world.lattice_trees(lattice, Parts::All);
+        let (densities, columns, carved) =
+            self.world
+                .density_lattice_parts(lattice, cull, enclosed, &trees, Parts::Solid);
         (
             densities,
             LatticeColumns {
                 columns,
                 carved,
                 dims: lattice.dims,
+                trees,
             },
         )
     }
@@ -904,6 +1064,21 @@ impl TerrainField {
     /// full sampling.
     pub(crate) fn lattice_is_clear(&self, lattice: &Lattice, enclosed: bool) -> bool {
         const COARSENING: usize = 4;
+        // A tree finer than the coarse lattice could pass between its points.
+        let last = lattice.dims.map(|edge| edge - 1);
+        let corner = |index: [usize; 3]| {
+            DVec3::new(
+                lattice.coordinate(0, index[0]),
+                lattice.coordinate(1, index[1]),
+                lattice.coordinate(2, index[2]),
+            )
+        };
+        if self
+            .world
+            .trees_could_touch(corner([0; 3]), corner(last), enclosed)
+        {
+            return false;
+        }
         let coarse = Lattice {
             origin: lattice.origin,
             stride: lattice.stride * i32::try_from(COARSENING).expect("small factor"),
@@ -936,9 +1111,14 @@ impl TerrainField {
             );
         }
         let carved = columns.carved[x + width * (y + height * z)];
-        let sample = self
-            .world
-            .sample(column, position, density, gradient, carved);
+        let sample = self.world.sample(
+            column,
+            position,
+            density,
+            gradient,
+            carved,
+            TreeSource::Among(&columns.trees),
+        );
         (sample.material, sample.surface)
     }
 
@@ -948,6 +1128,7 @@ impl TerrainField {
         position: DVec3,
         density: f64,
         gradient: [f64; 3],
+        stride: i32,
     ) -> (TerrainMaterial, SurfaceId) {
         let column = self.world.column(position.x, position.z);
         if !column.inside {
@@ -956,11 +1137,33 @@ impl TerrainField {
                 SurfaceId::plain(TerrainMaterial::Rock),
             );
         }
-        let (_, carved) = self.world.density_and_carve(&column, position);
-        let sample = self
-            .world
-            .sample(&column, position, density, gradient, carved);
+        let (_, carved, _) = self.world.density_parts(&column, position);
+        let sample = self.world.sample(
+            &column,
+            position,
+            density,
+            gradient,
+            carved,
+            TreeSource::Lookup(TreeDetail::for_stride(stride)),
+        );
         (sample.material, sample.surface)
+    }
+
+    /// Untouched density at a position as a lattice of this stride samples
+    /// it: trees grown, or as impostors where the stride is too coarse.
+    pub(crate) fn density_at_stride(&self, position: DVec3, stride: i32) -> f64 {
+        let column = self.world.cached_column(position.x, position.z);
+        if !column.inside {
+            return -1.0;
+        }
+        let ground = self.world.density_parts(&column, position).0;
+        self.world.with_trees(
+            &column,
+            position,
+            ground,
+            Parts::Solid,
+            TreeDetail::for_stride(stride),
+        )
     }
 
     /// Conservatively classifies untouched terrain in a box.
@@ -1018,7 +1221,7 @@ impl CompiledWorld {
                 message: format!("at most {MAX_BIOMES} biomes are supported"),
             });
         }
-        let palette = SurfacePalette::new(&world.palette)?;
+        let mut palette = SurfacePalette::new(&world.palette)?;
         if world.carves.len() > MAX_CARVES {
             return Err(WorldgenError::Invalid {
                 context: "world.ron carves".to_owned(),
@@ -1061,8 +1264,10 @@ impl CompiledWorld {
             },
             mix(base ^ 6) as i32,
         );
+        let id = NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let forest = compile_forest(spec, library, &mut palette, base, id)?;
         let mut compiled = Self {
-            id: NEXT_WORLD_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            id,
             climate,
             biomes,
             spawn,
@@ -1078,6 +1283,7 @@ impl CompiledWorld {
             vertical: world.vertical,
             sea_level: world.sea_level,
             dither,
+            forest,
         };
         let (heights, weights, rain) = compiled.drainage_heights();
         compiled.fields.fill(&heights);
@@ -1496,10 +1702,362 @@ impl CompiledWorld {
         self.density_and_carve(column, position).0
     }
 
-    /// Density at a point with the carve layer that shaped it.
+    /// Density at a point, trees included, with the carve layer that shaped
+    /// the ground.
     fn density_and_carve(&self, column: &Column, position: DVec3) -> (f64, u8) {
         let (density, carved, _) = self.density_parts(column, position);
-        (density, carved)
+        (
+            self.with_trees(column, position, density, Parts::Solid, TreeDetail::FINEST),
+            carved,
+        )
+    }
+
+    /// Density as water sees it: ground and wood, but not leaves.
+    fn water_density(&self, position: DVec3) -> f64 {
+        let column = self.cached_column(position.x, position.z);
+        if !column.inside {
+            return -1.0;
+        }
+        let (density, ..) = self.density_parts(&column, position);
+        self.with_trees(&column, position, density, Parts::Wood, TreeDetail::FINEST)
+    }
+
+    /// Ground density raised to the solid `parts` of any tree at the point,
+    /// at a lattice's level of detail. Trees end at the world's top, as the
+    /// ground does.
+    fn with_trees(
+        &self,
+        column: &Column,
+        position: DVec3,
+        density: f64,
+        parts: Parts,
+        detail: TreeDetail,
+    ) -> f64 {
+        match self.tree_at(column, position, parts, detail) {
+            Some(hit) => density.max(hit.density.min(self.vertical.1 - position.y)),
+            None => density,
+        }
+    }
+
+    /// The tree that dominates a point at a level of detail, if one reaches
+    /// it: grown, or an impostor where the lattice is too coarse for twigs.
+    fn tree_at(
+        &self,
+        column: &Column,
+        position: DVec3,
+        parts: Parts,
+        detail: TreeDetail,
+    ) -> Option<TreeHit> {
+        if !detail.grown() {
+            return self.impostor_at(column, position, detail);
+        }
+        if self.forest.is_empty() || !column.inside {
+            return None;
+        }
+        // Trees stand near their column's ground; far above or below it no
+        // tree can reach, whatever the slope between.
+        let (reach, rise, depth) = self.forest.reach();
+        let slack = reach + TREE_GROUND_SEARCH_METRES;
+        if position.y > column.ground + rise + slack || position.y < column.ground - depth - slack {
+            return None;
+        }
+        self.forest
+            .sample(position, parts, detail.floor(), &|layer, x, z| {
+                self.place_tree(layer, x, z)
+            })
+    }
+
+    /// The impostor that dominates a point, if one reaches it.
+    fn impostor_at(&self, column: &Column, position: DVec3, detail: TreeDetail) -> Option<TreeHit> {
+        if self.forest.is_empty() || !column.inside {
+            return None;
+        }
+        let (reach, rise, depth) = self.forest.reach();
+        let slack = reach + TREE_GROUND_SEARCH_METRES;
+        if position.y > column.ground + rise + slack || position.y < column.ground - depth - slack {
+            return None;
+        }
+        let domain = [
+            Interval::point(position.x),
+            Interval::point(position.y),
+            Interval::point(position.z),
+        ];
+        let mut instances = Vec::new();
+        self.forest.instances_near(
+            domain,
+            &|layer, x, z| self.place_tree(layer, x, z),
+            &mut instances,
+        );
+        instances
+            .iter()
+            .map(|instance| self.forest.impostor(instance, position, detail.floor()))
+            .max_by(|a, b| a.density.total_cmp(&b.density))
+    }
+
+    /// The tree part a sample shows, if a tree owns it: wherever a tree is
+    /// the solid that wins, and wherever its roots run through the ground.
+    fn tree_paint(
+        &self,
+        column: &Column,
+        position: DVec3,
+        density: f64,
+        trees: TreeSource<'_>,
+    ) -> Option<TreeHit> {
+        let hit = match trees {
+            TreeSource::Lookup(detail) => self.tree_at(column, position, Parts::All, detail)?,
+            TreeSource::Among(LatticeTrees::None) => return None,
+            TreeSource::Among(LatticeTrees::Grown(trees, detail)) => trees
+                .iter()
+                .filter_map(|tree| {
+                    tree.model
+                        .sample_parts(position, Parts::All, detail.floor())
+                        .map(|(density, part)| TreeHit {
+                            density: f64::from(density),
+                            part,
+                            species: tree.species,
+                        })
+                })
+                .max_by(|a, b| a.density.total_cmp(&b.density))?,
+            TreeSource::Among(LatticeTrees::Impostors(instances, detail)) => instances
+                .iter()
+                .map(|instance| self.forest.impostor(instance, position, detail.floor()))
+                .max_by(|a, b| a.density.total_cmp(&b.density))?,
+        };
+        // Roots show only in ground below its top layer, which stays soil for
+        // grass and water. Wood and leaves show wherever they are the nearest
+        // solid, on the air side of their surface too: meshing paints a
+        // crossing with its open corner's look.
+        // Lattices hold f32 densities, so a tree raised into one compares at
+        // that precision: rounded up, the lattice's value would beat its own
+        // tree.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "compared as lattices store them"
+        )]
+        let shows = match hit.part {
+            Part::Root => hit.density > 0.0 && density > ROOT_COVER_METRES,
+            Part::Wood | Part::Foliage => hit.density as f32 >= density as f32,
+        };
+        shows.then_some(hit)
+    }
+
+    /// Where a flora layer's tree at `(x, z)` stands, if it may grow there:
+    /// on dry, open, gentle ground of its own biome, found on the field
+    /// without trees.
+    fn place_tree(&self, layer: &ForestLayer, x: f64, z: f64) -> Option<DVec3> {
+        let column = self.cached_column(x, z);
+        if !column.inside || column.dominant != layer.biome {
+            return None;
+        }
+        let ground = |y: f64| self.density_parts(&column, DVec3::new(x, y, z)).0;
+        // Bracket the ground's crossing from the column's expected height
+        // outward, then bisect it.
+        let start = column.ground;
+        let step = TREE_GROUND_STEP_METRES;
+        let (mut above, mut below) = if ground(start) > 0.0 {
+            let mut below = start;
+            loop {
+                let above = below + step;
+                if above > start + TREE_GROUND_SEARCH_METRES {
+                    return None;
+                }
+                if ground(above) <= 0.0 {
+                    break (above, below);
+                }
+                below = above;
+            }
+        } else {
+            let mut above = start;
+            loop {
+                let below = above - step;
+                if below < start - TREE_GROUND_SEARCH_METRES {
+                    return None;
+                }
+                if ground(below) > 0.0 {
+                    break (above, below);
+                }
+                above = below;
+            }
+        };
+        for _ in 0..8 {
+            let middle = 0.5 * (above + below);
+            if ground(middle) > 0.0 {
+                below = middle;
+            } else {
+                above = middle;
+            }
+        }
+        let surface = 0.5 * (above + below);
+        let dry = column
+            .water
+            .surface
+            .is_none_or(|water| water.level < surface - TREE_DRY_METRES);
+        if !dry || ground(surface - TREE_FOOTING_METRES) <= 0.0 {
+            return None;
+        }
+        // Open sky up to the tallest tree, so none grows through a roof or
+        // stands on a ledge under another.
+        let tallest = self.forest.tallest(layer);
+        let mut clearance = 0.5;
+        loop {
+            if ground(surface + clearance) >= 0.0 {
+                return None;
+            }
+            if clearance >= tallest {
+                break;
+            }
+            clearance = (clearance * 2.0).min(tallest);
+        }
+        // Level footing under the whole trunk, not a slope or a ledge's edge:
+        // the ground a metre out on every side lies near the base.
+        let footing = [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)]
+            .into_iter()
+            .all(|(dx, dz)| {
+                let (fx, fz) = (
+                    x + dx * TREE_FOOTING_REACH_METRES,
+                    z + dz * TREE_FOOTING_REACH_METRES,
+                );
+                let column = self.cached_column(fx, fz);
+                let ground = |dy: f64| {
+                    self.density_parts(&column, DVec3::new(fx, surface + dy, fz))
+                        .0
+                };
+                ground(TREE_FOOTING_STEP_METRES) < 0.0 && ground(-TREE_FOOTING_STEP_METRES) > 0.0
+            });
+        footing.then(|| DVec3::new(x, surface - TREE_SINK_METRES, z))
+    }
+
+    /// Raises a lattice's densities to the trees that reach it: grown trees
+    /// where the lattice is fine enough for twigs, impostors where it is not.
+    fn raise_to_trees(
+        &self,
+        lattice: &Lattice,
+        columns: &[Column],
+        densities: &mut [f64],
+        trees: &LatticeTrees,
+        parts: Parts,
+    ) {
+        let [nx, ny, _] = lattice.dims;
+        let top = self.vertical.1;
+        let spacing = f64::from(lattice.stride) * TERRAIN_CELL_METERS;
+        let first = [0, 1, 2].map(|axis| lattice.coordinate(axis, 0));
+        // Lattice indices along an axis whose coordinates lie in `[lo, hi]`.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to the lattice"
+        )]
+        let indices = |axis: usize, lo: f64, hi: f64| {
+            let count = lattice.dims[axis];
+            let from = ((lo - first[axis]) / spacing).ceil().max(0.0) as usize;
+            let to = ((hi - first[axis]) / spacing).floor();
+            if to < 0.0 {
+                return 0..0;
+            }
+            from.min(count)..((to as usize) + 1).min(count)
+        };
+        let mut raise = |low: DVec3, high: DVec3, sample: &dyn Fn(DVec3) -> Option<f64>| {
+            for k in indices(2, low.z, high.z) {
+                for i in indices(0, low.x, high.x) {
+                    if !columns[i + nx * k].inside {
+                        continue;
+                    }
+                    for j in indices(1, low.y, high.y) {
+                        let point = DVec3::new(
+                            lattice.coordinate(0, i),
+                            lattice.coordinate(1, j),
+                            lattice.coordinate(2, k),
+                        );
+                        if let Some(density) = sample(point) {
+                            let density = density.min(top - point.y);
+                            let index = i + nx * (j + ny * k);
+                            if density > densities[index] {
+                                densities[index] = density;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        match trees {
+            LatticeTrees::None => {}
+            LatticeTrees::Grown(trees, detail) => {
+                let floor = detail.floor();
+                for tree in trees {
+                    let (low, high) = tree.model.solid_bounds();
+                    raise(low, high, &|point| {
+                        tree.model
+                            .sample_parts(point, parts, floor)
+                            .map(|(density, _)| f64::from(density))
+                    });
+                }
+            }
+            LatticeTrees::Impostors(instances, detail) => {
+                let floor = detail.floor();
+                for instance in instances {
+                    let (low, high) = self.forest.impostor_bounds(instance, floor);
+                    raise(low, high, &|point| {
+                        Some(self.forest.impostor(instance, point, floor).density)
+                    });
+                }
+            }
+        }
+    }
+
+    /// The trees whose `parts` reach a lattice, gathered once: grown where
+    /// the lattice is fine enough for twigs, impostors where it is not.
+    fn lattice_trees(&self, lattice: &Lattice, parts: Parts) -> LatticeTrees {
+        if self.forest.is_empty() {
+            return LatticeTrees::None;
+        }
+        let span = |axis: usize| {
+            let count = lattice.dims[axis];
+            let (a, b) = (
+                lattice.coordinate(axis, 0),
+                lattice.coordinate(axis, count - 1),
+            );
+            Interval::new(a.min(b), a.max(b))
+        };
+        let domain = [span(0), span(1), span(2)];
+        let place = |layer: &ForestLayer, x: f64, z: f64| self.place_tree(layer, x, z);
+        let detail = TreeDetail::for_stride(lattice.stride);
+        if detail.grown() {
+            let mut trees = Vec::new();
+            self.forest.trees_near(domain, parts, &place, &mut trees);
+            LatticeTrees::Grown(trees, detail)
+        } else {
+            let mut instances = Vec::new();
+            self.forest.instances_near(domain, &place, &mut instances);
+            LatticeTrees::Impostors(instances, detail)
+        }
+    }
+
+    /// Whether any tree's bounds reach into a box.
+    fn trees_could_touch(&self, minimum: DVec3, maximum: DVec3, enclosed: bool) -> bool {
+        if self.forest.is_empty() {
+            return false;
+        }
+        let (reach, rise, depth) = self.forest.reach();
+        // Trees stand on ground: with none within their rise below the box,
+        // or their roots' depth above it, none can reach it.
+        let near_ground = self.ground_interval(
+            minimum - DVec3::new(reach, rise + TREE_GROUND_SEARCH_METRES, reach),
+            maximum + DVec3::new(reach, depth + TREE_GROUND_SEARCH_METRES, reach),
+            enclosed,
+        );
+        if near_ground.hi <= 0.0 {
+            return false;
+        }
+        let domain = [
+            Interval::new(minimum.x, maximum.x),
+            Interval::new(minimum.y, maximum.y),
+            Interval::new(minimum.z, maximum.z),
+        ];
+        if self.forest.cells_in(&domain) > TREE_SEARCH_CELLS {
+            return true;
+        }
+        self.forest
+            .any_near(domain, &|layer, x, z| self.place_tree(layer, x, z))
     }
 
     /// Density at a point, the carve layer that shaped it, and the biome
@@ -1556,6 +2114,20 @@ impl CompiledWorld {
         cull: bool,
         enclosed: bool,
     ) -> (Vec<f64>, Vec<Column>, Vec<u8>) {
+        let trees = self.lattice_trees(lattice, Parts::Solid);
+        self.density_lattice_parts(lattice, cull, enclosed, &trees, Parts::Solid)
+    }
+
+    /// [`Self::density_lattice`] with `trees` gathered for it, raised to
+    /// their `parts`.
+    fn density_lattice_parts(
+        &self,
+        lattice: &Lattice,
+        cull: bool,
+        enclosed: bool,
+        trees: &LatticeTrees,
+        parts: Parts,
+    ) -> (Vec<f64>, Vec<Column>, Vec<u8>) {
         let [nx, ny, nz] = lattice.dims;
         let columns: Vec<Column> = (0..nz)
             .flat_map(|k| (0..nx).map(move |i| (i, k)))
@@ -1586,7 +2158,9 @@ impl CompiledWorld {
                                 lattice.coordinate(2, offset[2]),
                             )
                         };
-                        let bounds = self.interval(
+                        // The ground's own bounds: trees are raised over
+                        // the whole lattice afterwards, filled blocks too.
+                        let bounds = self.ground_interval(
                             corner(start) - margin,
                             corner([i0 + dims[0] - 1, j0 + dims[1] - 1, k0 + dims[2] - 1]) + margin,
                             enclosed,
@@ -1618,6 +2192,7 @@ impl CompiledWorld {
                 }
             }
         }
+        self.raise_to_trees(lattice, &columns, &mut densities, trees, parts);
         (densities, columns, carved)
     }
 
@@ -1789,7 +2364,18 @@ impl CompiledWorld {
         density: f64,
         gradient: [f64; 3],
         carved: u8,
+        trees: TreeSource<'_>,
     ) -> TerrainSample {
+        if let Some(hit) = self.tree_paint(column, position, density, trees) {
+            let (material, surface) = self.forest.paint(hit);
+            return TerrainSample {
+                density: density as f32,
+                material,
+                surface,
+                compaction: 0,
+                looseness: 0,
+            };
+        }
         let slope = gradient
             .iter()
             .map(|value| value * value)
@@ -1836,7 +2422,18 @@ impl CompiledWorld {
         }
     }
 
+    /// Bounds on the density in a box, trees included. Trees only ever add
+    /// ground, so they matter only where the ground alone is empty.
     fn interval(&self, minimum: DVec3, maximum: DVec3, enclosed: bool) -> Interval {
+        let ground = self.ground_interval(minimum, maximum, enclosed);
+        if ground.hi > 0.0 || !self.trees_could_touch(minimum, maximum, enclosed) {
+            return ground;
+        }
+        Interval::new(ground.lo, TREE_DENSITY_CEILING)
+    }
+
+    /// Bounds on the ground's density in a box, without trees.
+    fn ground_interval(&self, minimum: DVec3, maximum: DVec3, enclosed: bool) -> Interval {
         let (bottom, top) = self.vertical;
         let y = Interval::new(minimum.y, maximum.y);
         if minimum.y >= top {
@@ -1975,6 +2572,117 @@ fn compile_carve(
     })
 }
 
+/// Seed of a biome's expressions, from its name.
+fn biome_seed(doc: &BiomeDoc, base: u64) -> u64 {
+    mix(base
+        ^ doc
+            .name
+            .bytes()
+            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+            }))
+}
+
+/// Every biome's flora layers, with each species' looks resolved.
+fn compile_forest(
+    spec: &WorldgenSpec,
+    library: &std::collections::BTreeMap<String, Expr>,
+    palette: &mut SurfacePalette,
+    base: u64,
+    id: u64,
+) -> Result<Forest, WorldgenError> {
+    let look =
+        |palette: &SurfacePalette, species: &SpeciesSpec, name: &str, material: TerrainMaterial| {
+            let invalid = |message: String| WorldgenError::Invalid {
+                context: format!("flora.ron species `{}`", species.name),
+                message,
+            };
+            let surface = palette
+                .id(name)
+                .ok_or_else(|| invalid(format!("unknown look `{name}`")))?;
+            if palette.look(surface).material != material {
+                return Err(invalid(format!(
+                    "look `{name}` must be a {} surface",
+                    material.name()
+                )));
+            }
+            Ok(surface)
+        };
+    // Species a biome grows draw their own bark and leaves, read from their
+    // genome and coloured by the looks they name.
+    let grown = |species: &SpeciesSpec| {
+        spec.biomes.iter().any(|biome| {
+            biome
+                .flora
+                .iter()
+                .any(|layer| layer.species == species.name)
+        })
+    };
+    let mut species = Vec::with_capacity(spec.flora.len());
+    for genome in &spec.flora {
+        let mut bark = look(palette, genome, &genome.bark, TerrainMaterial::Wood)?;
+        let mut foliage = look(
+            palette,
+            genome,
+            &genome.foliage.look,
+            TerrainMaterial::Foliage,
+        )?;
+        if grown(genome) {
+            let texture = |surface| TreeTexture {
+                species: genome.clone(),
+                surface,
+            };
+            bark = palette.add_tree_look(
+                format!("{}/bark", genome.name),
+                bark,
+                texture(TreeSurface::Bark),
+            )?;
+            foliage = palette.add_tree_look(
+                format!("{}/foliage", genome.name),
+                foliage,
+                texture(TreeSurface::Foliage),
+            )?;
+        }
+        species.push(ForestSpecies::new(genome.clone(), bark, foliage));
+    }
+    let mut layers = Vec::new();
+    for (biome, doc) in spec.biomes.iter().enumerate() {
+        let seed = biome_seed(doc, base);
+        let mut local = doc.definitions.clone();
+        local.insert("height".to_owned(), doc.height.clone());
+        let scope = Scope {
+            local: &local,
+            library,
+            fields: None,
+        };
+        for (index, layer) in doc.flora.iter().enumerate() {
+            let context = format!("biome `{}` flora `{}`", doc.name, layer.species);
+            let mask = layer
+                .mask
+                .as_ref()
+                .map(|mask| compile_planar(mask, scope, seed, &format!("{context} mask")))
+                .transpose()?;
+            let salt = (index as u64) << 32 | u64::from(layer.seed);
+            layers.push(ForestLayer {
+                biome,
+                species: spec
+                    .flora
+                    .iter()
+                    .position(|species| species.name == layer.species)
+                    .expect("the loader checks flora species"),
+                grid: JitterGrid {
+                    cell: layer.cell,
+                    jitter: layer.jitter,
+                    chance: layer.chance,
+                    seed: mix(seed ^ 0x7ee5_f0e5_7000_0000 ^ mix(salt)),
+                },
+                mask,
+            });
+        }
+    }
+    Ok(Forest::new(id, species, layers))
+}
+
 fn compile_biome(
     doc: &BiomeDoc,
     library: &std::collections::BTreeMap<String, Expr>,
@@ -1982,13 +2690,7 @@ fn compile_biome(
     carve_names: &[(String, f64)],
     base: u64,
 ) -> Result<CompiledBiome, WorldgenError> {
-    let seed = mix(base
-        ^ doc
-            .name
-            .bytes()
-            .fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
-                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-            }));
+    let seed = biome_seed(doc, base);
     let context = format!("biome `{}`", doc.name);
     let height_scope = Scope {
         local: &doc.definitions,

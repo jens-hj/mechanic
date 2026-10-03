@@ -35,4 +35,9 @@ Biome(
         (when: Field(Noise(freq: 0.02, octaves: 2, seed: 3), 0.6, 1), use: "copper_vein"),
         (when: Always, use: "granite_grey"),
     ],
+
+    // Spruce on the gentler ledges, up to the snow line.
+    flora: [
+        (species: "spruce", cell: 9, chance: 0.45, mask: Sub(C(168), Ref("height"))),
+    ],
 )

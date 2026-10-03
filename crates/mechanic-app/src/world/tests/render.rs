@@ -14,6 +14,8 @@ use bevy::{
     window::ExitCondition,
 };
 
+mod erosion;
+
 use crate::world::TerrainRenderMaterial;
 
 #[derive(Resource, Default)]
@@ -55,7 +57,7 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             .disable::<bevy::winit::WinitPlugin>()
             .disable::<PipelinedRenderingPlugin>(),
     )
-    .add_plugins(MaterialPlugin::<TerrainRenderMaterial>::default())
+    .add_plugins(crate::world::TerrainRenderPlugin)
     .init_resource::<Pixels>();
     app.finish();
     app.cleanup();
@@ -83,7 +85,7 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             clear_color: ClearColorConfig::Custom(Color::BLACK),
             ..default()
         },
-        RenderTarget::Image(target.into()),
+        RenderTarget::Image(target.clone().into()),
         mode.msaa(),
         Transform::from_xyz(0.0, 0.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
@@ -135,14 +137,28 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     let wetness = crate::world::terrain_render::dry_ground(
         &mut app.world_mut().resource_mut::<Assets<Image>>(),
     );
+    let erosion_map = crate::world::erosion_overlay::empty_map(
+        &mut app.world_mut().resource_mut::<Assets<Image>>(),
+    );
     let material = TerrainRenderMaterial {
-        base_color,
-        normal,
-        orm,
+        base_color: base_color.clone(),
+        normal: normal.clone(),
+        orm: orm.clone(),
         tint_mask,
         surfaces,
         wetness,
         wet_window: Vec4::ZERO,
+        erosion_map,
+        erosion_window: Vec4::ZERO,
+        tree_base_color: base_color.clone(),
+        tree_normal: normal.clone(),
+        tree_orm: orm.clone(),
+        stone_fields: crate::world::terrain_cache::STONE_FIELDS,
+        soil_fields: crate::world::terrain_cache::SOIL_FIELDS,
+        grass_fields: crate::world::terrain_cache::GRASS_FIELDS,
+        field_windows: crate::world::terrain_cache::FIELD_WINDOWS,
+        grain: crate::world::terrain_cache::GRAIN,
+        procedural_ground: false,
     };
     let material = app
         .world_mut()
@@ -168,7 +184,7 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
     );
     let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     app.world_mut()
-        .spawn((Mesh3d(mesh), MeshMaterial3d(material)));
+        .spawn((Mesh3d(mesh), MeshMaterial3d(material.clone())));
     app.world_mut().spawn((
         DirectionalLight {
             illuminance: 18_000.0,
@@ -201,6 +217,9 @@ fn terrain_experiment_renders_pixels_with_the_real_material() {
             "expected the diagnostic green terrain material"
         );
     }
+    if mode == crate::render_experiments::RenderExperiment::Baseline {
+        erosion::verify(&mut app, material, target);
+    }
 }
 
 /// Water over pale ground, looked at from three metres up and away.
@@ -215,8 +234,9 @@ struct WaterScene {
     turn: f32,
     /// Where in the world the water lies.
     origin: Vec3,
-    /// How cloudy with sediment it is, or none for water that carries none.
-    murk: Option<f32>,
+    /// Sediment it carries, in kg per m³, or none for water that carries
+    /// none.
+    silt: Option<f32>,
     /// How white it churns, or none for water that carries no churn.
     churn: Option<f32>,
     /// Pixels along each edge of the picture.
@@ -230,18 +250,19 @@ impl Default for WaterScene {
             flow: [0.3, 0.0],
             turn: 0.0,
             origin: Vec3::ZERO,
-            murk: None,
+            silt: None,
             churn: None,
             size: 64,
         }
     }
 }
 
-/// The pixel at the middle of water two metres deep over pale ground, as
-/// cloudy with sediment as `murk` says, or clear without it.
-fn water_pixel(murk: Option<f32>) -> Vec<u8> {
+/// The pixel at the middle of water `depth` metres deep over pale ground,
+/// carrying `silt` kg of sediment in each m³, or none.
+fn water_pixel(depth: f32, silt: Option<f32>) -> Vec<u8> {
     let pixels = water_frame(WaterScene {
-        murk,
+        depth,
+        silt,
         ..WaterScene::default()
     });
     let center = (32 * 64 + 32) * 4;
@@ -289,7 +310,7 @@ fn grain(scene: WaterScene) -> f32 {
 
 /// The water surface of `scene`: a flat 8 m square.
 fn water_plane(scene: WaterScene) -> Mesh {
-    use crate::world::water_render::{ATTRIBUTE_CHURN, ATTRIBUTE_MURK, ATTRIBUTE_WATER};
+    use crate::world::water_render::{ATTRIBUTE_CHURN, ATTRIBUTE_SILT, ATTRIBUTE_WATER};
 
     let mut water = Mesh::from(Plane3d::default().mesh().size(8.0, 8.0));
     let count = water.count_vertices();
@@ -311,10 +332,10 @@ fn water_plane(scene: WaterScene) -> Mesh {
         ATTRIBUTE_WATER,
         bevy::mesh::VertexAttributeValues::Float32x3(currents),
     );
-    if let Some(murk) = scene.murk {
+    if let Some(silt) = scene.silt {
         water.insert_attribute(
-            ATTRIBUTE_MURK,
-            bevy::mesh::VertexAttributeValues::Float32(vec![murk; count]),
+            ATTRIBUTE_SILT,
+            bevy::mesh::VertexAttributeValues::Float32(vec![silt; count]),
         );
     }
     if let Some(churn) = scene.churn {
@@ -420,7 +441,7 @@ fn water_frame(scene: WaterScene) -> Vec<u8> {
 #[test]
 #[ignore = "requires a real GPU"]
 fn water_draws_a_translucent_blue_surface_over_the_ground() {
-    let pixel = water_pixel(None);
+    let pixel = water_pixel(2.0, None);
     eprintln!("Water pixel: {pixel:?}");
     assert!(pixel[1] > 8, "water is still the magenta error material");
     assert!(
@@ -432,8 +453,8 @@ fn water_draws_a_translucent_blue_surface_over_the_ground() {
 #[test]
 #[ignore = "requires a real GPU"]
 fn water_thick_with_sediment_draws_silty_brown() {
-    let clear = water_pixel(Some(0.0));
-    let muddy = water_pixel(Some(1.0));
+    let clear = water_pixel(2.0, Some(0.0));
+    let muddy = water_pixel(2.0, Some(1.0));
     eprintln!("Clear {clear:?}, muddy {muddy:?}");
     assert!(
         clear[2] > clear[0],
@@ -442,6 +463,53 @@ fn water_thick_with_sediment_draws_silty_brown() {
     assert!(
         muddy[0] > muddy[2] && muddy[1] > muddy[2],
         "muddy water should read brown: {muddy:?}"
+    );
+}
+
+/// How far a pixel's colour lies from another's, from 0 to about 440.
+fn colour_distance(a: &[u8], b: &[u8]) -> f32 {
+    a.iter()
+        .zip(b)
+        .take(3)
+        .map(|(&a, &b)| (f32::from(a) - f32::from(b)).powi(2))
+        .sum::<f32>()
+        .sqrt()
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn silt_clouds_water_as_deep_as_real_muddy_water() {
+    // A stream 10 cm deep carrying a gram a litre, muddy runoff, hides its
+    // bed; a tenth of a gram a litre clouds it; a clear stream's 10 mg/L
+    // leaves it as clear as clean water.
+    let clean = water_pixel(0.1, Some(0.0));
+    let faint = water_pixel(0.1, Some(0.01));
+    let cloudy = water_pixel(0.1, Some(0.1));
+    let muddy = water_pixel(0.1, Some(1.0));
+    // The same muddy water as a film 5 mm deep still shows its bed.
+    let film = water_pixel(0.005, Some(1.0));
+    let clean_film = water_pixel(0.005, Some(0.0));
+    eprintln!(
+        "10 cm: clean {clean:?}, 10 mg/L {faint:?}, 100 mg/L {cloudy:?}, 1 g/L {muddy:?}; \
+         5 mm: clean {clean_film:?}, 1 g/L {film:?}"
+    );
+    assert!(
+        muddy[0] > muddy[2] && muddy[1] > muddy[2],
+        "muddy runoff should read brown: {muddy:?}"
+    );
+    assert!(
+        colour_distance(&faint, &clean) < 6.0,
+        "a clear stream's silt should not show: {faint:?} against {clean:?}"
+    );
+    let cloudiness = colour_distance(&cloudy, &clean);
+    let muddiness = colour_distance(&muddy, &clean);
+    assert!(
+        cloudiness > 10.0 && cloudiness < muddiness,
+        "100 mg/L should cloud the water short of mud: {cloudy:?} between {clean:?} and {muddy:?}"
+    );
+    assert!(
+        colour_distance(&film, &clean_film) < muddiness,
+        "a thin film of muddy water should hide less than a stream of it: {film:?}"
     );
 }
 
@@ -521,5 +589,179 @@ fn streaks_hold_their_grain_far_from_the_origin() {
     assert!(
         far < 1.5 * near && near < 1.5 * far,
         "a bending current should draw the same streaks anywhere: {far:.4} against {near:.4}"
+    );
+}
+
+/// The middle pixel of a grey grass cube under a wetness map whose grass has
+/// wilted by `wilt`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep offscreen setup and the grass's look in one fixture"
+)]
+fn grass_pixel(wilt: f32) -> Vec<u8> {
+    let mut app = App::new();
+    app.add_plugins(
+        DefaultPlugins
+            .set(AssetPlugin {
+                file_path: format!("{}/assets", env!("CARGO_MANIFEST_DIR")),
+                ..default()
+            })
+            .set(WindowPlugin {
+                primary_window: None,
+                exit_condition: ExitCondition::DontExit,
+                ..default()
+            })
+            .set(RenderPlugin {
+                synchronous_pipeline_compilation: true,
+                ..default()
+            })
+            .disable::<bevy::winit::WinitPlugin>()
+            .disable::<PipelinedRenderingPlugin>(),
+    )
+    .add_plugins(crate::world::TerrainRenderPlugin)
+    .init_resource::<Pixels>();
+    app.finish();
+    app.cleanup();
+    let mut target = Image::new_target_texture(64, 64, TextureFormat::Rgba8UnormSrgb, None);
+    target.texture_descriptor.usage |= TextureUsages::COPY_SRC;
+    let target = app.world_mut().resource_mut::<Assets<Image>>().add(target);
+    app.world_mut()
+        .spawn(Readback::texture(target.clone()))
+        .observe(|event: On<ReadbackComplete>, mut pixels: ResMut<Pixels>| {
+            pixels.0.clone_from(&event.data);
+        });
+    app.world_mut().spawn((
+        Camera3d::default(),
+        bevy::core_pipeline::tonemapping::Tonemapping::SomewhatBoringDisplayTransform,
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::BLACK),
+            ..default()
+        },
+        RenderTarget::Image(target.into()),
+        Transform::from_xyz(0.0, 0.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    let mut layer = |pixel: [u8; 4]| {
+        let mut image = Image::new_fill(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 7,
+            },
+            TextureDimension::D2,
+            &pixel,
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::default(),
+        );
+        image.texture_view_descriptor =
+            Some(bevy::render::render_resource::TextureViewDescriptor {
+                dimension: Some(bevy::render::render_resource::TextureViewDimension::D2Array),
+                ..default()
+            });
+        app.world_mut().resource_mut::<Assets<Image>>().add(image)
+    };
+    let (base_color, normal, orm, tint_mask) = (
+        layer([128, 128, 128, 255]),
+        layer([128, 128, 255, 255]),
+        layer([255, 200, 0, 255]),
+        layer([255, 255, 255, 255]),
+    );
+    let palette = mechanic_world::TerrainField::new(mechanic_world::WorldSeed(1))
+        .palette()
+        .clone();
+    let surfaces = app
+        .world_mut()
+        .resource_mut::<Assets<bevy::render::storage::ShaderBuffer>>()
+        .add(crate::world::terrain_render::terrain_surface_buffer(
+            &palette,
+            &[0.5; mechanic_world::TextureSet::ALL.len()],
+        ));
+    // One texel over the whole cube: dry ground at the cube's middle height,
+    // its grass wilted by `wilt`.
+    let wetness = app.world_mut().resource_mut::<Assets<Image>>().add(
+        crate::world::water_render::wetness_image(1, vec![0.0, 0.0, wilt]),
+    );
+    let erosion_map = crate::world::erosion_overlay::empty_map(
+        &mut app.world_mut().resource_mut::<Assets<Image>>(),
+    );
+    let material = TerrainRenderMaterial {
+        base_color: base_color.clone(),
+        normal: normal.clone(),
+        orm: orm.clone(),
+        tint_mask,
+        surfaces,
+        wetness,
+        wet_window: Vec4::new(-10.0, -10.0, 20.0, 0.0),
+        erosion_map,
+        erosion_window: Vec4::ZERO,
+        tree_base_color: base_color.clone(),
+        tree_normal: normal.clone(),
+        tree_orm: orm.clone(),
+        stone_fields: crate::world::terrain_cache::STONE_FIELDS,
+        soil_fields: crate::world::terrain_cache::SOIL_FIELDS,
+        grass_fields: crate::world::terrain_cache::GRASS_FIELDS,
+        field_windows: crate::world::terrain_cache::FIELD_WINDOWS,
+        grain: crate::world::terrain_cache::GRAIN,
+        procedural_ground: false,
+    };
+    let material = app
+        .world_mut()
+        .resource_mut::<Assets<TerrainRenderMaterial>>()
+        .add(material);
+    let mut mesh = Mesh::from(Cuboid::default());
+    let count = mesh.count_vertices();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.0, 0.0]; count]);
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_WEIGHTS_LOW,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(vec![[255, 0, 0, 0]; count]),
+    );
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_WEIGHTS_HIGH,
+        bevy::mesh::VertexAttributeValues::Unorm8x4(vec![[0; 4]; count]),
+    );
+    // Slot 0 is plain grass, surface 0.
+    let grass = mechanic_world::SurfaceId::plain(mechanic_world::TerrainMaterial::SurfaceCover);
+    mesh.insert_attribute(
+        crate::world::terrain_render::ATTRIBUTE_TERRAIN_SLOTS,
+        bevy::mesh::VertexAttributeValues::Uint32x4(vec![
+            [
+                u32::from(grass.0),
+                u32::MAX,
+                u32::MAX,
+                u32::MAX
+            ];
+            count
+        ]),
+    );
+    let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+    app.world_mut()
+        .spawn((Mesh3d(mesh), MeshMaterial3d(material)));
+    app.world_mut().spawn((
+        DirectionalLight {
+            illuminance: 18_000.0,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 1.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
+    for _ in 0..60 {
+        render_frame(&mut app);
+    }
+    let center = (32 * 64 + 32) * 4;
+    app.world().resource::<Pixels>().0[center..center + 4].to_vec()
+}
+
+#[test]
+#[ignore = "requires a real GPU"]
+fn wilting_grass_draws_straw() {
+    let green = grass_pixel(0.0);
+    let wilted = grass_pixel(1.0);
+    eprintln!("Grass {green:?}, wilted {wilted:?}");
+    assert!(
+        green[1] > 8,
+        "the terrain is still the magenta error material"
+    );
+    let warmth = |pixel: &[u8]| i32::from(pixel[0]) - i32::from(pixel[2]);
+    assert!(
+        warmth(&wilted) > warmth(&green) + 20,
+        "wilted grass should read straw: {wilted:?} against {green:?}"
     );
 }

@@ -1,7 +1,7 @@
 (
     id: 1,
     creation: (
-        version: 18,
+        version: 19,
         physical_inputs: [],
         name: "World construction",
         parts: [

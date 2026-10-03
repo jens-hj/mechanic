@@ -25,6 +25,7 @@ pub(crate) struct Model {
     pub(crate) dev_tools: bool,
     pub(crate) page: PausePage,
     pub(crate) camera_fov_degrees: f32,
+    pub(crate) procedural_ground: bool,
     pub(crate) controls: Controls,
     pub(crate) capture: Option<BindingCapture>,
     pub(crate) vehicle_conflicts: Vec<GameAction>,
@@ -50,7 +51,7 @@ pub(crate) fn PauseMenu(handles: Handles) -> Element {
         col #mechanic.pause-veil width:fill height:fill align:center justify:center {
             col #mechanic.pause-sheet width:700px height:min-content gap:16px pad:24px {
                 if model.with(|found| found.page == PausePage::Options) {
-                    PauseOptions handles:(options.clone()) fov:(fov)
+                    PauseOptions handles:(options.clone()) model:(model) fov:(fov)
                 } else if model.with(|found| found.page == PausePage::Controls) {
                     PauseControls handles:(controls.clone()) model:(model)
                 } else {
@@ -169,8 +170,9 @@ fn binding_chip(
 }
 
 #[component]
-fn PauseOptions(handles: Handles, fov: State<f32>) -> Element {
+fn PauseOptions(handles: Handles, model: State<Model>, fov: State<f32>) -> Element {
     let back = handles.clone();
+    let ground = handles.clone();
     view! {
         col width:fill height:min-content gap:16px {
             text #mechanic.title "OPTIONS"
@@ -180,6 +182,29 @@ fn PauseOptions(handles: Handles, fov: State<f32>) -> Element {
                 slider #mechanic.pause-slider width:1fr min:45 max:100 step:5 fov
                 text #mechanic.value width:52px align:end {
                     format!("{:.0}°", $fov)
+                }
+            }
+            text #mechanic.caption "Graphics"
+            row width:fill height:min-content align:center gap:14px {
+                text #mechanic.label width:110px "GROUND"
+                if model.with(|found| found.procedural_ground) {
+                    Action label:"Ground: Procedural"
+                        on-click:({
+                            let action = ground.clone();
+                            move || action.ask(UiIntent::Pause(PauseAction::SetProceduralGround(false)))
+                        })
+                        width:1fr height:42px {
+                        text #mechanic.value "Procedural"
+                    }
+                } else {
+                    Action label:"Ground: Textured"
+                        on-click:({
+                            let action = ground.clone();
+                            move || action.ask(UiIntent::Pause(PauseAction::SetProceduralGround(true)))
+                        })
+                        width:1fr height:42px {
+                        text #mechanic.value "Textured"
+                    }
                 }
             }
             Action label:"Back"
@@ -275,6 +300,7 @@ mod tests {
             open: true,
             page,
             camera_fov_degrees: 65.0,
+            procedural_ground: true,
             controls: Controls::default(),
             capture: None,
             vehicle_conflicts: Vec::new(),
@@ -331,6 +357,28 @@ mod tests {
         assert_eq!(
             overlay.intents(),
             vec![UiIntent::Pause(PauseAction::OpenOptions)]
+        );
+    }
+
+    #[test]
+    fn ground_option_switches_procedural_ground_off() {
+        let overlay = showing(PausePage::Options);
+        assert!(
+            overlay
+                .labels()
+                .iter()
+                .any(|label| label.contains("Procedural"))
+        );
+        let toggle = overlay
+            .reachable_boxes()
+            .into_iter()
+            .filter(|rect| (rect.size.height - 42.0).abs() < 0.5)
+            .min_by(|left, right| left.origin.y.total_cmp(&right.origin.y))
+            .expect("ground toggle");
+        overlay.click(toggle.center());
+        assert_eq!(
+            overlay.intents(),
+            vec![UiIntent::Pause(PauseAction::SetProceduralGround(false))]
         );
     }
 

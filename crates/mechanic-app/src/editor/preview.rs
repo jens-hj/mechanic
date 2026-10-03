@@ -1088,6 +1088,7 @@ pub(crate) fn update_previews(
             Some(
                 Tool::Dial(_)
                 | Tool::Button(_)
+                | Tool::Coupler
                 | Tool::Hammer
                 | Tool::Connector
                 | Tool::LinearBearing

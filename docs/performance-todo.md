@@ -27,6 +27,25 @@ meshes; water −26 % cycles; cached terrain selection p95 about 30 → 17 ms.
 - [ ] Focused capture to attribute the water surface's ~40 ms transparent
   pass.
 
+## Procedural ground (2026-10-03)
+
+[Terrain materials](terrain-materials.md) draws grass, dirt and stone from a
+world-space field cache, on by default and switchable in Options. Isolated
+real-material timings on the Apple M1 Pro / Metal, 4096×2524 MSAA4, one
+material filling the view (`procedural_terrain_gpu_cost`), opaque medians:
+textured 7.5 ms; procedural grass about 12, dirt about 13–14, stone about
+13–14 ms. Per-pixel solid noise was measured first and rejected at 12–19 ms
+after optimisation (one 3D value-noise octave ≈ 1.3 ms full-screen). Switched
+off, the shader is specialised without the procedural path: pixel-identical
+to the previous shader with no measurable cost. Field generation is cheap:
+refilling 1 M texels a frame left frame time unchanged within noise.
+
+- [ ] Measure the in-world terrain pass with procedural ground on and off
+  (`MECHANIC_PERF_TERRAIN_PASSES=1`, matched framing) before optimising
+  further.
+- [ ] Candidates if it matters: pre-composite interior colour in the cache and
+  keep only outlines as distance fields; drop the level blend; cheaper grain.
+
 ## Declarative worldgen streaming (2026-09-25)
 
 After the switch to declarative 3D world generation, walking through a world

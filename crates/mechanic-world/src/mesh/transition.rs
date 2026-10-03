@@ -235,6 +235,7 @@ pub(super) fn transition_coarse_lattice_point(
             corner_position(cell),
             f64::from(sample.sample.density),
             (gradient.as_dvec3() / (2.0 * spacing)).to_array(),
+            stride,
         );
         sample.sample.material = material;
         sample.sample.surface = surface;
@@ -256,7 +257,8 @@ pub(super) fn transition_coarse_sample(
     if let Some(&sample) = samples.get(&cell) {
         return sample;
     }
-    let procedural = LatticeSample::procedural(field.density(corner_position(cell)));
+    let procedural =
+        LatticeSample::procedural(field.density_at_stride(corner_position(cell), stride));
     let sample = coarse_lattice_sample(field, edits, cell, stride, procedural);
     samples.insert(cell, sample);
     sample

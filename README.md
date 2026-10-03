@@ -109,7 +109,10 @@ cargo run -p mechanic-app
   speed, and current bindings. In Pause → Controls → Dev Tools, rebind
   `F4` (player noclip), `F5` (detached camera), `−` / `=` (halve/double speed),
   and `F7` (reset speed). Speed ranges from 0.125× to 32× and affects walking,
-  sprinting, crouching, and flight, not vehicles or simulation time.
+  sprinting, crouching, and flight, not vehicles or simulation time. `F10`
+  cycles erosion, and grass dying and growing back with it, through 1×, 10×,
+  100× and 1000× their rate in play, so worn beds, silt and drowned grass show
+  within minutes; water still runs at its own pace.
   Flight uses the movement bindings, Space to rise, C to descend, and Shift
   to boost. Noclip allows building and returns to its starting position/view;
   leave a seat before enabling it. Detached flight is view-only: simulation

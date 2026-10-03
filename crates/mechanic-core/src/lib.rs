@@ -4,6 +4,8 @@ mod appearance;
 mod compile;
 mod contact_geometry;
 mod controller_input;
+mod coupler;
+mod coupler_geometry;
 mod creation;
 mod drive;
 mod dynamics;
@@ -52,6 +54,7 @@ pub use contact_geometry::{
     TriangleContactPoint, TriangleSupport,
 };
 pub use controller_input::ControllerKeys;
+pub use coupler::CouplerSpec;
 pub use creation::{
     AnalogMappingDoc, BearingDoc, BearingSocket, BearingSocketDoc, CREATION_FORMAT_VERSION,
     ConstructionFrameDoc, CreationDocument, CreationError, DriveDwellDoc, DriveLimitsDoc,

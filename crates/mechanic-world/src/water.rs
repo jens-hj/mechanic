@@ -15,6 +15,7 @@
 
 mod cells;
 mod cycle;
+mod grass;
 mod grid;
 mod ground;
 mod pool;
@@ -33,11 +34,15 @@ use serde::{Deserialize, Serialize};
 use cells::CellMap;
 use cycle::Cycle;
 pub use cycle::{SurplusDoc, WaterLedger, WaterNetwork, WaterShift};
+pub use grass::GrassDoc;
 use grid::SheetGrid;
 use ground::{BRICK_EDGE_WATER_CELLS, Openings, OpeningsCache};
-pub use ground::{TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
+pub use ground::{NativeGrass, TerrainWater, WATER_CELL_EDGE_CELLS, WaterGround};
 use pool::Pool;
-pub use sediment::{BedDoc, ErosionConfig, SedimentDoc, SedimentLedger, SedimentLoad};
+pub use sediment::{
+    BedDoc, ErosionConfig, SedimentDiagnosticColumn, SedimentDiagnostics, SedimentDoc,
+    SedimentLedger, SedimentLoad,
+};
 use sediment::{Placed, Sediment};
 pub use sheet::{RunningView, SheetDoc};
 pub use soil::{SoilDoc, WetGround};
@@ -313,8 +318,8 @@ pub struct PoolView {
     pub surface_cells: Vec<WaterCell>,
     /// Depth of water in each of those columns, in metres.
     pub depths: Vec<f64>,
-    /// How cloudy with sediment it is, from 0 to 1.
-    pub murk: f64,
+    /// Sediment it carries, in kg per m³ of water.
+    pub silt: f64,
 }
 
 /// One stored pool in a saved world.
@@ -349,6 +354,8 @@ pub struct StoredWaterDoc {
     pub soil: Vec<SoilDoc>,
     /// Sediment waiting to be laid, and what erosion has moved.
     pub sediment: SedimentDoc,
+    /// Grass water has harmed.
+    pub grass: Vec<GrassDoc>,
 }
 
 /// A cell that filled from seed-derived water and joined it, in a saved
@@ -529,6 +536,10 @@ pub struct WaterWorld {
     shown: BTreeMap<WaterBody, WaterShift>,
     /// Sediment beside the water.
     sediment: Sediment,
+    /// Grass water has harmed, by column.
+    grass: grass::GrassMap,
+    /// The set of grass columns that grows next.
+    grass_set: u32,
     /// Power of the falls landing on each column, in watts, to draw.
     splashes: CellMap<(i32, i32), f64>,
     /// Energy landed on each column so far this step, in joules.
@@ -583,6 +594,7 @@ impl WaterWorld {
         }
         water.load_soil(&doc.soil);
         water.load_sediment(&doc.sediment);
+        water.load_grass(&doc.grass);
         let ids = water.pools.keys().copied().collect::<Vec<_>>();
         for id in ids {
             // A saved pool fills out to its level again at once.
@@ -626,6 +638,7 @@ impl WaterWorld {
             sheets: self.sheet_docs(),
             soil: self.soil_docs(),
             sediment: self.sediment_doc(),
+            grass: self.grass_docs(),
         }
     }
 
@@ -726,7 +739,7 @@ impl WaterWorld {
                 volume_m3: pool.volume,
                 surface_cells,
                 depths,
-                murk: sediment::murk(pool.load, pool.volume),
+                silt: sediment::silt(pool.load, pool.volume),
             }
         })
     }
@@ -1119,6 +1132,7 @@ impl WaterWorld {
 
     /// Runs the water for `dt` seconds.
     pub fn step(&mut self, ground: &impl WaterGround, dt: f64) -> WaterStep {
+        self.advance_sediment_diagnostics(dt);
         let mut clock = PhaseClock::new();
         let mut phases = WaterPhases::default();
         let ids = self.pools.keys().copied().collect::<Vec<_>>();
@@ -1142,6 +1156,7 @@ impl WaterWorld {
         moved_m3 += running;
         fed.extend(sheet_fed);
         self.wear_and_settle(ground, dt);
+        self.grow_grass(ground, dt);
         self.settle_splashes(dt);
         phases.sheets_ms = clock.lap();
         // Water that arrived floods at once, so no pool stands higher than

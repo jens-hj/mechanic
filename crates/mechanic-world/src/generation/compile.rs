@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::WorldgenError;
 use super::fields::WorldFields;
+use super::grid::JitterGrid;
 use super::noise::NoiseGen;
 use super::scatter::{MAX_VARS, ScatterGen, mix};
 use super::spec::{Dims, Expr, NoiseDoc, ScatterDoc};
@@ -257,15 +258,17 @@ impl Compiler<'_> {
         )?;
         let scatter = ScatterGen {
             id: SCATTER_IDS.fetch_add(1, Ordering::Relaxed),
-            cell: doc.cell,
+            grid: JitterGrid {
+                cell: doc.cell,
+                jitter: doc.jitter,
+                chance: doc.chance,
+                seed,
+            },
             reach: doc.reach,
-            jitter: doc.jitter,
-            chance: doc.chance,
             lift: doc.lift,
             yaw: doc.yaw,
             tilt_radians: doc.tilt.to_radians(),
             vars: doc.vars.values().copied().collect(),
-            seed,
             mask,
             ground,
             shape,

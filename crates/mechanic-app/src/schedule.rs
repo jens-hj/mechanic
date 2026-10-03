@@ -99,6 +99,8 @@ pub(crate) enum FrameSet {
     Simulation,
     /// Tool previews, placed after the simulation has moved its bodies.
     Previews,
+    /// Diagnostic terrain materials follow world and water publication.
+    WorldDiagnostics,
     /// Outdoor atmosphere follows the final camera and floating origin.
     Sky,
     /// First-person tools inherit the completed scene lighting.
@@ -124,6 +126,7 @@ impl Plugin for FramePlugin {
         app.init_resource::<crate::dial_assignment::DialAssignments>();
         app.init_resource::<crate::button_config::ButtonConfiguration>();
         app.init_resource::<crate::input_parts::InputParts>();
+        app.init_resource::<crate::coupler::Couplers>();
         app.init_resource::<crate::physical_controls::PhysicalControls>();
         app.configure_sets(
             Update,
@@ -153,6 +156,7 @@ impl Plugin for FramePlugin {
                 FrameSet::Simulation,
                 FrameSet::Previews,
                 (
+                    FrameSet::WorldDiagnostics,
                     FrameSet::Sky,
                     FrameSet::ViewmodelLighting,
                     FrameSet::Metrics,
@@ -183,6 +187,7 @@ impl Plugin for FramePlugin {
                 FrameSet::Simulation,
                 FrameSet::Previews,
                 (
+                    FrameSet::WorldDiagnostics,
                     FrameSet::Sky,
                     FrameSet::ViewmodelLighting,
                     FrameSet::Metrics,
@@ -315,6 +320,7 @@ impl Plugin for FramePlugin {
                     .chain()
                     .in_set(FrameSet::Visuals),
                 (
+                    crate::coupler::update,
                     maintain_space_simulation,
                     sync_simulation_visual_cache,
                     linear_render::sync_linear_bearing_visuals,

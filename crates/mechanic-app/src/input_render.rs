@@ -46,6 +46,7 @@ struct CachedInputMesh {
 fn kind_size(spec: PartSpec) -> Option<(InputKind, InputSize)> {
     match spec {
         PartSpec::Dial(spec) => Some((InputKind::Dial, spec.size)),
+        PartSpec::Coupler(_) => Some((InputKind::Coupler, InputSize::Industrial)),
         PartSpec::Button(spec) => Some((InputKind::Button, spec.size)),
         _ => None,
     }
@@ -249,11 +250,25 @@ pub(crate) fn sync_input_visuals(
         };
         *transform = Transform::from_translation(translation).with_rotation(rotation);
         let config = graph.input_configuration(part);
-        let feedback = if config.is_some_and(|config| {
-            config
-                .controller
-                .zip(config.key)
-                .is_some_and(|(controller, key)| controls.keys.held(controller, key))
+        let locked = matches!(graph.part(part), Some(PartSpec::Coupler(_))).then(|| {
+            graph.rigid_links().any(|(_, link)| {
+                let other = if link.first == part {
+                    Some(link.second)
+                } else if link.second == part {
+                    Some(link.first)
+                } else {
+                    None
+                };
+                other.is_some_and(|other| matches!(graph.part(other), Some(PartSpec::Coupler(_))))
+            })
+        });
+        let feedback = if locked.unwrap_or_else(|| {
+            config.is_some_and(|config| {
+                config
+                    .controller
+                    .zip(config.key)
+                    .is_some_and(|(controller, key)| controls.keys.held(controller, key))
+            })
         }) {
             ButtonFeedback::On
         } else {

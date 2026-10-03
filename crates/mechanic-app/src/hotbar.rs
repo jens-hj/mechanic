@@ -29,6 +29,7 @@ pub(crate) enum Tool {
     Input,
     Dial(InputSize),
     Button(InputSize),
+    Coupler,
     DimensionLink,
     Shape,
     Chroma,
@@ -161,6 +162,7 @@ pub(crate) enum PlaceableItem {
     Input,
     Dial(InputSize),
     Button(InputSize),
+    Coupler,
     DimensionLink,
 }
 
@@ -195,6 +197,8 @@ impl WheelChoice {
             Self::TerrainMaterial(TerrainMaterial::Sand) => "Sand",
             Self::TerrainMaterial(TerrainMaterial::Iron) => "Iron",
             Self::TerrainMaterial(TerrainMaterial::Graphite) => "Graphite",
+            Self::TerrainMaterial(TerrainMaterial::Wood) => "Wood",
+            Self::TerrainMaterial(TerrainMaterial::Foliage) => "Leaves",
             Self::ShapeMode(mode) => mode.label(),
             Self::WeldMode(mode) => mode.label(),
         }
@@ -226,7 +230,7 @@ impl WheelContext {
         match self {
             Self::ConstructionMaterial => ConstructionMaterial::ALL.len(),
             Self::Item => PlaceableItem::ALL.len(),
-            Self::TerrainMaterial => TerrainMaterial::ALL.len(),
+            Self::TerrainMaterial => TerrainMaterial::BRUSHABLE.len(),
             Self::Shape => crate::shape_tool::ShapeEditMode::ALL.len(),
             Self::Weld => WeldMode::ALL.len(),
         }
@@ -242,7 +246,7 @@ impl WheelContext {
                 .get(index)
                 .copied()
                 .map(WheelChoice::Item),
-            Self::TerrainMaterial => TerrainMaterial::ALL
+            Self::TerrainMaterial => TerrainMaterial::BRUSHABLE
                 .get(index)
                 .copied()
                 .map(WheelChoice::TerrainMaterial),
@@ -260,7 +264,7 @@ impl WheelContext {
 }
 
 impl PlaceableItem {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::Bearing,
         Self::LinearBearing,
         Self::Piston,
@@ -275,6 +279,7 @@ impl PlaceableItem {
         Self::Input,
         Self::Dial(InputSize::Panel),
         Self::Button(InputSize::Panel),
+        Self::Coupler,
         Self::DimensionLink,
     ];
 
@@ -310,6 +315,7 @@ impl PlaceableItem {
             Self::Input => Tool::Input,
             Self::Dial(size) => Tool::Dial(size),
             Self::Button(size) => Tool::Button(size),
+            Self::Coupler => Tool::Coupler,
             Self::DimensionLink => Tool::DimensionLink,
         }
     }
@@ -330,6 +336,7 @@ impl PlaceableItem {
             Tool::Input => Some(Self::Input),
             Tool::Dial(size) => Some(Self::Dial(size)),
             Tool::Button(size) => Some(Self::Button(size)),
+            Tool::Coupler => Some(Self::Coupler),
             Tool::DimensionLink => Some(Self::DimensionLink),
             _ => None,
         }
@@ -360,6 +367,7 @@ impl Tool {
             Self::Dial(InputSize::Panel) => "Dial · 5 cm",
             Self::Dial(InputSize::Utility) => "Dial · 10 cm",
             Self::Dial(InputSize::Industrial) => "Dial · 25 cm",
+            Self::Coupler => "Coupler",
             Self::Button(InputSize::Panel) => "Button · 5 cm",
             Self::Button(InputSize::Utility) => "Button · 10 cm",
             Self::Button(InputSize::Industrial) => "Button · 25 cm",
@@ -513,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn linear_bearing_is_the_second_item_and_dimension_link_the_tenth() {
+    fn item_picker_keeps_hardware_order_and_includes_coupler() {
         assert_eq!(
             PlaceableItem::ALL,
             [
@@ -531,6 +539,7 @@ mod tests {
                 PlaceableItem::Input,
                 PlaceableItem::Dial(InputSize::Panel),
                 PlaceableItem::Button(InputSize::Panel),
+                PlaceableItem::Coupler,
                 PlaceableItem::DimensionLink,
             ]
         );
