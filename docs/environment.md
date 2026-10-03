@@ -77,3 +77,13 @@ Flags are on when set to `1`.
 | `VK_DRIVER_FILES` | Point at the lavapipe ICD to run GPU tests on the CPU, off the display GPU. |
 
 `MECHANIC_SKY_TIME` fixes the rendered solar hour in `[0, 24)` (fractional hours allowed) and freezes automatic clock advancement. It does not replace the world’s saved time. By default, fixed-time launches use a temporary world store named `mechanic-sky-fixture-<pid>`, leaving player saves untouched. Automated runs may supply an explicit disposable store through `MECHANIC_AUTO_WORLD_STORE`.
+
+## Cargo storage launcher
+
+The Python launcher, outside the crates, reads `MECHANIC_CARGO_STORAGE` as an
+optional shared storage root. `--root` overrides it. `MECHANIC_CARGO_LEASE` is an
+internal inherited token: do not set it manually. The launcher sets
+`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, and `CARGO_BUILD_BUILD_DIR`
+for the whole leased process tree; nested launchers verify it.
+The background capture script resolves its default binary from that target.
+An existing external `CARGO_TARGET_DIR` requires explicit `--unmanaged` mode.

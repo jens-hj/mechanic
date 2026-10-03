@@ -42,3 +42,5 @@ follows.
 - [CPU construction scaling](cpu-scaling.md)
 - [Vehicle performance checklist](performance-todo.md): dated working notes; the entries record history and do not gate current work.
 - [Performance results](performance-results/README.md): retained benchmark evidence.
+
+- [Cargo storage](cargo-storage.md): reusable build slots, cleanup, and worker rollout.

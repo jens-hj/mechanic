@@ -1,0 +1,29 @@
+name: Cargo storage
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/cargo*'
+      - 'scripts/test-cargo-storage.py'
+      - '.github/workflows/cargo-storage.yml'
+      - 'rust-toolchain.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - run: rustup show
+      # No workspace dependencies or private Mosaic checkout are needed.
+      - run: python scripts/test-cargo-storage.py

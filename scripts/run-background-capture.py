@@ -15,6 +15,8 @@ import subprocess
 import sys
 import uuid
 
+from cargo_storage import require_binary_lease
+
 
 def digest(path):
     with path.open("rb") as source:
@@ -64,6 +66,7 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
     if physics not in ("gpu", "cpu"):
         raise ValueError("physics must be gpu or cpu")
     binary, world, output, assets = [p.resolve() for p in (binary, world, output, assets)]
+    require_binary_lease(binary)
     if not binary.is_file() or not (world / "world.ron").is_file():
         raise ValueError("binary and world/world.ron must exist")
     if not (assets / "assets").is_dir():
@@ -202,7 +205,9 @@ def run(binary, world, output, assets, drive=False, demonstration=False, place=N
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", type=Path, default=Path("target/release/mechanic-app"))
+    default_binary = Path(os.environ.get("CARGO_TARGET_DIR", "target")) / "release" / (
+        "mechanic-app.exe" if os.name == "nt" else "mechanic-app")
+    parser.add_argument("--binary", type=Path, default=default_binary)
     parser.add_argument("--world", type=Path, required=True, help="Saved world directory")
     parser.add_argument("--output", type=Path, required=True, help="New results directory")
     parser.add_argument("--assets", type=Path, default=Path("crates/mechanic-app"))

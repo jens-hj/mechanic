@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Exercise real processes and OS locks without compiling the workspace."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+from cargo_storage import Store, boot_identity, require_binary_lease
+
+LAUNCHER = Path(__file__).with_name('cargo-storage.py').resolve()
+
+spec = importlib.util.spec_from_file_location('launcher', LAUNCHER)
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+
+
+class StorageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve() / 'store'
+        self.env = {k: v for k, v in os.environ.items()
+                    if k not in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'CARGO_BUILD_BUILD_DIR',
+                                 'MECHANIC_CARGO_LEASE', 'MECHANIC_CARGO_STORAGE')}
+        self.children = []
+        self.addCleanup(self.stop_children)
+
+    def stop_children(self):
+        for child in self.children:
+            if child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait()
+            child.stdout.close()
+            child.stderr.close()
+
+    def invoke(self, *args):
+        return subprocess.run([sys.executable, str(LAUNCHER), '--root', str(self.root), *args],
+                              env=self.env, text=True, capture_output=True,
+                              timeout=60 if args[:1] == ('cargo',) else 10)
+
+    def start(self, source):
+        child = subprocess.Popen([sys.executable, str(LAUNCHER), '--root', str(self.root),
+                                  'run', '--', sys.executable, '-c', source],
+                                 env=self.env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.children.append(child)
+        return child
+
+    def wait_for(self, predicate):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(.03)
+        self.fail('condition did not become true')
+
+    def hold(self, name):
+        marker = self.root.parent / name
+        release = self.root.parent / (name + '-release')
+        source = (f'from pathlib import Path; import time; Path({str(marker)!r}).touch(); '
+                  f'\nwhile not Path({str(release)!r}).exists(): time.sleep(.03)')
+        return self.start(source), marker, release
+
+    def test_two_workers_run_and_third_queues_until_release(self):
+        first, a, release = self.hold('first')
+        second, b, release_b = self.hold('second')
+        self.wait_for(lambda: a.exists() and b.exists())
+        third, c, release_c = self.hold('third')
+        time.sleep(.3)
+        self.assertFalse(c.exists())
+        self.assertIsNone(third.poll())
+        release.touch()
+        self.assertEqual(first.wait(timeout=5), 0)
+        self.wait_for(c.exists)
+        release_b.touch()
+        release_c.touch()
+        self.assertEqual(second.wait(timeout=5), 0)
+        self.assertEqual(third.wait(timeout=5), 0)
+
+    def test_nested_launcher_reuses_the_only_slot_and_preserves_exit(self):
+        Store(self.root, 1)
+        source = (f'import subprocess,sys; sys.exit(subprocess.call([sys.executable, '
+                  f'{str(LAUNCHER)!r}, "run", "--", sys.executable, "-c", "raise SystemExit(23)"]))')
+        child = self.start(source)
+        self.assertEqual(child.wait(timeout=8), 23)
+        self.assertEqual(Store(self.root).state(0)['state'], 'idle')
+
+    def test_cleanup_skips_active_lease_and_preserves_reports(self):
+        store = Store(self.root, 1)
+        target = store.slot(0) / 'target'
+        cache = target / 'debug/incremental'
+        cache.mkdir(parents=True)
+        (cache / 'generated').write_bytes(b'x' * 4096)
+        report = target / 'debug/report.json'
+        report.write_text('retain me')
+        store.save(0, {'state': 'idle', 'finished': 0})
+        with store.lock(0) as lock:
+            self.assertTrue(lock.acquire())
+            result = self.invoke('clean', '--idle-hours', '0', '--apply')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(cache.exists())
+            self.assertIn('active lease', result.stdout)
+        result = self.invoke('clean', '--idle-hours', '0')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(cache.exists())
+        result = self.invoke('clean', '--idle-hours', '0', '--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(cache.exists())
+        self.assertEqual(report.read_text(), 'retain me')
+
+    def test_conflicting_count_and_target_override_are_refused(self):
+        Store(self.root, 1)
+        with self.assertRaises(ValueError):
+            Store(self.root, 2)
+        result = self.invoke('cargo', 'build', '--target-dir=/tmp/foreign')
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_unclean_state_is_not_reclaimed_by_missing_pid(self):
+        store = Store(self.root, 1)
+        store.save(0, {'state': 'running', 'pid': 99999999, 'boot': None})
+        result = self.invoke('recover')
+        self.assertEqual(result.returncode, 0 if boot_identity() else 1, result.stderr)
+        self.assertEqual(store.state(0)['state'], 'running')
+        self.assertIn('quarantined', self.invoke('clean', '--idle-hours', '0', '--apply').stdout)
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX signal semantics')
+    def test_cancellation_waits_for_child_exit_and_releases_slot(self):
+        Store(self.root, 1)
+        child, marker, _ = self.hold('cancel')
+        self.wait_for(marker.exists)
+        child.send_signal(signal.SIGTERM)
+        self.assertEqual(child.wait(timeout=5), 143)
+        self.assertEqual(Store(self.root).state(0)['state'], 'idle')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX SIGKILL; Windows job kills children on supervisor exit')
+    def test_killed_supervisor_quarantines_live_orphan(self):
+        Store(self.root, 1)
+        child, marker, release = self.hold('crash')
+        self.wait_for(marker.exists)
+        child.kill()
+        child.wait(timeout=5)
+        try:
+            result = self.invoke('status')
+            self.assertTrue(json.loads(result.stdout)['slots'][0]['quarantined'])
+            result = self.invoke('clean', '--idle-hours', '0', '--apply')
+            self.assertIn('quarantined', result.stdout)
+        finally:
+            release.touch()
+
+    def test_lease_outlives_direct_child_until_descendant_finishes(self):
+        Store(self.root, 1)
+        marker = self.root.parent / 'descendant'
+        release = self.root.parent / 'descendant-release'
+        descendant = (f'from pathlib import Path; import time; Path({str(marker)!r}).touch(); '
+                      f'\nwhile not Path({str(release)!r}).exists(): time.sleep(.03)')
+        parent = f'import subprocess,sys; subprocess.Popen([sys.executable, "-c", {descendant!r}])'
+        child = self.start(parent)
+        self.wait_for(marker.exists)
+        time.sleep(.15)
+        self.assertIsNone(child.poll())
+        result = self.invoke('clean', '--idle-hours', '0', '--apply')
+        self.assertIn('active lease', result.stdout)
+        release.touch()
+        self.assertEqual(child.wait(timeout=5), 0)
+        self.assertEqual(Store(self.root).state(0)['state'], 'idle')
+
+    def test_slot_binary_cannot_run_outside_its_lease(self):
+        store = Store(self.root, 1)
+        binary = store.slot(0) / 'target/debug/app'
+        binary.parent.mkdir(parents=True)
+        binary.touch()
+        with self.assertRaisesRegex(ValueError, 'active lease'):
+            require_binary_lease(binary)
+        copied = self.root.parent / 'durable-app'
+        copied.touch()
+        require_binary_lease(copied)
+
+    def test_recovery_requires_a_proven_later_boot(self):
+        store = Store(self.root, 1)
+        store.save(0, {'state': 'running', 'boot': 'boot-a'})
+        with patch.object(launcher, 'boot_identity', return_value='boot-a'):
+            launcher.recover(store)
+        self.assertEqual(store.state(0)['state'], 'running')
+        with patch.object(launcher, 'boot_identity', return_value='boot-b'):
+            launcher.recover(store)
+        self.assertEqual(store.state(0)['state'], 'idle')
+
+    def test_budget_can_evict_recent_idle_cache_but_retention_preserves_it(self):
+        store = Store(self.root, 1)
+        cache = store.slot(0) / 'target/debug/deps'
+        cache.mkdir(parents=True)
+        (cache / 'generated').write_bytes(b'x' * 8192)
+        store.save(0, {'state': 'idle', 'finished': time.time()})
+        result = self.invoke('clean', '--idle-hours', '24', '--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(cache.exists())
+        result = self.invoke('clean', '--idle-hours', '24', '--budget-gib', '0', '--apply')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(cache.exists())
+
+    def test_real_cargo_rebuilds_distinct_checkouts_in_reused_slot(self):
+        import shutil
+        if not shutil.which('cargo'):
+            self.skipTest('Cargo unavailable')
+        Store(self.root, 1)
+        for name in ('branch_a', 'branch_b', 'branch_a'):
+            source = self.root.parent / name
+            source.mkdir(exist_ok=True)
+            (source / 'src').mkdir(exist_ok=True)
+            (source / 'Cargo.toml').write_text(
+                '[package]\nname="slot-smoke"\nversion="0.1.0"\nedition="2021"\n[workspace]\n')
+            (source / 'src/main.rs').write_text('fn main() { println!("' + name + '"); }')
+            result = self.invoke('cargo', 'run', '--quiet', '--offline',
+                                 '--manifest-path', str(source / 'Cargo.toml'))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), name)
+        self.assertEqual(len(list(self.root.glob('slot-*'))), 1)
+
+    @unittest.skipIf(os.name == 'nt', 'symlink creation requires privileges on Windows')
+    def test_cleanup_refuses_symlinked_profile(self):
+        store = Store(self.root, 1)
+        source = self.root.parent / 'source'
+        source.mkdir()
+        (source / 'incremental').mkdir()
+        target = store.slot(0) / 'target'
+        target.mkdir()
+        (target / 'debug').symlink_to(source, target_is_directory=True)
+        result = self.invoke('clean', '--idle-hours', '0', '--apply')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((source / 'incremental').exists())
+
+
+if __name__ == '__main__':
+    unittest.main()

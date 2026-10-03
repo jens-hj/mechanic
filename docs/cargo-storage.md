@@ -1,0 +1,162 @@
+# Reusable Cargo storage
+
+`python3 scripts/cargo-storage.py cargo xtask test` leases storage **before**
+Cargo builds xtask. Use `python` on Windows. Python's standard library is the only
+launcher dependency. Rust/Cargo settings and user-global configuration are unchanged.
+
+The default root is `<git-common-dir>/mechanic-cargo-storage`, shared by linked
+worktrees and outside their working directories. `--root /absolute/local/path`
+or `MECHANIC_CARGO_STORAGE` selects another shared root. Initialize with `--slots N`
+to change the default of two slots; subsequent callers cannot change its count.
+All workers must use the same root. Local filesystems only: network filesystem
+lock semantics are not supported. Do not move or delete the root or lock files
+while a launcher exists. Symlink roots/slots/targets are refused.
+
+## Running and nesting
+
+```sh
+python3 scripts/cargo-storage.py cargo xtask lint
+python3 scripts/cargo-storage.py cargo xtask test -p mechanic-core
+python3 scripts/cargo-storage.py cargo run -p mechanic-app
+python3 scripts/cargo-storage.py cargo run -p mechanic-bench --release -- --scenario four_bar
+```
+
+The first idle slot with checkout affinity is preferred; otherwise any idle slot
+is reused. A third worker waits and prints owners every five seconds. Scheduling
+is opportunistic, not FIFO; long contention can starve a waiter. Waiting does not
+hold a slot. Each slot has one stable OS lock (flock on Unix, byte-range locking
+on Windows). Metadata names the command, checkout, PID, start time, and token.
+`status` shows both lock state and quarantine; a PID alone is never proof of safety.
+Nested launchers validate the token and lock and inherit the target without
+acquiring another slot. Cargo's own locks remain in effect inside the lease.
+
+Both final and intermediate Cargo artifacts stay in the slot: the launcher sets
+`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, and `CARGO_BUILD_BUILD_DIR` for its
+children. This explicitly covers Cargo's separate [intermediate build directory](https://doc.rust-lang.org/cargo/reference/config.html#buildbuild-dir)
+without changing global configuration. Existing directory environment overrides
+require unsetting them or using `--unmanaged`.
+
+The lease covers the command's complete process tree. Build and direct-run or
+capture must be **one command**; shell example for macOS/Linux:
+
+```sh
+python3 scripts/cargo-storage.py run -- sh -c '
+  cargo build --release -p mechanic-app &&
+  python3 scripts/run-background-capture.py --world /path/to/world --output /path/to/new-capture
+'
+```
+
+The capture default follows `CARGO_TARGET_DIR`. On Windows use a Python pipeline
+or PowerShell under `run --`; argument lists are forwarded without shell quoting.
+Always build for the current source before invoking a reused slot's binary.
+Do not override the target within the pipeline. Never launch slot binaries after
+the lease ends. To compare two revisions, copy each binary and its identity to a
+durable measurement directory **while still leased**, then run those copies.
+Existing isolated reference/fence builders keep their separate targets and
+immutable result binaries; they are explicit measurement exceptions and outside
+the slot budget. CPU comparison runners should consume those stable copies.
+
+Direct Cargo continues to work for ordinary ephemeral CI. For explicit isolated
+experiments, `--unmanaged cargo ...` bypasses slots and respects the caller's
+target. It is forbidden inside a lease. Target/config overrides to the launcher’s
+`cargo` command require this opt-out. The arbitrary `run` command is a cooperative
+interface, not a sandbox: scripts must honor the target and lifecycle contract.
+
+## Lifecycle and crash recovery
+
+Unix commands run in a fresh process group; cancellation is forwarded to the group
+and ownership remains until it empties. Windows assigns a gated child to a Job
+Object before allowing it to launch the command. The job retains descendants and
+kills them if the supervisor disappears. Assignment failure fails closed. Child
+exit codes are preserved; Unix signal termination maps to `128 + signal`.
+A child that ignores cancellation keeps its lease until it exits.
+
+Commands must not daemonize, change sessions/groups, or escape containment.
+This launcher is for Cargo, tests, foreground apps, and capture pipelines, not
+arbitrary background services. Outputs must remain under the leased process tree.
+
+Before spawning anything the supervisor persists a running record. If it crashes,
+gets SIGKILL, or encounters an uncertain lifecycle error, a released OS lock does
+**not** make the slot reusable: it is quarantined. This also covers orphaned Cargo
+children. `clean` skips quarantine. The deliberately conservative initial recovery
+policy is `python3 scripts/cargo-storage.py recover` **after an OS reboot**, with
+matching recorded/current boot identities proving the old processes cannot live.
+If either identity is unavailable, recovery is refused. There is no force-unlock
+or missing-PID heuristic. This costs availability after crashes; automatic
+same-boot orphan recovery is deferred. Never delete owner metadata to bypass it.
+
+## Inventory and explicit cleanup
+
+```sh
+python3 scripts/cargo-storage.py status
+python3 scripts/cargo-storage.py clean --idle-hours 24 --budget-gib 80
+python3 scripts/cargo-storage.py clean --idle-hours 24 --budget-gib 80 --apply
+```
+
+Cleanup rechecks exclusive ownership slot by slot and deletes only recognized
+Cargo cache subdirectories (`deps`, `.fingerprint`, `build`, `incremental`,
+`examples`) in `debug`, `release`, and `profiling`, plus Cargo root cache markers.
+It preserves other files, top-level binaries, reports/captures alongside cache
+directories, unknown/custom profiles, cross-compilation targets, and source.
+Do not put authored data inside Cargo-owned cache subdirectories. Symlinked
+profiles are refused and recursive deletion does not follow internal symlinks.
+Lock files and ownership metadata are never cleanup candidates.
+
+Idle slots qualify when older than retention **or** the total recognized store
+exceeds the configured budget, oldest first. Busy and quarantined slots always
+survive, so the budget is a cleanup target, not a hard allocation cap. Preview is
+advisory: apply reacquires locks and recomputes eligibility. No automatic eviction
+runs. Status/preview sizes are allocated file bytes on Unix and logical bytes on
+Windows; hardlinks and concurrent activity may affect accounting.
+
+Two slots limit duplicated working caches, not all historical artifacts or peak
+build size. Branches, features, profiles, compiler changes and dependency path
+fingerprints still grow a slot. Reusing worktrees does not promise complete Cargo
+deduplication. Cleanup sacrifices warm-cache speed. A third build trades queue time
+for lower concurrent disk demand. Durable captures and isolated builds need their
+own inventory and retention policy.
+
+## Rollout and evidence
+
+1. Inventory current targets and live users with the orchestrator. Let active
+   builds finish in place. Never repoint a running build or remove its artifacts.
+2. Exercise launcher tests and small Cargo builds in a test-owned root, then have
+   idle workers adopt the same shared root on their next invocation.
+3. Preview recognized slot cleanup. Legacy targets are never auto-discovered or
+   deleted by this tool; reclaim them only after independent proof that all
+   builders, tests, apps, and captures using them have ended.
+4. Keep automatic idle eviction off until operational safety is demonstrated.
+
+Initial macOS inventory on 2026-10-03: main target 129,867,080 KiB, coupler target
+27,417,904 KiB, about 20 GiB filesystem space available. These sizes are **not**
+proven reclaimable. This session's sandbox blocks process inspection and boot
+identity reads; worker coordination/rollout requires AO access approval. No legacy
+targets have been deleted. See the PR validation record for current rollout status.
+
+`python3 scripts/test-cargo-storage.py` exercises actual process locks, two occupied
+slots plus a queued third, nested reuse, exit status, cancellation, crash quarantine,
+cleanup contention, symlink refusal, and a tiny real Cargo binary rebuilt across
+checkout paths. Full workspace builds are unnecessary for scheduler regression.
+Platform CI must verify the Windows Job Object path before adoption there.
+
+Incremental-off and reduced-debug experiments remain opt-in. No optimizer, debug,
+assertion, or profile defaults change. Measure cold and warm builds separately in
+an isolated target (including disk size and elapsed time); a tiny launcher smoke
+fixture cannot establish the Bevy workspace's build-speed/storage tradeoff.
+
+### Local validation, 2026-10-03
+
+macOS arm64, Rust/Cargo 1.97.1, Python 3.14.3:
+
+- 13 focused storage tests passed, including real Cargo checkout/binary isolation.
+- Outer leased `cargo xtask consistency`, `scripts-test`, and `fmt` passed.
+  The script suite contains 44 tests including the 13 storage tests.
+- Real xtask cache cleanup: 17,080,320 allocated bytes before; preview selected
+  16,359,424 bytes; apply reclaimed exactly 16,359,424; 720,896 bytes remained.
+  This was a fresh test-owned temporary root, not a legacy or active worker target.
+- `cargo metadata --no-deps --locked --offline` validates the 0.4.2 manifest/lock bump.
+- Added a dedicated three-platform lifecycle CI job with tiny Cargo fixtures and
+  no private workspace dependencies. Linux/Windows results are pending CI.
+
+No full app build, runtime performance claim, profile-default change, legacy
+reclamation, or shared-worker rollout is included in this local evidence.

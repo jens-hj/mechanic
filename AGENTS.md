@@ -46,12 +46,37 @@ Tasks forward extra arguments to the underlying command, for example `cargo xtas
 
 ### Disk Space
 
-The development machine's disk is small, and one build of this workspace fills many gigabytes, so every session keeps `target/` lean.
+Worker builds use `python3 scripts/cargo-storage.py cargo <arguments>` (Windows:
+`python scripts/cargo-storage.py`). This acquires one of two reusable slots
+before the outer Cargo invocation, including `cargo xtask` bootstrap. For example:
 
-- Build into the checkout's own `target/`. Never point `CARGO_TARGET_DIR` at a fresh directory: a temporary worktree builds with `CARGO_TARGET_DIR=<checkout>/target`, so it reuses the build already there.
-- Remove a temporary worktree with `git worktree remove` as soon as its check is done, along with anything it built.
-- Build release only when the measurement or GPU test needs it; each profile is a second full build.
-- Check free space with `df -h .` before a long build. Below 20 GB free, first delete `target/*/incremental`, then stale profiles with `cargo clean --profile <name>`, and only then all of `target/`.
+- `python3 scripts/cargo-storage.py cargo xtask test -p mechanic-core`
+- `python3 scripts/cargo-storage.py cargo run -p mechanic-app`
+- `python3 scripts/cargo-storage.py cargo xtask lint`
+
+Unset a previously configured `CARGO_TARGET_DIR` when adopting the launcher.
+Nested commands inherit the lease. For a build followed by direct binary runs,
+wrap the **entire** pipeline with `cargo-storage.py run -- <command>`, and resolve
+binaries beneath the inherited `CARGO_TARGET_DIR`. Keep captures/reports outside
+that directory. Never run a slot binary after its lease ends; rebuild under a
+lease or copy a durable measurement binary while holding the lease.
+
+- Existing builds finish on their existing targets before adoption. Never clean
+  another worker's target or change global Cargo configuration.
+- Use `cargo-storage.py status` for owners and sizes, and `cargo-storage.py clean`
+  for a preview. Add `--apply` only after reviewing it. Cleanup takes the same
+  exclusive locks as builds and skips active or quarantined slots.
+- Do not daemonize or detach child processes from a leased command. A crashed
+  supervisor quarantines its slot; `recover` requires proof of a later OS boot.
+- Keep release/profiling builds for tasks that need them. No profile defaults
+  change. Check `df -h .` before a large build; two slots are not a byte quota.
+- Explicit isolated measurements and ordinary ephemeral CI can use
+  `cargo-storage.py --unmanaged cargo ...`. Isolated reference-builder scripts
+  already create and preserve their own source-matched binaries; their storage
+  is outside the slot budget and must be inventoried separately.
+
+See [Cargo storage](docs/cargo-storage.md) for retention/budget controls, platform
+limits, crash recovery, and staged rollout. Never blindly delete legacy targets.
 
 ## Coding Style & Naming Conventions
 

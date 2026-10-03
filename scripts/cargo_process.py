@@ -1,0 +1,136 @@
+"""Keep a command's descendants inside the lifetime of its storage lease.
+
+Commands must not daemonize or escape their process group/job. An interrupted
+supervisor leaves persistent quarantine; parent-PID checks never clear it.
+"""
+import ctypes
+import os
+import signal
+import subprocess
+import time
+
+
+class WindowsJob:
+    """Assign the gated child before it can spawn; kill descendants on close."""
+    def __init__(self):
+        from ctypes import wintypes as w
+
+        class Basic(ctypes.Structure):
+            _fields_ = [('process_time', ctypes.c_int64), ('job_time', ctypes.c_int64),
+                        ('flags', w.DWORD), ('min_ws', ctypes.c_size_t),
+                        ('max_ws', ctypes.c_size_t), ('active_limit', w.DWORD),
+                        ('affinity', ctypes.c_size_t), ('priority', w.DWORD),
+                        ('scheduling', w.DWORD)]
+
+        class IO(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in
+                        ('read_ops', 'write_ops', 'other_ops', 'read_bytes', 'write_bytes', 'other_bytes')]
+
+        class Extended(ctypes.Structure):
+            _fields_ = [('basic', Basic), ('io', IO), ('process_memory', ctypes.c_size_t),
+                        ('job_memory', ctypes.c_size_t), ('peak_process', ctypes.c_size_t),
+                        ('peak_job', ctypes.c_size_t)]
+
+        self.api = ctypes.WinDLL('kernel32', use_last_error=True)
+        self.api.CreateJobObjectW.argtypes = [ctypes.c_void_p, w.LPCWSTR]
+        self.api.CreateJobObjectW.restype = w.HANDLE
+        self.api.SetInformationJobObject.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD]
+        self.api.AssignProcessToJobObject.argtypes = [w.HANDLE, w.HANDLE]
+        self.api.QueryInformationJobObject.argtypes = [w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD, ctypes.c_void_p]
+        self.api.TerminateJobObject.argtypes = [w.HANDLE, w.UINT]
+        self.api.CloseHandle.argtypes = [w.HANDLE]
+        self.handle = self.api.CreateJobObjectW(None, None)
+        if not self.handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = Extended()
+        limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not self.api.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            self.close()
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def assign(self, child):
+        if not self.api.AssignProcessToJobObject(self.handle, int(child._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def active(self):
+        # JOBOBJECT_BASIC_ACCOUNTING_INFORMATION: four LARGE_INTEGERs,
+        # then page faults, total, active and terminated process counts.
+        buffer = ctypes.create_string_buffer(48)
+        if not self.api.QueryInformationJobObject(self.handle, 1, buffer, len(buffer), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return int.from_bytes(buffer.raw[40:44], 'little') > 0
+
+    def terminate(self, code):
+        if not self.api.TerminateJobObject(self.handle, code):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self):
+        self.api.CloseHandle(self.handle)
+
+
+def run(command, env, gate, launcher):
+    """Return only after the process group/job empties; forward cancellation."""
+    import sys
+    job = WindowsJob() if os.name == 'nt' else None
+    child = None
+    cancelled = []
+    handlers = {}
+
+    def forward(signum, _):
+        cancelled.append(signum)
+        if child is not None:
+            try:
+                if job:
+                    job.terminate(128 + signum)
+                else:
+                    os.killpg(child.pid, signum)
+            except ProcessLookupError:
+                pass
+
+    try:
+        signals = [signal.SIGINT, signal.SIGTERM]
+        if hasattr(signal, 'SIGHUP'):
+            signals.append(signal.SIGHUP)
+        for sig in signals:
+            handlers[sig] = signal.signal(sig, forward)
+        child = subprocess.Popen(
+            [sys.executable, str(launcher), '_child', str(gate), '--', *command],
+            env=env, start_new_session=os.name != 'nt',
+        )
+        if job:
+            job.assign(child)
+        # Starting under a gate closes the spawn/containment race on Windows.
+        gate.write_text('go')
+        if cancelled:
+            forward(cancelled[-1], None)
+        code = child.wait()
+        while True:
+            if job:
+                active = job.active()
+            else:
+                try:
+                    os.killpg(child.pid, 0)
+                    active = True
+                except ProcessLookupError:
+                    active = False
+            if not active:
+                break
+            time.sleep(.1)
+        return 128 + cancelled[-1] if cancelled else (128 - code if code < 0 else code)
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        if job:
+            job.close()
+        if child is not None and child.poll() is None:
+            # Failure here must leave owner.json quarantined, even if termination
+            # fails. The launcher clears the record only after run returns.
+            if os.name != 'nt':
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            else:
+                child.kill()
+            child.wait()
+        gate.unlink(missing_ok=True)

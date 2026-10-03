@@ -11,6 +11,8 @@ import subprocess
 import shutil
 import time
 
+from cargo_storage import require_binary_lease
+
 
 def digest(path):
     with path.open('rb') as source:
@@ -39,6 +41,8 @@ def run_until_idle(command, output, idle_seconds):
 def run(args):
     args.output.mkdir(parents=True, exist_ok=False)
     binaries = {name: path.resolve() for name, path in [('baseline', args.baseline), ('candidate', args.candidate)]}
+    for binary in binaries.values():
+        require_binary_lease(binary)
     manifest = {'machine': platform.platform(), 'architecture': platform.machine(),
                 'warmup_ticks': args.warmup, 'measured_ticks': args.ticks, 'repeats': args.repeats, 'assemblies': args.assemblies,
                 'binaries': {name: {'path': str(path), 'sha256': digest(path)} for name, path in binaries.items()},
