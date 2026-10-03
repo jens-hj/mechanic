@@ -1559,7 +1559,7 @@ impl CompiledWorld {
         let [nx, ny, nz] = lattice.dims;
         let columns: Vec<Column> = (0..nz)
             .flat_map(|k| (0..nx).map(move |i| (i, k)))
-            .map(|(i, k)| self.column(lattice.coordinate(0, i), lattice.coordinate(2, k)))
+            .map(|(i, k)| self.cached_column(lattice.coordinate(0, i), lattice.coordinate(2, k)))
             .collect();
         let mut densities = vec![0.0; lattice.len()];
         let mut carved = vec![0; lattice.len()];

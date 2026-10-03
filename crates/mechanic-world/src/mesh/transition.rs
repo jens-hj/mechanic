@@ -12,8 +12,8 @@ use crate::transvoxel::tables::{
 };
 use crate::{TERRAIN_CELL_METERS, TerrainFace, TerrainField, WorldCell};
 use bevy_math::{DVec3, Vec3};
-use std::array;
 use rustc_hash::FxHashMap;
+use std::array;
 
 pub(super) fn generate_face_cap(
     lattice: &[LatticePoint],
