@@ -173,6 +173,25 @@ own inventory and retention policy.
 
 ## Rollout and evidence
 
+Latest validation (revision `f91f3ff`, 2026-10-03): the full lightweight lifecycle
+matrix passed on Windows, macOS and Ubuntu, including admission and checkout
+invalidation. The formerly proposed worker world-suite pilot was dropped after
+that worker completed its 323 tests; no redundant world rebuild was run.
+
+One needed `cargo xtask consistency` invocation then passed through the common
+store with the 20 GiB admission floor: 1.922s elapsed, 0.01s queue wait, store
+growth from zero to 13,365,248 allocated bytes. Filesystem free space changed from
+47,132,459,008 to 47,120,547,840 bytes; concurrent filesystem activity means this
+delta is not an isolated allocation measurement. Only slot 0 compiled xtask.
+This validates the real outer bootstrap and a repository workflow, not broad
+worker adoption or a full workspace footprint. The common v2 root is now
+initialized; future adopters still need a genuinely needed invocation and capacity
+coordination. No second cold slot, legacy-target cleanup or GPU work was started.
+
+The historical validation notes below describe earlier checkpoints; their pending
+platform status is superseded by this result. Full repository CI and PR approval
+remain separate from the lightweight lifecycle and limited workflow evidence.
+
 1. Inventory current targets and live users with the orchestrator. Let active
    builds finish in place. Never repoint a running build or remove its artifacts.
 2. Exercise launcher tests and small Cargo builds in a test-owned root, then have
@@ -184,16 +203,15 @@ own inventory and retention policy.
 
 Initial macOS inventory on 2026-10-03: main target 129,867,080 KiB, coupler target
 27,417,904 KiB, about 20 GiB filesystem space available. These sizes are **not**
-proven reclaimable. This session's sandbox blocks process inspection and boot
-identity reads. AO coordination is established; shared-worker rollout remains
-pending while ordinary shared-target builds/captures are active. The urgent recovery below later removed only the independently verified-idle
+proven reclaimable. At that initial checkpoint, process inspection required elevated access and
+shared-worker rollout was pending coordination with active builds/captures. The urgent recovery below later removed only the independently verified-idle
 retired incremental cache. Shared-slot adoption remains separate from recovery.
 
 `python3 scripts/test-cargo-storage.py` exercises actual process locks, two occupied
 slots plus a queued third, nested reuse, exit status, cancellation, crash quarantine,
 cleanup contention, symlink refusal, and a tiny real Cargo binary rebuilt across
 checkout paths. Full workspace builds are unnecessary for scheduler regression.
-Platform CI must verify the Windows Job Object path before adoption there.
+The latest lifecycle matrix now verifies the Windows Job Object path as well.
 
 Incremental-off and reduced-debug experiments remain opt-in. No optimizer, debug,
 assertion, or profile defaults change. Measure cold and warm builds separately in
@@ -217,8 +235,8 @@ successful Cargo build. The lease correctly prevents replacement during the
 first checkout's build-and-execution pipeline, but does not establish checkout
 freshness after handoff. The failing regression
 `test_checkout_cannot_replace_binary_between_build_and_execution` supersedes the
-earlier sequential checkout-isolation claim below. Shared-slot adoption is paused
-until the fix passes lifecycle CI; existing active targets remain in place.
+earlier sequential checkout-isolation claim below. That blocker is fixed and lifecycle CI is now green; broader adoption remains
+opportunistic and existing active targets stay in place.
 Before the fix, the original regression failed with `AssertionError: 'first' !=
 'second'` after B's successful build. Reassignment invalidation now passes locally:
 pre-created unchanged A/B/A sources with incompatible library return types, nested
@@ -233,8 +251,8 @@ allocated file bytes in its one Cargo subtree; A/B caches did not accumulate.
 These single observations include launcher overhead and do not establish a
 general slowdown ratio. Eighteen local lifecycle tests pass (one Windows-only
 case skipped); removing only reassignment invalidation reproduces
-`AssertionError: 'first' != 'second'` on pinned Cargo 1.97.1. Cross-platform
-verification of this revision is pending; adoption remains suspended.
+`AssertionError: 'first' != 'second'` on pinned Cargo 1.97.1. Subsequent all-platform verification passed as recorded above; this does not
+constitute broad worker adoption.
 
 Mechanic-5 separately reported a shared-target `cargo check -p mechanic-physics
 --all-targets` success followed by two `cargo test -p mechanic-physics treads`
@@ -259,7 +277,7 @@ macOS arm64, Rust/Cargo 1.97.1, Python 3.14.3:
   below supersede those initial byte claims.
 - `cargo metadata --no-deps --locked --offline` validates the 0.4.2 manifest/lock bump.
 - Added a dedicated three-platform lifecycle CI job with tiny Cargo fixtures and
-  no private workspace dependencies. Linux/Windows results are pending CI.
+  no private workspace dependencies. Linux/Windows subsequently passed in the latest lifecycle matrix.
 
 No full app build, runtime performance claim, profile-default change, legacy
 reclamation, or shared-worker rollout is included in this local evidence.
@@ -298,10 +316,29 @@ deletion. The original ENOSPC path/cause remains unresolved; these observations
 do not prove what caused the earlier recovery. Future cleanup requires exclusive
 protection through dependent execution as well as compilation.
 
+Mechanic-7 later attributed an earlier cleanup during the first reported ENOSPC
+(approximately 17:5x) to deleting shared
+`/Users/jens/repos/mechanic/target/*/incremental` (about 18 GB reported), plus
+three of its temporary capture directories (about 11 MB reported). These are
+worker-reported amounts, not audited unique physical-byte deltas or evidence of
+exclusive locking. They are not summed with the measured recovery above and do
+not establish the original ENOSPC cause or which action restored capacity.
+
+Mechanic-6 subsequently reported deleting only
+`/tmp/mechanic-62-capture-app` (217,896,784 logical bytes) and
+`/tmp/mechanic-62-readback-app` (219,209,264 logical bytes): 437,106,048 logical
+bytes total, with APFS physical recovery unmeasured. It reported preserving final
+binaries, logs and visual evidence and leaving the shared target untouched.
+This later deletion cannot explain the earlier 58 GiB available-space reading
+and is not added to the audited physical recovery. Its retained logs contain no
+ENOSPC/no-space/disk-full message, and it cannot verify an original failed path.
+The original incident's path and cause are therefore recorded as unknown; no
+further request for that unavailable evidence is pending.
+
 The expanded lifecycle suite defines 16 tests, including hardlink accounting and a
 Windows-specific descendant-handle test. Lightweight Linux/macOS CI passed before
 the Windows fix. Windows CI exposed a native Python `os.execvpe` crash; its gated
-child now uses `subprocess` within the Job Object. Verification of that fix is pending.
+child now uses `subprocess` within the Job Object. The latest Windows lifecycle job verifies that fix.
 
 The subsequent Windows smoke trace confirmed Cargo had run its expected binary,
 but MSVC's `vctip.exe` remained alive. Completion now also drains this known
