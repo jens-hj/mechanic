@@ -3,6 +3,26 @@
 // biome name are mixed in on top.
 Library(
     definitions: {
+        // Jointed rock: planar faces with unequal oblique cuts. Scatter vars
+        // r (metres) and chip (0.8..1.2) vary size and the broken upper corner.
+        // The six axial faces bound it within 1.8*r of its origin.
+        "jointed_rock": Min([
+            Sub(Mul([Ref("r"), C(1.25)]), Abs(X)),
+            Sub(Mul([Ref("r"), C(0.8)]), Abs(Y)),
+            Sub(Ref("r"), Abs(Z)),
+            Add([Mul([Ref("r"), Ref("chip")]), Plane(normal: (1, 1.4, 0.6))]),
+            Add([Mul([Ref("r"), C(1.05)]), Plane(normal: (-1, 0.6, 1))]),
+            Add([Mul([Ref("r"), C(1.1)]), Plane(normal: (0.4, -1, -1))]),
+            Add([Mul([Ref("r"), C(1.0)]), Plane(normal: (-0.7, 1, -1))]),
+        ]),
+
+        // Interlocking blocks retain their joints instead of melting together.
+        "rock_cluster": Union([
+            Stretch((1, 2, 1), Ref("jointed_rock")),
+            Translate((3.5, -1.5, 1), RotateY(32, Ref("jointed_rock"))),
+            Translate((-3, -2, -1.5), RotateZ(-18, Ref("jointed_rock"))),
+        ]),
+
         // Gentle, familiar rolling ground.
         "rolling": Noise(kind: SimplexSmooth, freq: 0.0022, octaves: 5, amp: 16, dims: Two, seed: 1),
 

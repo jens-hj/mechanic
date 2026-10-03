@@ -12,20 +12,23 @@ Biome(
         Ref("grain"),
     ]),
 
-    density: SmoothUnion(1.2, [
-        Height(Ref("height")),
-        Scatter(
-            cell: 36, reach: 5, chance: 0.4,
-            ground: Ref("height"), lift: (-1.2, -0.2), tilt: 35,
-            vars: {"r": (1.1, 2.4)},
-            shape: Warp(
-                by: (freq: 0.45, octaves: 2, amp: 0.35, seed: 5),
-                of: Stretch((1.35, 0.8, 1.0), Sphere(Ref("r"))),
-            ),
+    let: {
+        "boulders": Scatter(
+            cell: 36, reach: 6, chance: 0.4,
+            ground: Ref("height"), lift: (-0.6, -0.2), tilt: 25,
+            vars: {"r": (1.2, 2.8), "chip": (0.8, 1.2)},
+            shape: Ref("jointed_rock"),
         ),
+    },
+
+    density: SmoothUnion(0.25, [
+        Height(Ref("height")),
+        Ref("boulders"),
     ]),
 
     surface: [
+        // Rock stays rock on its flat top and throughout its buried body.
+        (when: Field(Ref("boulders"), -0.15, inf), use: "granite"),
         // Established beds and the narrow bare shore precede vegetation.
         (when: All([WaterDepth(-0.35, 0), Up(0.55, 1), Depth(0, 0.8)]), use: "loam"),
         (when: All([WaterDepth(0, inf), NearRiver(9), Up(0.55, 1), Depth(0, 0.8)]), use: "river_gravel"),
