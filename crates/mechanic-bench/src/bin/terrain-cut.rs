@@ -17,8 +17,8 @@ use std::time::Instant;
 use bevy_math::DVec3;
 use mechanic_world::{
     ActiveTerrainNode, TerrainBoundsCache, TerrainField, TerrainMeshChunk, TerrainMeshRequest,
-    TerrainOctree,
-    WorldPosition, WorldSeed, WorldgenSpec, mesh_chunk_profiled, select_active_nodes_cached,
+    TerrainOctree, WorldPosition, WorldSeed, WorldgenSpec, mesh_chunk_profiled,
+    select_active_nodes_cached,
 };
 
 /// Spacing of the search grid for biome hearts, and how far it reaches.
@@ -171,7 +171,10 @@ fn digest(chunk: &TerrainMeshChunk) -> u64 {
     }
     chunk.surfaces.hash(&mut hasher);
     chunk.compaction.hash(&mut hasher);
-    chunk.index_groups.final_indices(chunk.transition_mask).hash(&mut hasher);
+    chunk
+        .index_groups
+        .final_indices(chunk.transition_mask)
+        .hash(&mut hasher);
     hasher.finish()
 }
 
