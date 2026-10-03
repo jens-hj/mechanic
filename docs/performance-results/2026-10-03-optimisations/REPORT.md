@@ -35,6 +35,11 @@ conditions to compare it.
 | `water-breach` | 2 + 2 | 32–120 | 455–461 G → 338–344 G (−25.6 %) | step p50 7.2–7.3 → 5.8–6.1 ms (−18 %); p95s load-dominated |
 | `terrain-cut`, nine biomes | 1 + 1 | 16 / 177 | 4,222 G → 3,439 G (−18.5 %) | not comparable |
 
+After the lone-body change, two further interleaved builder runs per build
+(load 7.5–18): baseline 63.7–63.9 G cycles, tick median 33.6–33.9 ms; before
+the change 44.9–45.1 G, 21.95–22.03 ms; after it 44.87–44.91 G, 21.82–21.90 ms.
+All six runs ended on the same state hash.
+
 Peak memory in the same runs (maximum resident / peak footprint):
 
 | Workload | Baseline | Current |
