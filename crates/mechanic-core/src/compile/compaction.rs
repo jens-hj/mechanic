@@ -35,7 +35,9 @@ pub(super) fn compact_grid_aligned_cuboids(colliders: &mut Vec<LocalCollider>, s
     for collider in original {
         // Multi-row source geometry includes cylinders, pipe bends, and shaped
         // regions. Keep each authored decomposition contiguous and untouched.
-        if rows_by_source[&collider.source_part] != 1 {
+        // A treaded part's row keeps its own identity, so a contact can still
+        // find the surface it touches.
+        if rows_by_source[&collider.source_part] != 1 || collider.treads.is_some() {
             preserved.push(collider);
             continue;
         }
@@ -96,6 +98,7 @@ pub(super) fn compact_grid_aligned_cuboids(colliders: &mut Vec<LocalCollider>, s
         compound_index: cuboid.compound_index,
         local_center: cuboid.center,
         material_properties: cuboid.material,
+        treads: None,
         shape: ColliderShape::Cuboid {
             local_rotation: Quat::IDENTITY,
             half_extents: cuboid.half_extents,

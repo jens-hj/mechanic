@@ -39,6 +39,19 @@ impl FaceKind {
         }
     }
 
+    /// The face perpendicular to `axis`, looking along its positive or
+    /// negative direction.
+    pub const fn along(axis: Axis, positive: bool) -> Self {
+        match (axis, positive) {
+            (Axis::X, true) => Self::PositiveX,
+            (Axis::X, false) => Self::NegativeX,
+            (Axis::Y, true) => Self::PositiveY,
+            (Axis::Y, false) => Self::NegativeY,
+            (Axis::Z, true) => Self::PositiveZ,
+            (Axis::Z, false) => Self::NegativeZ,
+        }
+    }
+
     /// The local axis this face is perpendicular to.
     pub const fn axis(self) -> Axis {
         match self {

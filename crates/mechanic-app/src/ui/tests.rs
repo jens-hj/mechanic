@@ -100,7 +100,7 @@ fn chroma_status_is_read_only_and_tab_configuration_expands_for_dye() {
 
     overlay.handles.material_wheel.set(material_wheel::Model {
         open: true,
-        chroma_config: true,
+        config_panel: true,
         highlighted: None,
     });
     overlay.settle();
@@ -157,6 +157,66 @@ fn chroma_status_is_read_only_and_tab_configuration_expands_for_dye() {
 }
 
 #[test]
+fn tread_status_is_read_only_and_the_workbench_draws_on_the_tile() {
+    let overlay = Overlay::mount();
+    let ordinary_count = overlay.element_count();
+    overlay
+        .handles
+        .hotbar
+        .set(SelectedTool::from_editor_tool(Tool::Tread));
+    overlay.settle();
+    let status_count = overlay.element_count();
+    assert!(status_count > ordinary_count, "the Tread status mounted");
+    let status = overlay
+        .shapes()
+        .into_iter()
+        .find(|shape| (shape.rect.size.width - 260.0).abs() < 0.5)
+        .expect("read-only Tread status panel");
+    assert!(!overlay.wants_pointer_at(status.rect.center()));
+
+    overlay.handles.material_wheel.set(material_wheel::Model {
+        open: true,
+        config_panel: true,
+        highlighted: None,
+    });
+    overlay.settle();
+    assert!(
+        overlay
+            .labels()
+            .iter()
+            .all(|label| label != "Saturation and value"),
+        "Tab in Tread mode opens the tread workbench, not Chroma's"
+    );
+    // The tile's cells are the 8 × 8 squares of the large grid; the first in
+    // reading order is column 0 of row 0.
+    let cell = (368.0 - 7.0 * 6.0) / 8.0;
+    let mut cells = overlay
+        .shapes()
+        .into_iter()
+        .filter(|shape| {
+            (shape.rect.size.width - cell).abs() < 0.5
+                && (shape.rect.size.height - cell).abs() < 0.5
+        })
+        .map(|shape| shape.rect.center())
+        .collect::<Vec<_>>();
+    assert_eq!(cells.len(), 64, "every cell of the tile is drawn");
+    cells.sort_by(|a, b| a.y.total_cmp(&b.y).then(a.x.total_cmp(&b.x)));
+    let before = overlay.handles.tread.get_untracked().tread.pattern().mask();
+    overlay.click(cells[0]);
+    overlay.settle();
+    let after = overlay.handles.tread.get_untracked();
+    assert!(matches!(
+        after.tread.pattern(),
+        mechanic_core::TreadPattern::Custom(_)
+    ));
+    assert_eq!(
+        after.tread.pattern().mask().bits() ^ before.bits(),
+        1,
+        "the click flipped exactly cell (0, 0)"
+    );
+}
+
+#[test]
 fn typed_boundaries_preserve_panel_and_world_pointer_ownership() {
     let overlay = Overlay::mount();
     overlay.handles.help_open.set(true);
@@ -185,7 +245,7 @@ fn material_wheel_is_large_textured_and_paints_the_highlight_last() {
     let overlay = Overlay::mount();
     overlay.handles.material_wheel.set(material_wheel::Model {
         open: true,
-        chroma_config: false,
+        config_panel: false,
         highlighted: Some(crate::hotbar::WheelChoice::ConstructionMaterial(
             ConstructionMaterial::Concrete,
         )),

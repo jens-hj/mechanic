@@ -6,7 +6,7 @@ use super::{broadphase, sweep};
 use crate::PhysicsError;
 use bevy_math::DVec3;
 use mechanic_core::{
-    CompiledCreation, ContactCylinder, ContactPolytope, MaterialProperties, PartId,
+    CompiledCreation, CompiledTreads, ContactCylinder, ContactPolytope, MaterialProperties, PartId,
 };
 use rustc_hash::FxHashSet;
 use std::sync::Mutex;
@@ -16,6 +16,8 @@ pub(super) struct Collider {
     pub(super) part: PartId,
     pub(super) center: DVec3,
     pub(super) material: MaterialProperties,
+    // Row in `MachineCollisionGeometry::treads` of the source part's treads.
+    pub(super) treads: Option<u32>,
     // Circumscribing prism for a cylinder: every bound, sweep and body pair uses
     // it, since it contains the cylinder.
     pub(super) local: ContactPolytope,
@@ -70,6 +72,8 @@ pub struct MachineCollisionGeometry {
     pub(super) generation: u64,
     pub(super) bodies: usize,
     pub(super) colliders: Vec<Collider>,
+    // Treads cut into parts, which change how they meet terrain.
+    pub(super) treads: Vec<CompiledTreads>,
     pub(super) reach: Vec<(usize, f64)>,
     pub(super) motion_colliders: Vec<MotionCollider>,
     // Sorted body pairs none of whose colliders may collide: joined by a
@@ -144,6 +148,7 @@ impl MachineCollisionGeometry {
                     .map_or(source.local_center, |cylinder| cylinder.local_center)
                     .as_dvec3(),
                 material: source.material_properties,
+                treads: source.treads,
                 bounds: local.bounds(),
                 local,
                 round: cylinder
@@ -241,6 +246,7 @@ impl MachineCollisionGeometry {
             .map(|rows| !rows.is_empty() && rows.iter().all(|&row| colliders[row].round.is_some()))
             .collect();
         let mut geometry = Self {
+            treads: creation.treads.clone(),
             generation: topology_generation,
             bodies: creation.compounds.len(),
             colliders,

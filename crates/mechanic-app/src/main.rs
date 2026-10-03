@@ -66,6 +66,7 @@ mod terrain_publication;
 #[cfg(test)]
 mod testing;
 mod tool_fx;
+mod tread;
 mod ui;
 mod weld_publication;
 mod weld_tool;
@@ -254,6 +255,7 @@ fn main() {
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
         .init_resource::<ChromaBrush>()
+        .init_resource::<tread::TreadBrush>()
         .init_resource::<SelectedTerrainMaterial>()
         .init_resource::<PlayerState>()
         .init_resource::<MaterialWheelState>()

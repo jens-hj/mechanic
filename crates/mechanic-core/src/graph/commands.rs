@@ -78,6 +78,16 @@ pub enum BuildCommand {
         /// Replacement sharing the part's core.
         spec: PartSpec,
     },
+    /// Cut a tread into one surface of a cuboid or cylinder, replacing any
+    /// tread there, or smooth that surface with `None`.
+    SetTread {
+        /// Part being treaded.
+        part: PartId,
+        /// Surface the tread is cut into.
+        surface: crate::LayerFace,
+        /// Replacement tread.
+        tread: Option<crate::TreadSpec>,
+    },
     /// Replace a cylinder's spiral in place, keeping its part identity and
     /// connections. The diameters may change with it: a ridge added onto a
     /// cylinder widens the envelope the spiral is drawn into.
@@ -311,6 +321,8 @@ pub enum BuildOutcome {
     AppearanceUpdated,
     /// A part's material layers changed.
     LayersUpdated,
+    /// A surface's tread changed.
+    TreadUpdated,
     /// A cylinder's spiral changed.
     SpiralUpdated,
     /// A part's gear or rack teeth changed.

@@ -386,12 +386,12 @@ fn tapping_a_two_choice_selector_toggles_and_aiming_commits_the_highlight() {
 }
 
 #[test]
-fn chroma_configuration_uses_the_selector_without_a_radial_choice() {
+fn mode_configuration_uses_the_selector_without_a_radial_choice() {
     let mut wheel = MaterialWheelState::default();
-    wheel.open_chroma_config();
+    wheel.open_config_panel();
 
     assert!(wheel.open);
-    assert!(wheel.chroma_config);
+    assert!(wheel.config_panel);
     assert_eq!(wheel.highlighted, None);
     assert_eq!(wheel.selector, Vec2::ZERO);
 
@@ -400,8 +400,8 @@ fn chroma_configuration_uses_the_selector_without_a_radial_choice() {
 }
 
 #[test]
-fn chroma_configuration_toggles_on_press_instead_of_release() {
-    assert!(!chroma_config_should_close(false, false, true));
-    assert!(chroma_config_should_close(true, false, true));
-    assert!(chroma_config_should_close(false, false, false));
+fn mode_configuration_toggles_on_press_instead_of_release() {
+    assert!(!config_panel_should_close(false, false, true));
+    assert!(config_panel_should_close(true, false, true));
+    assert!(config_panel_should_close(false, false, false));
 }

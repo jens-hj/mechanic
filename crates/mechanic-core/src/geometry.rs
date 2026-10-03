@@ -8,6 +8,7 @@ mod machine;
 mod material;
 mod pipe;
 mod spiral;
+mod tread;
 
 pub use cylinder::{
     CYLINDER_SWEEP_STEP_DEGREES, CylinderDimensionError, CylinderDimensions, CylinderSpec,
@@ -48,6 +49,11 @@ pub use spiral::{
     MAX_SPIRAL_STARTS, MIN_SPIRAL_COLLIDER_STEPS_PER_TURN, MIN_SPIRAL_PITCH_TICKS,
     MIN_SPIRAL_TIP_DIAMETER_TICKS, SPIRAL_COLLIDER_STEPS_PER_TURN, SPIRAL_PROFILE_STEP_TICKS,
     SpiralEnd, SpiralError, SpiralHand, SpiralPoint, SpiralProfile, SpiralSpec, SpiralTaper,
+};
+pub use tread::{
+    DEFAULT_TREAD_DEPTH_MM, MAX_TREAD_DEPTH_MM, MIN_TREAD_DEPTH_MM, SurfaceTreads,
+    TREAD_CELL_METERS, TREAD_TILE_CELLS, TREAD_TILE_METERS, TreadError, TreadMask, TreadPattern,
+    TreadResponse, TreadSpec,
 };
 
 use bevy_math::Vec3;
@@ -170,6 +176,32 @@ impl PartSpec {
     /// Whether the part carries any material layer.
     pub const fn is_layered(self) -> bool {
         !self.material_layers().is_empty()
+    }
+
+    /// Whether a tread can be cut into one surface of this part. Only
+    /// ordinary cuboids and full plain cylinders take treads.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreadError::UnsupportedSurface`] for parts that take no
+    /// tread, or the cuboid or cylinder tread error.
+    pub fn tread_fits(self, surface: LayerFace) -> Result<(), TreadError> {
+        match self {
+            Self::Cuboid(spec) => spec.tread_fits(surface),
+            Self::Cylinder(spec) => spec.tread_fits(surface),
+            Self::PipeBend(_)
+            | Self::PipeJunction(_)
+            | Self::Controller(_)
+            | Self::Engine(_)
+            | Self::Transmission(_)
+            | Self::Servo(_)
+            | Self::Seat(_)
+            | Self::Dial(_)
+            | Self::Button(_)
+            | Self::Input(_)
+            | Self::Coupler(_)
+            | Self::DimensionLink(_) => Err(TreadError::UnsupportedSurface),
+        }
     }
 
     /// Material and appearance of one band: zero is the core, `i + 1` layer `i`.
@@ -660,6 +692,22 @@ impl CuboidSpec {
     pub const fn without_rack(mut self) -> Self {
         self.rack = None;
         self
+    }
+
+    /// Whether a tread can be cut into one face.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreadError::UnsupportedSurface`] for a curved surface, and
+    /// [`TreadError::ToothedPart`] when the cuboid carries a rack.
+    pub fn tread_fits(self, surface: LayerFace) -> Result<(), TreadError> {
+        if !matches!(surface, LayerFace::Face(_)) {
+            return Err(TreadError::UnsupportedSurface);
+        }
+        if self.rack.is_some() {
+            return Err(TreadError::ToothedPart);
+        }
+        Ok(())
     }
 
     /// Envelope side lengths in metres, including every layer.

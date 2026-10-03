@@ -39,6 +39,7 @@ mod suspension;
 #[cfg(test)]
 mod testing;
 pub(crate) mod theme;
+mod tread;
 mod worlds;
 
 use std::cell::RefCell;
@@ -64,6 +65,7 @@ use crate::pause_menu::PauseMenuState;
 use crate::settings::AppSettings;
 use crate::showcase::CreationPreset;
 use crate::simulation::state::AppSimulation;
+use crate::tread::TreadBrush;
 use mechanic_core::{ConstructionMaterial, MaterialAppearance};
 use mechanic_world::TerrainMaterial;
 
@@ -86,6 +88,7 @@ use pause::{PauseMenu, PauseMenuProps};
 use performance::{PerformanceOverlay, PerformanceOverlayProps};
 use physical_controls::{PhysicalControlOverlay, PhysicalControlOverlayProps};
 use reticle::{WorldReticle, WorldReticleProps};
+use tread::{TreadPanel, TreadPanelProps, TreadStatus, TreadStatusProps};
 // Style constants are consumed by `view!` expansion.
 use button_config::{ButtonOverlay, ButtonOverlayProps};
 use styles::*;
@@ -191,6 +194,8 @@ pub(crate) struct Handles {
     material: MosaicState<ConstructionMaterial>,
     /// Session-wide appearance brush edited by the Chroma panel.
     chroma: MosaicState<MaterialAppearance>,
+    /// Session-wide tread brush edited by the Tread panel.
+    tread: MosaicState<TreadBrush>,
     /// Material used by terrain additions.
     terrain_material: MosaicState<TerrainMaterial>,
     /// Material tool whose press-and-drag menu is open.
@@ -243,6 +248,7 @@ impl Handles {
             controls: MosaicState::new(Controls::default()),
             material: MosaicState::new(ConstructionMaterial::Steel),
             chroma: MosaicState::new(MaterialAppearance::BAKED),
+            tread: MosaicState::new(TreadBrush::default()),
             terrain_material: MosaicState::new(TerrainMaterial::Soil),
             material_menu: MosaicState::new(None),
             material_hover: MosaicState::new(None),
@@ -298,6 +304,7 @@ pub(crate) struct AppUi {
 #[derive(Default)]
 struct Pushed {
     chroma: MaterialAppearance,
+    tread: TreadBrush,
     help: help::Model,
     creations: creations::Model,
     worlds: worlds::Model,
@@ -405,6 +412,8 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
     let hotbar_panel = handles.clone();
     let chroma_status = handles.clone();
     let chroma_panel = handles.clone();
+    let tread_status = handles.clone();
+    let tread_panel = handles.clone();
     let markers_panel = handles.clone();
     let dimensions_panel = handles.clone();
     let block_panel = handles.clone();
@@ -438,23 +447,37 @@ pub(crate) fn OverlayShell(handles: Handles) -> Element {
                 HelpPanel handles:(help_panel.clone())
             }
             if !worlds_model.with(|model| model.open)
-                && !material_wheel_model.with(|model| model.chroma_config)
+                && !material_wheel_model.with(|model| model.config_panel)
                 && handles.hotbar.with(|selected| {
                     selected.tool == Some(MainTool::MatterManipulator)
                         && selected.matter_mode == MatterMode::Chroma
                 }) {
                 ChromaStatus handles:(chroma_status.clone())
             }
+            if !worlds_model.with(|model| model.open)
+                && !material_wheel_model.with(|model| model.config_panel)
+                && handles.hotbar.with(|selected| {
+                    selected.tool == Some(MainTool::MatterManipulator)
+                        && selected.matter_mode == MatterMode::Tread
+                }) {
+                TreadStatus handles:(tread_status.clone())
+            }
             if !worlds_model.with(|model| model.open) && !dev_model.with(|model| model.spectator) {
                 Hotbar handles:(hotbar_panel.clone())
             }
-            if material_wheel_model.with(|model| model.open && !model.chroma_config)
+            if material_wheel_model.with(|model| model.open && !model.config_panel)
                 && !worlds_model.with(|model| model.open) {
                 RadialSelector model:(material_wheel_model)
             }
-            if material_wheel_model.with(|model| model.open && model.chroma_config)
-                && !worlds_model.with(|model| model.open) {
+            if material_wheel_model.with(|model| model.open && model.config_panel)
+                && !worlds_model.with(|model| model.open)
+                && handles.hotbar.with(|selected| selected.matter_mode != MatterMode::Tread) {
                 ChromaPanel handles:(chroma_panel.clone())
+            }
+            if material_wheel_model.with(|model| model.open && model.config_panel)
+                && !worlds_model.with(|model| model.open)
+                && handles.hotbar.with(|selected| selected.matter_mode == MatterMode::Tread) {
+                TreadPanel handles:(tread_panel.clone())
             }
             if block_open.with(control_block::PanelModel::is_open)
                 && !worlds_model.with(|model| model.open) {
@@ -556,7 +579,7 @@ pub(crate) fn drain(
     mut pause: ResMut<PauseMenuState>,
     mut worlds: ResMut<crate::world::WorldListState>,
     mut selection: ToolSelection,
-    mut chroma: ResMut<ChromaBrush>,
+    mut brushes: (ResMut<ChromaBrush>, ResMut<TreadBrush>),
     mut target: EditTarget,
     dev: Option<Res<crate::dev_tools::DevTools>>,
     keyboard: Res<ButtonInput<KeyCode>>,
@@ -567,8 +590,13 @@ pub(crate) fn drain(
     };
     let edited_appearance = ui.handles.chroma.get_untracked();
     if edited_appearance != ui.pushed.chroma {
-        chroma.appearance = edited_appearance;
+        brushes.0.appearance = edited_appearance;
         ui.pushed.chroma = edited_appearance;
+    }
+    let edited_tread = ui.handles.tread.get_untracked();
+    if edited_tread != ui.pushed.tread {
+        *brushes.1 = edited_tread;
+        ui.pushed.tread = edited_tread;
     }
     control_block::capture_key(&ui.handles.block, &keyboard);
     // `?` belongs to the help panel unless something else is taking letters.
@@ -625,7 +653,7 @@ pub(crate) fn push(
     shape_snap: Res<crate::shape_tool::ShapeSnap>,
     editor: Res<EditorState>,
     material: Res<SelectedMaterial>,
-    chroma: Res<ChromaBrush>,
+    brushes: (Res<ChromaBrush>, Res<TreadBrush>),
     terrain_material: Res<SelectedTerrainMaterial>,
     graphs: (Res<EditorGraph>, Res<AppSimulation>),
     pause: Res<PauseMenuState>,
@@ -670,9 +698,14 @@ pub(crate) fn push(
     }
     ui.handles.controls.set(settings.controls().clone());
     ui.handles.material.set(material.0);
+    let (chroma, tread) = brushes;
     if chroma.appearance != ui.pushed.chroma {
         ui.handles.chroma.set(chroma.appearance);
         ui.pushed.chroma = chroma.appearance;
+    }
+    if *tread != ui.pushed.tread {
+        ui.handles.tread.set(*tread);
+        ui.pushed.tread = *tread;
     }
     ui.handles.terrain_material.set(terrain_material.0);
     // Vehicle bindings depend on graph topology, and discovering them walks the
@@ -801,7 +834,7 @@ pub(crate) fn push_player(ui: Option<NonSendMut<AppUi>>, wheel: Res<MaterialWhee
     };
     let next = material_wheel::Model {
         open: wheel.open,
-        chroma_config: wheel.chroma_config,
+        config_panel: wheel.config_panel,
         highlighted: wheel.highlighted,
     };
     if next != ui.pushed.material_wheel {

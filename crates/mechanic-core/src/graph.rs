@@ -10,6 +10,7 @@ mod queries;
 mod region_checks;
 mod solid_cache;
 mod specs;
+mod treads;
 mod validate;
 mod weld_geometry;
 
@@ -51,6 +52,8 @@ pub struct ConstructionGraphData {
     /// Transmission part to the weld created atomically with it.
     pub(crate) transmission_welds: BTreeMap<PartId, WeldId>,
     pub(crate) physical_inputs: BTreeMap<PartId, crate::InputConfiguration>,
+    /// Treads cut into part surfaces. Parts with none have no entry.
+    pub(crate) treads: BTreeMap<PartId, crate::SurfaceTreads>,
     /// Persistent per-controller, per-engine-family gearbox overrides.
     pub(crate) gearbox_configs: BTreeMap<(PartId, EngineKind), GearboxConfig>,
     /// Editable shape regions. A region owns the geometry of the blocks it

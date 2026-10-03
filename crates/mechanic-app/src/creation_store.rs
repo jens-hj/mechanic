@@ -255,6 +255,7 @@ mod tests {
                     appearance: mechanic_core::MaterialAppearance::BAKED,
                     layers: Vec::new(),
                     rack: None,
+                    treads: Vec::new(),
                 })
                 .collect(),
             regions: Vec::new(),

@@ -16,16 +16,17 @@ mod transform;
 
 use decode::{
     build_command, index_map, resolve_edge_chain, resolve_face, resolve_limits, resolve_part,
-    resolve_program,
+    resolve_program, saved_treads,
 };
 pub use doc::{
     BearingDoc, BearingSocketDoc, ConstructionFrameDoc, DriveDwellDoc, DriveLimitsDoc,
     DriveLinkDoc, DriveProgramDoc, DriveStateDoc, DriveTriggerDoc, EdgeChainRefDoc, FaceOwnerDoc,
     FaceRefDoc, GearDoc, GearLinkDoc, GearboxConfigDoc, InputSeatLinkDoc, MaterialLayerDoc,
     PartDoc, PoseDoc, RackDoc, RegionDoc, RigidLinkDoc, SeatControllerLinkDoc, ShapeFeatureDoc,
-    SolidOwnerDoc, SpiralDoc, SpiralTaperDoc, TopologyKeyDoc, TopologySourceDoc, WeldDoc,
+    SolidOwnerDoc, SpiralDoc, SpiralTaperDoc, SurfaceTreadDoc, TopologyKeyDoc, TopologySourceDoc,
+    WeldDoc,
 };
-use encode::{edge_chain_doc, face_doc, limits_doc, part_doc, program_doc};
+use encode::{edge_chain_doc, face_doc, limits_doc, part_doc, program_doc, with_tread_docs};
 pub use inputs::{AnalogMappingDoc, InputConfigurationDoc, NumericParameterDoc};
 use transform::{rotate_y_i32, rotate_y_vec3, transform_region_doc};
 
@@ -477,7 +478,12 @@ impl CreationDocument {
                 .collect(),
             parts: graph
                 .parts()
-                .map(|(id, spec)| part_doc(*spec, graph.transmission_parent(id).map(&part)))
+                .map(|(id, spec)| {
+                    with_tread_docs(
+                        part_doc(*spec, graph.transmission_parent(id).map(&part)),
+                        graph.part_treads(id),
+                    )
+                })
                 .collect(),
             regions: graph
                 .regions()
@@ -679,9 +685,15 @@ impl CreationDocument {
         let mut unresolved_transmissions = 0;
         for (index, part) in self.parts.iter().cloned().enumerate() {
             let PartDoc::Transmission { parent, .. } = part else {
+                let treads = saved_treads(&part);
                 let BuildOutcome::Spawned(id) = graph.apply(build_command(part)?)? else {
                     unreachable!("part {index} replay uses a spawn command")
                 };
+                graph.apply_batch(treads.into_iter().map(|saved| BuildCommand::SetTread {
+                    part: id,
+                    surface: saved.surface,
+                    tread: Some(saved.tread),
+                }))?;
                 part_ids[index] = Some(id);
                 continue;
             };

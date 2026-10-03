@@ -123,6 +123,9 @@ pub struct TerrainContact {
     pub yield_pa: f64,
     /// Pressure that ground still resists with once it has yielded.
     pub failed_pa: f64,
+    /// How much harder than a smooth surface the receiving surface presses on
+    /// the ground under the same load: above one under a tread's lugs.
+    pub pressure_factor: f64,
 }
 
 /// Retained manifolds and actual collision query work. No solve is implied.
