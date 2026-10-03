@@ -16,10 +16,33 @@ Biome(
         Noise(freq: 0.004, amp: 9, dims: Two, seed: 1),
     ]),
 
+    let: {
+        "ledge": Terrace(of: Ref("height"), step: 26, sharpness: 0.5),
+        // Four-metre probes select terrace edges, excluding broad flat treads.
+        "cliff_edge": Sub(Max([
+            Abs(Sub(Translate((4, 0, 0), Ref("ledge")), Translate((-4, 0, 0), Ref("ledge")))),
+            Abs(Sub(Translate((0, 0, 4), Ref("ledge")), Translate((0, 0, -4), Ref("ledge")))),
+        ]), C(4)),
+        "edge_blocks": Scatter(
+            cell: 18, reach: 16, chance: 0.75, seed: 31,
+            mask: Ref("cliff_edge"),
+            ground: Ref("ledge"), lift: (-2.5, -1), tilt: 12,
+            vars: {"r": (2.5, 4), "chip": (0.8, 1.2)},
+            shape: Ref("rock_cluster"),
+        ),
+        "rock_formations": Warp(
+            by: (kind: SimplexSmooth, freq: 0.011, amp: 9, seed: 2),
+            vertical: 0.35,
+            of: Ref("edge_blocks"),
+        ),
+    },
+
+    // Warp the cliffs and their embedded blocks together, keeping their roots
+    // attached even where the cliff leans into an overhang.
     density: Warp(
         by: (kind: SimplexSmooth, freq: 0.011, amp: 9, seed: 2),
         vertical: 0.35,
-        of: Height(Terrace(of: Ref("height"), step: 26, sharpness: 0.5)),
+        of: Union([Height(Ref("ledge")), Ref("edge_blocks")]),
     ),
 
     rivers: 0.8,
@@ -30,6 +53,7 @@ Biome(
         (when: All([WaterDepth(-0.35, inf), Not(Up(0.55, 1)), Depth(0, 0.8)]), use: "granite_grey"),
         (when: Carved(None), use: "dark_granite"),
         (when: All([Altitude(175, 1000), Up(0.55, 1), Depth(0, 0.6)]), use: "snow"),
+        (when: Field(Ref("rock_formations"), -0.15, inf), use: "granite_grey"),
         (when: All([Up(0.72, 1), Depth(0, 0.22)]), use: "alpine_turf"),
         (when: Ceiling, use: "dark_granite"),
         (when: Field(Noise(freq: 0.02, octaves: 2, seed: 3), 0.6, 1), use: "copper_vein"),

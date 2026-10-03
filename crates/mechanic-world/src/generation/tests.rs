@@ -1,4 +1,5 @@
 mod carves;
+mod rocks;
 mod water;
 mod water_materials;
 

@@ -110,7 +110,10 @@ Rules for names and noise:
 - `dims: Two` noise is evaluated once per column, which is much cheaper than
   3D noise.
 
-A scatter's `reach` must enclose its shape and fillet.
+A scatter's `reach` must enclose its shape and fillet. Its `ground` and
+`mask` use the enclosing terrain seed, so references to terrain height agree
+with the ground being instanced onto. Its `seed` decorrelates placement,
+rotation, vars and shape detail without changing those terrain fields.
 
 ### How a biome gets its own shape language
 
@@ -118,15 +121,50 @@ The draft biomes show the range the nodes cover:
 
 | Biome | Shape language |
 |---|---|
-| **verdant_hills** | Familiar rolling FBm hills with boulders half sunk into them. The spawn biome. |
+| **verdant_hills** | Familiar rolling FBm hills with angular granite boulders half sunk into them. The spawn biome. |
 | **dune_sea** | Stretched, warped ridged noise on a nearly flat base. |
 | **arch_steppe** | Terraced mesas. Scattered tori stand on edge and are half buried as arches. Strata grooves are cut by `Sin(Y)`. |
-| **titan_crags** | Ridged mountains, terraced into cliff bands that a 3D warp pushes into overhangs. |
+| **titan_crags** | Ridged mountains, terraced into cliff bands with interlocking rock clusters at their edges; a shared 3D warp pushes both into overhangs. |
 | **karst_needles** | Concave spires rise from Voronoi cell centres, gathered into groves by a noise mask. Sinkhole funnels drop into shafts, and tunnels are twice as wide. |
 | **gyroid_reef** | A warped gyroid lattice intersected with mound heights, giving porous, walkable tunnels. |
 | **drift_isles** | One 3D-noise blob per Voronoi cell, squeezed into a band about 80 m up: floating islands with conical undersides. |
 | **shelf_mire** | Scattered stacked caps on crooked stems over wet flats. |
 | **sunken_coast** | A basin below sea level with scattered sea stacks. |
+
+## Rocks and cliff formations
+
+`library.ron` defines `jointed_rock`: an intersection of planar faces with
+unequal oblique cuts, controlled by scatter vars `r` (size in metres) and
+`chip` (the upper cut). Random size, cut, yaw and tilt vary the silhouettes
+without rounding away their facets. `rock_cluster` overlaps three blocks
+with hard joints, including a taller central block.
+
+Verdant Hills scatters individual boulders 2–7 m across with a small fillet
+at the ground. Their exposed tops and buried interiors use granite rather
+than the grass and soil rules of the surrounding hillside. Titan Crags
+places larger clusters where four-metre probes find a terrace edge; broad
+flat treads do not seed clusters. The same slow warp shapes cliff and rock,
+keeping the blocks embedded in the cliff. Snow can still settle on high tops.
+
+These are ordinary terrain density, not movable objects: editing, collision,
+LOD bounds and meshing all use the existing terrain path. Their definition
+change updates the worldgen digest, so existing saves with the old digest
+are listed as outdated, as with other world-generation edits.
+
+For a reproducible close-up, `worldgen-preview --seed 42 --out <dir>
+--view-target <x>,<y>,<z> --view-offset <dx>,<dy>,<dz>` writes `view.png`
+without generating the overview maps. Coordinates and offset are in metres.
+
+Seed 42, boulder near `(-90, 23.2, -120)`, viewed from offset `(-8, 3, -9)`:
+
+![Faceted granite boulder in Verdant Hills](images/rocks/boulder/view.png)
+
+Seed 7, cliff near `(-500.75, 118, -1345.14)`, viewed from offset `(25, 16, -20)`:
+
+![Interlocking rock blocks on a Titan Crags cliff](images/rocks/cliff/view.png)
+
+These headless density renders show geometry and palette colours, without the
+app's terrain textures or lighting.
 
 ## Carve layers
 
