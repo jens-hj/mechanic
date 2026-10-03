@@ -286,6 +286,19 @@ app test), and Windows' DX12 shader compiler rejects a GPU kernel (91 GPU
 tests). The figures below are from before merging `main` and before the
 lone-body change, which fixed the ledge test.
 
+**CI on the branch after merging `main` (`31d92e7`) fails exactly the tests
+`main` fails at `0c056ec`:**
+
+| Runner | App | GPU | Physics |
+|---|---|---|---|
+| ubuntu-latest | 1: `an_inherited_cut…` (no GPU adapter) | 40 (no GPU adapter) | pass |
+| macos-latest | pass | 11 | 1: `a_box_dropped_on_a_resting_box…` |
+| windows-latest | 4: DX12 shader compiler rejects a GPU kernel | 91: same | 2: box, and the ledge test |
+
+The ledge test fails on Windows in `main`'s CI too, and at `a2cd0d0` on a
+throwaway branch run (`ao/mechanic-3/ci-baseline`). On loose blocks the
+branch is now bit-identical to `main`, so it fails there the same way.
+
 `cargo xtask test` on the branch, Apple M1 Pro / Metal:
 
 - `mechanic-core` 400 pass; `mechanic-world` 275 pass (272, plus the three
