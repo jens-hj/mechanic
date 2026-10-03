@@ -412,6 +412,18 @@ class StorageTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((source / 'incremental').exists())
 
+    @unittest.skipIf(os.name == 'nt', 'symlink creation requires privileges on Windows')
+    def test_cleanup_refuses_symlinked_target_container(self):
+        store = Store(self.root, 1)
+        outside = self.root.parent / 'outside'
+        cache = outside / 'cargo/debug/incremental'
+        cache.mkdir(parents=True)
+        (cache / 'preserved').write_text('retain')
+        (store.slot(0) / 'target').symlink_to(outside, target_is_directory=True)
+        result = self.invoke('clean', '--idle-hours', '0', '--apply')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((cache / 'preserved').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

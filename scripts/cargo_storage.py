@@ -137,7 +137,11 @@ class Store:
         return self.root / f'slot-{index}'
 
     def target(self, index):
-        return self.slot(index) / 'target' / 'cargo'
+        parent = self.slot(index) / 'target'
+        target = parent / 'cargo'
+        if parent.is_symlink() or target.is_symlink():
+            raise ValueError('target must not contain symlink components')
+        return target
 
     def lock(self, index):
         return Lock(self.slot(index) / 'lease.lock')
@@ -200,8 +204,10 @@ def require_binary_lease(binary):
         if target.name != 'target' or not slot.name.startswith('slot-'):
             continue
         manifest = read(slot.parent / 'store.json')
-        if not manifest or manifest.get('format') != FORMAT:
+        if not manifest:
             continue
+        if manifest.get('format') != FORMAT:
+            raise ValueError('slot binary belongs to an unrecognized storage format')
         owner = read(slot / 'owner.json') or {}
         if (not os.environ.get('MECHANIC_CARGO_LEASE')
                 or owner.get('token') != os.environ['MECHANIC_CARGO_LEASE']
