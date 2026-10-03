@@ -184,6 +184,7 @@ pub(crate) fn handle_build_actions(
     mut cylinder_settings: ResMut<CylinderToolSettings>,
     selected_material: Option<Res<SelectedMaterial>>,
     chroma_brush: Res<ChromaBrush>,
+    tread_brush: Res<crate::tread::TreadBrush>,
     overlay: Res<ui::UiInput>,
     player: Res<PlayerState>,
     wheel: Res<MaterialWheelState>,
@@ -270,6 +271,17 @@ pub(crate) fn handle_build_actions(
             state,
             &mut history,
             chroma_brush.appearance,
+        );
+        return;
+    }
+    if tool == Tool::Tread {
+        crate::editor::treads::announce_hover(&graph.0, state, tread_brush.tread);
+        crate::editor::treads::handle_tread_actions(
+            &actions,
+            &mut graph.0,
+            state,
+            &mut history,
+            tread_brush.tread,
         );
         return;
     }
@@ -822,6 +834,7 @@ pub(crate) fn handle_build_actions(
         Tool::Layer => unreachable!("layer actions are handled before this match"),
         Tool::Spiral => unreachable!("spiral actions are handled before this match"),
         Tool::Gear => unreachable!("gear actions are handled before this match"),
+        Tool::Tread => unreachable!("tread actions are handled before this match"),
         Tool::Weld => unreachable!("weld actions are handled by weld_tool"),
         Tool::LinearBearing => linear_editor::place(&graph.0, state, &mut history),
         Tool::Piston => unreachable!("piston actions are handled before this match"),

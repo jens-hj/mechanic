@@ -36,6 +36,7 @@ pub(crate) enum Tool {
     Layer,
     Spiral,
     Gear,
+    Tread,
 }
 
 /// The four tools exposed by the primary hotbar.
@@ -79,10 +80,11 @@ pub(crate) enum MatterMode {
     Chroma,
     Spiral,
     Gear,
+    Tread,
 }
 
 impl MatterMode {
-    pub(crate) const ALL: [Self; 9] = [
+    pub(crate) const ALL: [Self; 10] = [
         Self::Block,
         Self::Cylinder,
         Self::Layer,
@@ -92,6 +94,7 @@ impl MatterMode {
         Self::Chroma,
         Self::Spiral,
         Self::Gear,
+        Self::Tread,
     ];
 
     pub(crate) const fn label(self) -> &'static str {
@@ -105,6 +108,7 @@ impl MatterMode {
             Self::Chroma => "Chroma",
             Self::Spiral => "Spiral",
             Self::Gear => "Gear",
+            Self::Tread => "Tread",
         }
     }
 
@@ -119,6 +123,7 @@ impl MatterMode {
             Self::Chroma => "CHROMA",
             Self::Spiral => "SPIRAL",
             Self::Gear => "GEAR",
+            Self::Tread => "TREAD",
         }
     }
 }
@@ -376,6 +381,7 @@ impl Tool {
             Self::Chroma => "Chroma",
             Self::Spiral => "Spiral",
             Self::Gear => "Gear",
+            Self::Tread => "Tread",
         }
     }
 
@@ -427,6 +433,7 @@ impl SelectedTool {
                 MatterMode::Chroma => Some(Tool::Chroma),
                 MatterMode::Spiral => Some(Tool::Spiral),
                 MatterMode::Gear => Some(Tool::Gear),
+                MatterMode::Tread => Some(Tool::Tread),
             },
             MainTool::Welder => Some(Tool::Weld),
             MainTool::Connector => Some(Tool::Connector),
@@ -473,6 +480,7 @@ impl SelectedTool {
             Tool::Chroma => self.select_mode(MatterMode::Chroma),
             Tool::Spiral => self.select_mode(MatterMode::Spiral),
             Tool::Gear => self.select_mode(MatterMode::Gear),
+            Tool::Tread => self.select_mode(MatterMode::Tread),
             Tool::Weld => self.select_tool(MainTool::Welder),
             Tool::Connector => self.select_tool(MainTool::Connector),
             Tool::Hammer => self.select_tool(MainTool::Hammer),
