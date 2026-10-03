@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 from cargo_storage import Store, require_binary_lease, size
+from cargo_process import is_msvc_service
 
 LAUNCHER = Path(__file__).with_name('cargo-storage.py').resolve()
 
@@ -145,6 +146,13 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['reclaimable_file_bytes_estimate'], 0)
         self.assertEqual(protected.read_bytes(), b'x' * 8192)
         self.assertEqual(size(target), file_size)
+
+    def test_application_named_like_compiler_service_is_not_reaped(self):
+        self.assertFalse(is_msvc_service(r'C:\build\vctip.exe'))
+        self.assertFalse(is_msvc_service(r'C:\build\mspdbsrv.exe'))
+        self.assertFalse(is_msvc_service(r'C:\VS\VC\Tools\MSVC\14.51\bin\cl.exe'))
+        self.assertTrue(is_msvc_service(r'C:\VS\VC\Tools\MSVC\14.51\bin\vctip.exe'))
+        self.assertTrue(is_msvc_service(r'C:\VS\VC\Tools\MSVC\14.51\bin\mspdbsrv.exe'))
 
     def test_conflicting_count_and_target_override_are_refused(self):
         Store(self.root, 1)

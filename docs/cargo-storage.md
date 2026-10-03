@@ -71,7 +71,8 @@ kills them if the supervisor disappears. MSVC receives a unique
 `_MSPDBSRV_ENDPOINT_` for each lease, following [Microsoft's per-invocation
 isolation](https://github.com/microsoft/BuildXL/blob/main/Public/Sdk/Experimental/Msvc/Native/Tools/Link/Link.dsc).
 After the main command and all ordinary descendants exit, a job containing only
-`mspdbsrv.exe` is terminated so the idle compiler service cannot pin the slot.
+the MSVC compiler-tree services `mspdbsrv.exe` or `vctip.exe` is terminated so
+idle compiler/telemetry services cannot pin the slot. Other images keep ownership.
 Process images and job membership are checked through handles; uncertain members
 keep the lease. Do not override the endpoint inside a leased command.
 Assignment failure fails closed. Child
@@ -208,7 +209,12 @@ Source, reports/captures, binaries, dependency artifacts, and lock files survive
 This was explicit, narrowly scoped legacy recovery under independent Cargo locks,
 not managed-slot cleanup or evidence of completed shared-worker rollout.
 
-The expanded lifecycle suite defines 15 tests, including hardlink accounting and a
+The expanded lifecycle suite defines 16 tests, including hardlink accounting and a
 Windows-specific descendant-handle test. Lightweight Linux/macOS CI passed before
 the Windows fix. Windows CI exposed a native Python `os.execvpe` crash; its gated
 child now uses `subprocess` within the Job Object. Verification of that fix is pending.
+
+The subsequent Windows smoke trace confirmed Cargo had run its expected binary,
+but MSVC's `vctip.exe` remained alive. Completion now also drains this known
+compiler-tree telemetry helper after every ordinary job member exits; binaries
+outside the compiler tree are not treated as disposable services.

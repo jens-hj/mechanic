@@ -5,10 +5,19 @@ supervisor leaves persistent quarantine; parent-PID checks never clear it.
 """
 import ctypes
 import os
-from pathlib import Path
+from pathlib import PureWindowsPath
 import signal
 import subprocess
 import time
+
+
+def is_msvc_service(image):
+    """Recognize only compiler services inside the MSVC toolchain tree."""
+    path = PureWindowsPath(image)
+    parts = tuple(part.casefold() for part in path.parts)
+    return (path.is_absolute() and path.name.casefold() in ('mspdbsrv.exe', 'vctip.exe')
+            and any(parts[index:index + 3] == ('vc', 'tools', 'msvc')
+                    for index in range(len(parts) - 2)))
 
 
 class WindowsJob:
@@ -155,11 +164,11 @@ def run(command, env, gate, launcher, record_containment):
             if job:
                 active = job.active()
                 images = job.process_images() if active else []
-                # MSVC's PDB server intentionally outlives link.exe. Its unique
+                # MSVC's PDB and telemetry services outlive link.exe. The unique
                 # per-lease endpoint prevents other builds from using it. Only
                 # terminate once every ordinary member has exited, and the only
-                # remaining images are that known compiler service.
-                if images and all(Path(path).name.casefold() == 'mspdbsrv.exe' for path in images):
+                # remaining images are known services in the compiler tree.
+                if images and all(is_msvc_service(path) for path in images):
                     job.terminate(0)
                 elif active and time.monotonic() - last_report >= 5:
                     print(f'cargo-storage: retaining lease for Job Object members: {images}',
