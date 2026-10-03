@@ -156,7 +156,11 @@ overlap; four paired single-biome runs split two each way.
    relative on every row checked, and usually bit for bit: the builder replay
    keeps the baseline's state hash for its first 1,749 ticks, and eight
    nanometre-jittered 4,200-tick replays matched the baseline throughout.
-   Contact rows fell 16.3 → 7.5 ms.
+   Contact rows fell 16.3 → 7.5 ms. A contact whose bodies are all lone
+   free bodies (a component of six velocities) keeps the direct solve: its
+   6×6 block costs about as much as combining six bases, and it keeps such
+   scenes bit-identical to the baseline. The builder is one articulated
+   component and is unaffected; its state hash is unchanged.
 2. **Separation cache hashed with Fx, candidate pairs sorted as one key.**
    SipHash was 8 % of the tick; the order of the sorted pairs is unchanged.
    Bit-identical.
@@ -269,9 +273,13 @@ CPU-s).
 
 ## Correctness checks
 
-The branch is **not** all green: `mechanic-physics` has two failing tests and
-`mechanic-gpu` eleven, listed below. All but the ledge test fail identically
-at `a2cd0d0`.
+The branch is **not** all green, and neither is `main`. Locally,
+`mechanic-physics` fails one test and `mechanic-gpu` eleven, all identically
+at `a2cd0d0`. In CI, where `main` at `0c056ec` also fails, the extra failures
+are environmental: the Linux runner has no GPU adapter (40 GPU tests and one
+app test), and Windows' DX12 shader compiler rejects a GPU kernel (91 GPU
+tests). The figures below are from before merging `main` and before the
+lone-body change, which fixed the ledge test.
 
 `cargo xtask test` on the branch, Apple M1 Pro / Metal:
 
@@ -291,52 +299,34 @@ at `a2cd0d0`.
 
 ### The ledge test
 
-`captured_blocks_dropped_across_a_ledge_come_to_rest` drops three captured
-blocks across a ledge, runs 600 ticks, and requires every overlap under 5 mm,
-no block below the floor, and every speed under 0.2. It fails on the branch
-and passes at `a2cd0d0`.
+`captured_blocks_dropped_across_a_ledge_come_to_rest` failed on the branch
+until loose bodies went back to the direct solve (change 1, last paragraph).
+It now passes, and the drop's state hash matches the baseline on every one
+of its 600 ticks.
 
-**Unperturbed outcome.** Both builds reach near rest by tick 100 with 21
-contacts and 1.6 mm deepest overlap. The baseline stays there: at tick 600,
-21 contacts, 1.60 mm, fastest speed 0.0013. In the current build the top
-block, resting near the edge of the block below, starts to tip at tick 106;
-by tick 143 it is toppling at 0.78 rad/s, and from then on it never settles.
-At tick 600 it has 20 contacts, 38.9 mm overlap and 0.37 fastest speed.
-
-**What differs numerically.** The test already fails with change 1 applied
-alone to `a2cd0d0`; changes 2 and 3 keep the builder's state hash. Change 1's
-combined responses equal direct solves in exact arithmetic, but are summed in
-a different order. On this fixture 26–28 % of response entries differ, by at
-most 6.5e-16 relative (about three units in the last place). The response
-vectors are the only values change 1 computes differently. The two runs' state hashes part at tick 1 and their positions drift
-apart by rounding until the pile reaches its tipping point in one run and not
-the other. On the builder fixture the same change kept every bit for 1,749
-ticks.
-
-**Why this is not read as a regression.** The pile is balanced on a knife
-edge. Whether the top block topples, and whether it then rattles, depends on
-rounding in either build. Over 64 starts nudged by 1–32 nm along y or x:
+Before that, the history was: both builds reached near rest by tick 100; the
+baseline stayed there (tick 600: 21 contacts, 1.60 mm, fastest speed 0.0013),
+while with shared bases the top block tipped off the edge at tick 106 and
+fell into a contact limit cycle (tick 600: 20 contacts, 38.9 mm, 0.37). The
+only numerical difference was summation order: 26–28 % of response entries
+differed by at most 6.5e-16 relative (about three units in the last place)
+from tick 1. Over 64 nudged starts the failure rates were the same within
+noise:
 
 | Fixture | Build | Overlap ≥ 5 mm at tick 600 | Speed ≥ 0.2 | Median / p90 / max overlap |
 |---|---|---|---|---|
 | ledge | baseline | 30 / 64 | 21 / 64 | 4.9 / 37.5 / 38.6 mm |
-| ledge | current | 31 / 64 | 22 / 64 | 4.8 / 6.7 / 38.4 mm |
+| ledge | shared bases | 31 / 64 | 22 / 64 | 4.8 / 6.7 / 38.4 mm |
 | leaning | baseline | 3 / 64 | 3 / 64 | 2.9 / 3.6 / 36.7 mm |
-| leaning | current | 3 / 64 | 5 / 64 | 2.9 / 3.7 / 36.7 mm |
+| leaning | shared bases | 3 / 64 | 5 / 64 | 2.9 / 3.7 / 36.7 mm |
 
-The counts differ by one or two, well inside sampling noise (about ±4 at
-these rates), and the worst outcomes are the same size. So the change does not
-move the distribution; it moves which outcome the one fixed start lands on.
-That is evidence of no systematic degradation, not proof of it.
-
-**The defect behind the failures**, present in both builds: the top block
-topples off an edge (correctly), then never settles. Its contact with the
-block below alternates between a ten-point face manifold and a single edge
-point, the overlap jumps to about 3.7 cm every six or seven ticks, and the
-push-out bounces it back. This is the "box hanging over a ledge" case that
-`EDGE_FACE_ALIGNMENT` addresses, failing once the tilt passes its 2.6°
-window. Fixing it is contact-model work outside this pass. The test was not
-relaxed and remains failing on this branch.
+The test passes only because its fixed start lands on a calm outcome. Half
+of nearby starts fail in every build, and `main`'s own CI fails it on
+Windows. The underlying defect remains: a block toppled off an edge never
+settles, its contact with the block below alternating between a ten-point
+face manifold and a single edge point with about 3.7 cm overlap. That is the
+"box hanging over a ledge" case `EDGE_FACE_ALIGNMENT` addresses, failing once
+the tilt passes its 2.6° window, and a follow-up for the contact model.
 
 ### Long builder runs
 
