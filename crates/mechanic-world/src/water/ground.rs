@@ -16,8 +16,8 @@ use super::{WATER_CELL_METRES, WaterCell};
 use crate::generation::Lattice;
 use crate::{
     BRICK_EDGE_CELLS, BreakageResponse, BrickCoord, LakeBasin, RiverReach, SurfaceId,
-    TERRAIN_CELL_METERS, TerrainDensityClass, TerrainField, TerrainMaterial, TerrainSource,
-    WaterSurface, WorldPosition,
+    TERRAIN_CELL_METERS, TerrainDensityClass, TerrainField, TerrainMaterial, TerrainSample,
+    TerrainSource, WaterSurface, WorldPosition,
 };
 
 /// Terrain cells along one edge of a water cell.
@@ -177,7 +177,10 @@ impl<S: TerrainSource> TerrainWater<'_, S> {
         let mut open = [false; CELL_TERRAIN_CELLS];
         for (index, open) in open.iter_mut().enumerate() {
             let sample = edited.sample(local + local_offset(index));
-            *open = sample.is_none_or(|sample| !sample.is_solid());
+            // Water runs through leaves.
+            *open = sample.is_none_or(|sample| {
+                !sample.is_solid() || sample.material == TerrainMaterial::Foliage
+            });
         }
         Some(open)
     }
@@ -185,7 +188,7 @@ impl<S: TerrainSource> TerrainWater<'_, S> {
     /// Density of the ground at a corner of the terrain mesh's lattice, as
     /// the finest mesh samples it.
     fn lattice_density(&self, corner: crate::WorldCell) -> f32 {
-        crate::mesh::corner_density(self.field, self.edits, corner)
+        crate::mesh::corner_water_density(self.field, self.edits, corner)
     }
 
     /// Where the mesh's ground surface crosses one lattice column, going down
@@ -228,7 +231,10 @@ impl<S: TerrainSource> TerrainWater<'_, S> {
             dims: [edge as usize; 3],
             centred: true,
         };
-        for (open, density) in open.iter_mut().zip(self.field.density_lattice(&lattice)) {
+        for (open, density) in open
+            .iter_mut()
+            .zip(self.field.water_density_lattice(&lattice))
+        {
             *open = density <= 0.0;
         }
         open
@@ -312,9 +318,19 @@ impl<S: TerrainSource> WaterGround for TerrainWater<'_, S> {
     /// ground met going down from a little above the top, if the seed's
     /// ground there is open above it.
     fn native_grass(&self, x: f64, z: f64, top: f64) -> NativeGrass {
+        // Trees stand on the ground; the grass beneath them is the seed's.
         let sample = |y: f64| {
-            self.field
-                .sample_position(WorldPosition(DVec3::new(x, y, z)))
+            let sample = self
+                .field
+                .sample_position(WorldPosition(DVec3::new(x, y, z)));
+            if matches!(
+                sample.material,
+                TerrainMaterial::Wood | TerrainMaterial::Foliage
+            ) {
+                TerrainSample::plain(-1.0, sample.material)
+            } else {
+                sample
+            }
         };
         let mut y = top + NATIVE_REACH_METRES;
         let mut above = sample(y);

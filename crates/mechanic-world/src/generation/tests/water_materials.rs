@@ -3,7 +3,7 @@
 use bevy_math::DVec3;
 
 use super::super::surfaces::SurfaceProbe;
-use super::super::{Lattice, TerrainField, WaterBody};
+use super::super::{Lattice, LatticeTrees, TerrainField, TreeDetail, TreeSource, WaterBody};
 use crate::{TerrainMaterial, WorldPosition, WorldSeed};
 
 #[test]
@@ -144,8 +144,9 @@ fn empty_samples_above_water_paint_the_estimated_bed_in_both_mesh_paths() {
             dims: [1; 3],
             columns: vec![column],
             carved: vec![0],
+            trees: LatticeTrees::None,
         };
-        assert_eq!(field.paint(position, density, gradient).1, expected);
+        assert_eq!(field.paint(position, density, gradient, 1).1, expected);
         assert_eq!(
             field
                 .paint_lattice(&columns, [0; 3], position, density, gradient)
@@ -167,6 +168,7 @@ fn empty_samples_above_water_paint_the_estimated_bed_in_both_mesh_paths() {
             dims: lattice.dims,
             columns,
             carved,
+            trees: LatticeTrees::None,
         };
         let point = DVec3::new(
             lattice.coordinate(0, 0),
@@ -175,7 +177,7 @@ fn empty_samples_above_water_paint_the_estimated_bed_in_both_mesh_paths() {
         );
         let gradient = [0.0, -1.0, 0.0];
         assert_eq!(
-            field.paint(point, densities[0], gradient),
+            field.paint(point, densities[0], gradient, lattice.stride),
             field.paint_lattice(&columns, [0; 3], point, densities[0], gradient)
         );
     }
@@ -209,10 +211,24 @@ fn sealed_cave_materials_stay_dry_under_established_water() {
                         / 0.1
                 };
                 let gradient = [along(DVec3::X), along(DVec3::Y), along(DVec3::Z)];
-                let wet = world.sample(&column, position, density, gradient, carved);
+                let wet = world.sample(
+                    &column,
+                    position,
+                    density,
+                    gradient,
+                    carved,
+                    TreeSource::Lookup(TreeDetail::Grown),
+                );
                 let mut dry_column = column;
                 dry_column.water.surface = None;
-                let dry = world.sample(&dry_column, position, density, gradient, carved);
+                let dry = world.sample(
+                    &dry_column,
+                    position,
+                    density,
+                    gradient,
+                    carved,
+                    TreeSource::Lookup(TreeDetail::Grown),
+                );
                 assert_eq!(
                     (wet.material, wet.surface),
                     (dry.material, dry.surface),

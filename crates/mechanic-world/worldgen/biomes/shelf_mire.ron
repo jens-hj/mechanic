@@ -47,4 +47,9 @@ Biome(
         (when: All([Up(0.7, 1), Depth(0, 0.25)]), use: "sickly_turf"),
         (when: Always, use: "fungal_stone"),
     ],
+
+    // Willows weep over the low, wet ground between the shelves.
+    flora: [
+        (species: "willow", cell: 16, chance: 0.4, mask: Sub(C(6), Ref("height"))),
+    ],
 )

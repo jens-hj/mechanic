@@ -238,7 +238,7 @@ fn item_and_terrain_selectors_cover_every_contextual_sector() {
             Some(WheelChoice::ShapeMode(mode)),
         );
     }
-    let materials = TerrainMaterial::ALL;
+    let materials = TerrainMaterial::BRUSHABLE;
     for (index, material) in materials.into_iter().enumerate() {
         let angle = TAU * index as f32 / materials.len() as f32;
         let direction = Vec2::new(angle.sin(), -angle.cos()) * 80.0;

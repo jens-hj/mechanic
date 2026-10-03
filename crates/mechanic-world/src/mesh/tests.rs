@@ -289,7 +289,8 @@ fn adjacent_equal_lod_boundaries_are_byte_identical() {
 
 #[test]
 fn untouched_surface_remains_smooth_and_covered_at_every_lod() {
-    let field = TerrainField::new(WorldSeed(77));
+    // The ground's own surface: leaves are not smooth at any level.
+    let field = crate::testing::treeless_field(WorldSeed(77));
     let edits = TerrainOctree::default().snapshot();
     let spawn = field.safe_spawn().0;
     let probe = WorldPosition(DVec3::new(
@@ -332,7 +333,7 @@ fn untouched_surface_remains_smooth_and_covered_at_every_lod() {
                 "LOD {level} surface error at {global:?}: expected {expected_height}"
             );
             total += 1;
-            if chunk.material_weights[index] == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0] {
+            if chunk.material_weights[index] == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] {
                 covered += 1;
             }
         }

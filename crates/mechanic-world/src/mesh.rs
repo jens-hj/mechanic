@@ -21,7 +21,7 @@ use bvh::{
 pub use collision::{TerrainCollisionChunk, TerrainRayHit};
 pub use groups::{TerrainIndexGroups, TerrainTriangleGroupMask};
 pub use lattice::PreparedTerrainRegion;
-pub(crate) use lattice::corner_density;
+pub(crate) use lattice::corner_water_density;
 use lattice::{lattice_from_halo, sample_halo, synchronize_edited_boundary_lattice};
 use polygonise::{CUBE_CORNERS, polygonise_cube, weighted_materials};
 use transition::{generate_face_cap, generate_transition_face};

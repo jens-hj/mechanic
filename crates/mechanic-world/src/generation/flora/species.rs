@@ -126,13 +126,8 @@ impl SpeciesSpec {
     }
 
     /// The flora library compiled into this build.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the embedded library is invalid; tests keep it valid.
     pub fn embedded() -> Vec<Self> {
-        Self::library(include_str!("../../../worldgen/flora.ron"))
-            .unwrap_or_else(|error| panic!("embedded flora is invalid: {error}"))
+        crate::WorldgenSpec::embedded().species().to_vec()
     }
 
     fn validate(doc: SpeciesDoc) -> Result<Self, WorldgenError> {

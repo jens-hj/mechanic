@@ -41,9 +41,11 @@ impl SoilResponse {
             TerrainMaterial::SurfaceCover => (15_000.0, 12.0, 0.015),
             TerrainMaterial::Sand => (25_000.0, 10.0, 0.012),
             TerrainMaterial::Soil => (40_000.0, 12.0, 0.010),
-            TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => {
-                (f32::INFINITY, 0.0, 0.0)
-            }
+            TerrainMaterial::Foliage => (5_000.0, 4.0, 0.03),
+            TerrainMaterial::Rock
+            | TerrainMaterial::Iron
+            | TerrainMaterial::Graphite
+            | TerrainMaterial::Wood => (f32::INFINITY, 0.0, 0.0),
         };
         Self {
             bearing_capacity_pa,

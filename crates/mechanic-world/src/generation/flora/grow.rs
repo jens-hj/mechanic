@@ -5,7 +5,8 @@ use std::f64::consts::{PI, TAU};
 
 use bevy_math::DVec3;
 
-use super::super::scatter::{Hash, mix};
+use super::super::grid::Hash;
+use super::super::scatter::mix;
 use super::model::{Axis, FoliageBlob, Part, Segment, TreeModel};
 use super::species::SpeciesSpec;
 use super::{
@@ -79,7 +80,7 @@ struct Bud {
 #[must_use]
 pub fn grow_tree(species: &SpeciesSpec, seed: u64, origin: DVec3) -> TreeModel {
     let mut random = Hash::new(seed, 0, 0);
-    let height = random.between(species.height.0, species.height.1);
+    let height = drawn_height(species, &mut random);
     let crown_radius = species.width * height * 0.5;
     let base_radius = (species.girth * height * 0.5).max(TWIG_RADIUS);
     let stems = random.integer(species.stems.0, species.stems.1);
@@ -112,6 +113,15 @@ pub fn grow_tree(species: &SpeciesSpec, seed: u64, origin: DVec3) -> TreeModel {
         species.foliage.density,
         noise_seed,
     )
+}
+
+/// The height a tree of `seed` grows to, without growing it.
+pub(crate) fn tree_height(species: &SpeciesSpec, seed: u64) -> f64 {
+    drawn_height(species, &mut Hash::new(seed, 0, 0))
+}
+
+fn drawn_height(species: &SpeciesSpec, random: &mut Hash) -> f64 {
+    random.between(species.height.0, species.height.1)
 }
 
 struct Grower<'a> {
@@ -412,10 +422,7 @@ impl Grower<'_> {
         if t > 1.0 {
             return 0.0;
         }
-        let t = t.max(0.0);
-        let cone = 0.95f64.mul_add(-t, 1.0);
-        let dome = (PI * 0.85f64.mul_add(t, 0.15)).sin().max(0.0).sqrt();
-        lerp(dome, cone, self.species.dominance) * self.crown_radius
+        crown_shape(t.max(0.0), self.species.dominance) * self.crown_radius
     }
 
     /// Whether a point lies beyond the envelope that bounds `bud`: the crown,
@@ -551,6 +558,14 @@ fn tilt(dir: DVec3, angle: f64, azimuth: f64) -> DVec3 {
     let other = dir.cross(across);
     let side = across * azimuth.cos() + other * azimuth.sin();
     (dir * angle.cos() + side * angle.sin()).normalize_or(dir)
+}
+
+/// Crown radius as a fraction of the widest, at `t` from the crown's base
+/// (0) to the tree's top (1): a dome at dominance 0, a cone at 1.
+pub(crate) fn crown_shape(t: f64, dominance: f64) -> f64 {
+    let cone = 0.95f64.mul_add(-t, 1.0);
+    let dome = (PI * 0.85f64.mul_add(t, 0.15)).sin().max(0.0).sqrt();
+    lerp(dome, cone, dominance)
 }
 
 fn lerp(from: f64, to: f64, t: f64) -> f64 {

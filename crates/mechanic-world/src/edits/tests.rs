@@ -728,6 +728,35 @@ fn breakage_requires_stress_and_work_at_the_exposed_contact() {
 }
 
 #[test]
+fn foliage_breaks_where_soil_holds() {
+    for (material, breaks) in [
+        (TerrainMaterial::Foliage, true),
+        (TerrainMaterial::Soil, false),
+    ] {
+        let (field, terrain, soil, cell) = soil_fixture(material);
+        let mut damage = crate::BreakageAccumulator::default();
+        // A wheel's tread scraping through: 10 kPa, with work to spare.
+        let patch = crate::BreakagePatch {
+            centre: soil.centre,
+            normal: DVec3::Y,
+            footprint: crate::LoadFootprint::square(DVec3::Y, 0.025),
+            stress_pa: 10_000.0,
+            work_j: 1_000.0,
+            crush_pa: 0.0,
+            seconds: 1.0 / 60.0,
+            throw: DVec3::ZERO,
+        };
+        damage.accumulate(&terrain, &field, patch);
+        let ready = damage.ready(&terrain, &field, 256);
+        assert_eq!(
+            ready.iter().any(|source| source.cell == cell),
+            breaks,
+            "{material:?}"
+        );
+    }
+}
+
+#[test]
 fn rock_laid_back_as_rubble_breaks_out_far_more_easily_than_bedrock() {
     let (field, mut terrain, soil, cell) = soil_fixture(TerrainMaterial::Rock);
     let mut patch = crate::BreakagePatch {

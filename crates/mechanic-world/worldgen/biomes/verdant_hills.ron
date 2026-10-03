@@ -40,4 +40,11 @@ Biome(
         (when: All([Depth(2.5, 1000), Field(Noise(freq: 0.07, octaves: 2, seed: 9), 0.62, 1)]), use: "iron_seam"),
         (when: Always, use: "granite"),
     ],
+
+    // Open oak and birch woodland, with spruce on the higher crests.
+    flora: [
+        (species: "oak", cell: 14, chance: 0.35),
+        (species: "birch", cell: 11, chance: 0.3),
+        (species: "spruce", cell: 10, chance: 0.5, mask: Sub(Ref("height"), C(26))),
+    ],
 )

@@ -669,6 +669,7 @@ fn texture_colour(texture: TextureSet) -> [f64; 3] {
         TextureSet::Iron => [0.42, 0.3, 0.26],
         TextureSet::Graphite => [0.16, 0.16, 0.17],
         TextureSet::Copper => [0.62, 0.42, 0.27],
+        TextureSet::Wood => [0.45, 0.32, 0.2],
     }
 }
 

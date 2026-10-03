@@ -109,7 +109,12 @@ const fn wears(material: TerrainMaterial) -> Option<(f64, f64)> {
         // Roots hold turf against all but a violent flood: grass-lined
         // channels stand some 80 Pa.
         TerrainMaterial::SurfaceCover => Some((80.0, 1.1e-5)),
-        TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => None,
+        // Trees stand in floods; their litter is not carried either.
+        TerrainMaterial::Rock
+        | TerrainMaterial::Iron
+        | TerrainMaterial::Graphite
+        | TerrainMaterial::Wood
+        | TerrainMaterial::Foliage => None,
     }
 }
 

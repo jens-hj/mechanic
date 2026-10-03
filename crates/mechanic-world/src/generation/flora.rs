@@ -9,6 +9,7 @@
 //! model, so recursion ends by itself once a branch is thinner than a terrain
 //! cell. See `docs/flora.md`.
 
+mod forest;
 mod grow;
 mod metrics;
 mod model;
@@ -16,8 +17,12 @@ mod noise;
 mod species;
 mod sweep;
 
+pub(crate) use self::forest::{
+    Forest, ForestLayer, ForestSpecies, TREE_DENSITY_CEILING, Tree, TreeHit, TreeInstance,
+};
 pub use self::grow::grow_tree;
 pub use self::metrics::TreeMetrics;
+pub(crate) use self::model::Parts;
 pub use self::model::{Axis, FoliageBlob, Part, Segment, TreeModel};
 pub use self::species::{FoliageSpec, RootsSpec, SpeciesSpec};
 pub use self::sweep::GenomeSweep;
@@ -48,8 +53,9 @@ const WOBBLE_RATE: f64 = 0.35;
 /// Main roots leaving the base.
 const ROOT_COUNT: u32 = 5;
 
-/// Wavelength of the holes that thin foliage, in metres.
-const FOLIAGE_NOISE_SCALE: f64 = 0.15;
+/// Wavelength of the holes that thin foliage, in metres: leaf clumps rather
+/// than a sponge, whose surface would cost far more triangles.
+const FOLIAGE_NOISE_SCALE: f64 = 0.4;
 
 /// Root flare: how much wider the trunk is at the ground, and over what height.
 const FLARE_WIDENING: f64 = 1.4;

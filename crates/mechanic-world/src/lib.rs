@@ -16,6 +16,8 @@ mod persistence;
 mod query;
 mod soil;
 mod streaming;
+#[cfg(test)]
+mod testing;
 mod transvoxel;
 mod water;
 

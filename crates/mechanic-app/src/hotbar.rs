@@ -195,6 +195,8 @@ impl WheelChoice {
             Self::TerrainMaterial(TerrainMaterial::Sand) => "Sand",
             Self::TerrainMaterial(TerrainMaterial::Iron) => "Iron",
             Self::TerrainMaterial(TerrainMaterial::Graphite) => "Graphite",
+            Self::TerrainMaterial(TerrainMaterial::Wood) => "Wood",
+            Self::TerrainMaterial(TerrainMaterial::Foliage) => "Leaves",
             Self::ShapeMode(mode) => mode.label(),
             Self::WeldMode(mode) => mode.label(),
         }
@@ -226,7 +228,7 @@ impl WheelContext {
         match self {
             Self::ConstructionMaterial => ConstructionMaterial::ALL.len(),
             Self::Item => PlaceableItem::ALL.len(),
-            Self::TerrainMaterial => TerrainMaterial::ALL.len(),
+            Self::TerrainMaterial => TerrainMaterial::BRUSHABLE.len(),
             Self::Shape => crate::shape_tool::ShapeEditMode::ALL.len(),
             Self::Weld => WeldMode::ALL.len(),
         }
@@ -242,7 +244,7 @@ impl WheelContext {
                 .get(index)
                 .copied()
                 .map(WheelChoice::Item),
-            Self::TerrainMaterial => TerrainMaterial::ALL
+            Self::TerrainMaterial => TerrainMaterial::BRUSHABLE
                 .get(index)
                 .copied()
                 .map(WheelChoice::TerrainMaterial),

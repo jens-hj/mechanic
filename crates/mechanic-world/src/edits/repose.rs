@@ -46,14 +46,16 @@ pub struct Repose(&'static [(i32, i32)]);
 
 impl Repose {
     /// The slope of a material that settles back into ground, about 34° for
-    /// soil, cover and rock rubble and 27° for sand. Ore does not settle.
+    /// soil, cover, foliage and rock rubble and 27° for sand. Ore and wood do
+    /// not settle.
     pub const fn for_material(material: TerrainMaterial) -> Option<Self> {
         match material {
-            TerrainMaterial::Soil | TerrainMaterial::SurfaceCover | TerrainMaterial::Rock => {
-                Some(Self(&[(1, 1), (3, 2)]))
-            }
+            TerrainMaterial::Soil
+            | TerrainMaterial::SurfaceCover
+            | TerrainMaterial::Rock
+            | TerrainMaterial::Foliage => Some(Self(&[(1, 1), (3, 2)])),
             TerrainMaterial::Sand => Some(Self(&[(1, 1), (2, 1)])),
-            TerrainMaterial::Iron | TerrainMaterial::Graphite => None,
+            TerrainMaterial::Iron | TerrainMaterial::Graphite | TerrainMaterial::Wood => None,
         }
     }
 }

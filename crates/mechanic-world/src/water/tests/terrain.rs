@@ -1220,3 +1220,59 @@ fn a_lake_standing_over_its_seed_level_shows_over_its_shallows() {
         "{bare} of {shallows} points of a lake's shallows show no water"
     );
 }
+
+/// The first solid cell of `material` found in the air over the ground
+/// around the spawn.
+fn tree_cell(field: &TerrainField, material: crate::TerrainMaterial) -> DVec3 {
+    let spawn = field.safe_spawn().0;
+    for ring in 0..60 {
+        let radius = f64::from(ring) * 1.5;
+        for step in 0..(ring * 8).max(1) {
+            let angle = f64::from(step) / f64::from((ring * 8).max(1)) * std::f64::consts::TAU;
+            let (x, z) = (
+                spawn.x + radius * angle.cos(),
+                spawn.z + radius * angle.sin(),
+            );
+            let ground = field.topmost_surface(x, z).expect("ground near the spawn");
+            for lift in 1..120 {
+                let point = DVec3::new(x, ground + 0.5 + f64::from(lift) * 0.2, z);
+                let sample = field.sample_position(WorldPosition(point));
+                if sample.is_solid() && sample.material == material {
+                    return point;
+                }
+            }
+        }
+    }
+    panic!("no {material:?} near the spawn");
+}
+
+#[test]
+fn water_runs_through_canopies_but_not_trunks() {
+    let field = TerrainField::new(WorldSeed(42));
+    let terrain = TerrainOctree::default();
+    let ground = TerrainWater {
+        field: &field,
+        edits: &terrain,
+    };
+    let leaves = tree_cell(&field, crate::TerrainMaterial::Foliage);
+    let open = ground.open_cells(crate::water::WaterCell::containing(leaves));
+    assert!(
+        open.iter().all(|&open| open),
+        "a canopy at {leaves:?} holds water"
+    );
+    let trunk = tree_cell(&field, crate::TerrainMaterial::Wood);
+    let open = ground.open_cells(crate::water::WaterCell::containing(trunk));
+    assert!(
+        open.iter().any(|&open| !open),
+        "a trunk at {trunk:?} lets water through"
+    );
+    // The ground water stands on lies under the canopy, not on it.
+    let top = ground
+        .ground_top(leaves.x, leaves.z, leaves.y + 0.5, 40.0)
+        .expect("ground under a canopy");
+    assert!(
+        top < leaves.y - 0.5,
+        "water stands at {top:.2} on leaves at {:.2}",
+        leaves.y
+    );
+}

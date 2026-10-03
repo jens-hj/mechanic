@@ -14,7 +14,7 @@ pub(super) const EMPTY_DENSITY: f32 = -0.5 * TERRAIN_CELL_METERS as f32;
 
 pub(super) const BRICK_MAGIC: [u8; 4] = *b"MECB";
 
-pub(super) const BRICK_FORMAT_VERSION: u16 = 5;
+pub(super) const BRICK_FORMAT_VERSION: u16 = 6;
 
 /// Fully promoted 32³-cell brick and its density acceleration bounds.
 #[derive(Clone, Debug, PartialEq)]

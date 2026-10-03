@@ -1,3 +1,4 @@
+mod field;
 mod genome;
 mod library;
 mod sweeps;

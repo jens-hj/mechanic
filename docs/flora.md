@@ -80,7 +80,7 @@ The sweeps are defined once, in `GenomeSweep::ALL`, and the gallery draws them.
 6. **Foliage.**
    - Every non-stem axis carries a capsule sleeve of radius `size` beyond its
      last split, and a ball 1.3× wider at its tip.
-   - The sleeve is cut by smooth noise on a 15 cm scale. The noise is remapped
+   - The sleeve is cut by smooth noise on a 40 cm scale. The noise is remapped
      through its own distribution, so `density` is the filled fraction
      (`foliage_density_sets_filled_fraction`).
 7. **Roots.** Five main roots, plus a taproot when `depth > spread·R/2`, grow by
@@ -130,6 +130,7 @@ recognisable by silhouette alone.
 | 4 | Tropism per node, not per metre | Willow weeps. |
 | 5 | Laterals split at most once to each side | The spruce ball is gone: clean whorls to the ground. |
 | 6 | Crown envelope prunes laterals; forks bend back in; tips aim at the envelope | `width` and `dominance` now control the crown. Birch is a slender oval on pale stems. Every species reads correctly. |
+| 7 (phase 2) | Foliage holes widened from 15 to 40 cm for terrain cost | Leaves read as clumps with gaps rather than lace. Every species still reads correctly. |
 
 Final verdicts:
 - **Spruce:** a narrow cone of flat whorls to the ground, dark needles.
@@ -138,6 +139,85 @@ Final verdicts:
 - **Willow:** a rounded crown with curtains hanging almost to the ground.
 - **Bamboo:** a dense clump of straight culms, leafy in the upper half.
 - **Poplar:** a tall, narrow column.
+
+## Trees in the world
+
+**Placement.**
+- Biomes list their trees in `flora`; see [world generation](world-generation.md#flora).
+- Each tree is a pure function of the world seed, its layer and its grid
+  cell. Placing one costs about 25 ground samples and is cached per thread.
+- Growing one takes about a millisecond. Grown trees live in a shared cache
+  with a 192 MB budget, behind a small per-thread table.
+
+**In the terrain field.**
+- The field's density is `max(ground, tree)`, so trees are ordinary terrain.
+- Wood is the `Wood` material, painted with the species' `bark` look. Bark
+  uses the wood texture, recoloured per species.
+- Leaves are `Foliage`, painted with its `foliage` look on the recoloured
+  grass texture.
+- Digging, breakage, clumps and the matter books treat both like any other
+  ground:
+  - **Wood** is strong, light (600 kg/m³) and stays in pieces when cut, like
+    ore.
+  - **Foliage** gives way under a few kPa (`foliage_breaks_where_soil_holds`)
+    and crumbles into clods.
+- Neither erodes. The terrain brush does not lay them: the hotbar and
+  material wheel offer `TerrainMaterial::BRUSHABLE`.
+
+**Roots.**
+- Roots add no ground; they paint as wood the ground they run through, below
+  its top 0.3 m.
+- Grass, water and erosion therefore keep their topsoil, and digging near a
+  tree turns up wood.
+
+**Water.**
+- Water runs through leaves but not wood (`water_runs_through_canopies_but_not_trunks`).
+- `TerrainField::water_density` and `water_density_lattice` see the ground
+  that way, and native grass is found under trees.
+
+**Distance.**
+- Terrain sampled at up to a 20 cm stride (levels 0 to 2, out to 22–64 m)
+  shows grown trees.
+- Coarser levels show impostors: the trunk under a solid crown shaped by the
+  species' envelope (cone to dome by `dominance`), which needs no growing.
+
+**Bounds.**
+- `classify` and `interval` are tree-aware from cheap placement bounds, so no
+  box holding a tree is ever judged empty.
+- Meshing culls blocks by the ground alone and raises the trees over every
+  block afterwards.
+
+**Ground queries.** `topmost_surface` and `surface_height` find the ground
+under any canopy.
+
+### Cost
+
+`terrain-cut` (release, seed 42, 10 workers, M1 Pro) compares each biome's
+full streaming cut with and without its flora. CPU is sampling plus
+extraction.
+
+| Biome | CPU without trees | CPU with trees | Ratio | Triangles without → with |
+|---|---|---|---|---|
+| Verdant Hills | 161.6 s | 192.7 s | 1.19× | 9.7 M → 19.0 M |
+| Titan Crags | 220.4 s | 239.2 s | 1.09× | 10.6 M → 14.0 M |
+| Shelf Mire | 145.3 s | 153.6 s | 1.06× | 7.3 M → 8.4 M |
+
+Selection takes about 1 s longer per cut, from tree placement.
+
+Measure a change by copying `crates/mechanic-world/worldgen` with the
+`flora` lists removed and running `terrain-cut --worldgen <dir>` against
+both.
+
+### Known limits
+
+- Twigs finer than a lattice's stride vanish, so trees thin out with
+  distance until impostors take over beyond the 20 cm stride.
+- Bark and leaf looks recolour the wood and grass textures; there are no
+  dedicated bark or leaf maps.
+- There is no growth, felling, or tree-specific harvesting: trees are part of
+  the seed's ground.
+- Saved worlds made before trees are outdated by the new worldgen digest and
+  brick format, and are not migrated.
 
 ## Decisions
 
@@ -167,3 +247,34 @@ Final verdicts:
   species. A dedicated variant would add nothing.
 - **Images:** the sheet lives in `docs/flora/`, following the per-feature image
   folders used elsewhere in `docs/`.
+- **Roots paint, they do not build.**
+  - First version: roots added solid ground. Shore oaks then pushed roots out
+    of the soil into lakes and channels, damming them.
+  - Second version: roots repainted the topsoil as wood, so it stopped
+    eroding and soaking.
+  - Now roots only repaint ground below its top 0.3 m.
+- **`topmost_surface` passes through trees.**
+  - Its callers place spawns, pits, vehicles and benchmark probes on the
+    ground.
+  - Tests of the ground's own shape use `testing::treeless_field`. These
+    include LOD smoothness, and two water tests whose helpers stood on
+    canopies.
+- **`TreeModel::sample` reports only true densities within 0.3 m.** A floor
+  of −0.3 lifted the ground's own density wherever a tree's bucket overlapped
+  it, moving the terrain surface.
+- **Trees paint the open side of their surface too.** A mesh crossing takes
+  its open corner's look, so air corners beside a trunk must know the trunk.
+- **Placement asks for open sky up to the tallest tree and a level 1 m
+  footing.**
+  - Without the sky check, trees grew through carve roofs.
+  - Without the footing check, trees stood on ledge edges.
+  - The footing check replaced a local slope probe.
+- **Bark uses the shipped wood texture** (`TextureSet::Wood`) rather than
+  recoloured stone.
+- **Foliage holes are 0.4 m across**, not 0.15 m: the finer sponge tripled a
+  woodland's triangles.
+- **Grown trees end at the 20 cm stride; impostors take over.** With grown
+  trees at 40 cm, Verdant Hills cost 2.5×. Most of that was culling by the
+  tree-aware interval and painting by per-vertex tree lookups. Both are now
+  gathered once per lattice.
+

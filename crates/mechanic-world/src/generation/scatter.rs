@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 
+use super::grid::{JitterGrid, cache_slot};
 use super::interval::Interval;
 use super::tape::Tape;
 
@@ -28,15 +29,12 @@ pub(crate) const MAX_VARS: usize = 8;
 #[derive(Debug)]
 pub(crate) struct ScatterGen {
     pub(crate) id: u64,
-    pub(crate) cell: f64,
+    pub(crate) grid: JitterGrid,
     pub(crate) reach: f64,
-    pub(crate) jitter: f64,
-    pub(crate) chance: f64,
     pub(crate) lift: (f64, f64),
     pub(crate) yaw: bool,
     pub(crate) tilt_radians: f64,
     pub(crate) vars: Vec<(f64, f64)>,
-    pub(crate) seed: u64,
     pub(crate) mask: Option<Tape>,
     pub(crate) ground: Option<Tape>,
     pub(crate) shape: Tape,
@@ -54,16 +52,9 @@ thread_local! {
 }
 
 impl ScatterGen {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "cell indices are hashed bit for bit"
-    )]
     fn instance(&self, cell_x: i64, cell_z: i64) -> Option<Instance> {
         let key = (self.id, cell_x, cell_z);
-        let slot = (mix(self.id ^ (cell_x as u64).wrapping_mul(0x9e37_79b9) ^ (cell_z as u64) << 32)
-            as usize)
-            % INSTANCE_CACHE_SLOTS;
+        let slot = cache_slot(self.id, cell_x, cell_z, INSTANCE_CACHE_SLOTS);
         INSTANCES.with(|cache| {
             if let Some((cached, instance)) = cache.borrow()[slot]
                 && cached == key
@@ -76,18 +67,8 @@ impl ScatterGen {
         })
     }
 
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "cell indices stay far below 2^52 inside the finite world"
-    )]
     fn create_instance(&self, cell_x: i64, cell_z: i64) -> Option<Instance> {
-        let mut random = Hash::new(self.seed, cell_x, cell_z);
-        if random.unit() >= self.chance {
-            return None;
-        }
-        let spread = self.jitter.clamp(0.0, 1.0);
-        let x = (cell_x as f64 + 0.5 + (random.unit() - 0.5) * spread) * self.cell;
-        let z = (cell_z as f64 + 0.5 + (random.unit() - 0.5) * spread) * self.cell;
+        let (x, z, mut random) = self.grid.place(cell_x, cell_z)?;
         if let Some(mask) = &self.mask
             && mask.eval([x, 0.0, z], &[]) <= 0.0
         {
@@ -117,17 +98,7 @@ impl ScatterGen {
     }
 
     fn cells_near(&self, x: Interval, z: Interval) -> (i64, i64, i64, i64) {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "coordinates are finite and inside the world"
-        )]
-        let cell = |value: f64| (value / self.cell).floor() as i64;
-        (
-            cell(x.lo - self.reach),
-            cell(x.hi + self.reach),
-            cell(z.lo - self.reach),
-            cell(z.hi + self.reach),
-        )
+        self.grid.cells_near(x, z, self.reach)
     }
 
     pub(crate) fn sample(&self, point: [f64; 3], rock: f64) -> f64 {
@@ -280,32 +251,6 @@ fn rotation(yaw: f64, tilt: f64, tilt_axis: f64) -> [[f64; 3]; 3] {
     product
 }
 
-/// Deterministic per-cell random stream.
-pub(crate) struct Hash(u64);
-
-impl Hash {
-    #[expect(clippy::cast_sign_loss, reason = "cell indices are hashed bit for bit")]
-    pub(crate) fn new(seed: u64, x: i64, z: i64) -> Self {
-        let mut state = seed ^ 0x9e37_79b9_7f4a_7c15;
-        state = mix(state ^ (x as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9));
-        state = mix(state ^ (z as u64).wrapping_mul(0x94d0_49bb_1331_11eb));
-        Self(state)
-    }
-
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "53 random bits map exactly onto the unit interval"
-    )]
-    pub(crate) fn unit(&mut self) -> f64 {
-        self.0 = mix(self.0.wrapping_add(0x9e37_79b9_7f4a_7c15));
-        (self.0 >> 11) as f64 / (1_u64 << 53) as f64
-    }
-
-    pub(crate) fn between(&mut self, lo: f64, hi: f64) -> f64 {
-        (hi - lo).mul_add(self.unit(), lo)
-    }
-}
-
 pub(crate) const fn mix(mut value: u64) -> u64 {
     value ^= value >> 30;
     value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -316,7 +261,52 @@ pub(crate) const fn mix(mut value: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use super::super::compile::{Scope, compile};
+    use super::super::load::parse;
+    use super::super::spec::Expr;
     use super::rotation;
+
+    /// Sum of a jittered, masked, lifted, tilted scatter's densities over a
+    /// fixed set of points, bit for bit.
+    fn scatter_fingerprint() -> u64 {
+        let expr: Expr = parse(
+            "scatter",
+            r#"Scatter(
+                cell: 12, reach: 4, chance: 0.6, jitter: 0.9,
+                mask: Noise(freq: 0.01, seed: 3, dims: Two),
+                ground: Mul([Noise(freq: 0.02, dims: Two), C(5)]),
+                lift: (-0.5, 0.5), tilt: 20,
+                vars: {"r": (1.0, 3.0)},
+                shape: Sphere(Ref("r")),
+            )"#,
+        )
+        .expect("valid scatter");
+        let empty = BTreeMap::new();
+        let scope = Scope {
+            local: &empty,
+            library: &empty,
+            fields: None,
+        };
+        let tape = compile(&expr, scope, &[], 99, "test").expect("compiles");
+        let mut sum = 0.0;
+        for index in 0..4_000_u32 {
+            let t = f64::from(index);
+            let point = [
+                (t * 7.31).rem_euclid(160.0) - 80.0,
+                (t * 0.37).rem_euclid(12.0) - 4.0,
+                (t * 3.17).rem_euclid(160.0) - 80.0,
+            ];
+            sum += tape.eval(point, &[]).max(-10.0);
+        }
+        sum.to_bits()
+    }
+
+    #[test]
+    fn scatter_output_is_unchanged() {
+        assert_eq!(scatter_fingerprint(), 13_898_954_667_620_756_581);
+    }
 
     #[test]
     fn instance_rotations_are_orthonormal() {

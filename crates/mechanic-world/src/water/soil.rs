@@ -64,7 +64,12 @@ const fn holds(material: TerrainMaterial) -> (f64, f64) {
         TerrainMaterial::SurfaceCover => (0.4, 6.0e-5),
         TerrainMaterial::Soil => (0.35, 5.0e-5),
         TerrainMaterial::Sand => (0.4, 2.0e-4),
-        TerrainMaterial::Rock | TerrainMaterial::Iron | TerrainMaterial::Graphite => (0.0, 0.0),
+        // Leaf litter drinks freely.
+        TerrainMaterial::Foliage => (0.6, 1.0e-3),
+        TerrainMaterial::Rock
+        | TerrainMaterial::Iron
+        | TerrainMaterial::Graphite
+        | TerrainMaterial::Wood => (0.0, 0.0),
     }
 }
 

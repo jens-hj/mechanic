@@ -5,12 +5,14 @@ use bevy_math::DVec3;
 use super::FOLIAGE_NOISE_SCALE;
 use super::noise::foliage_noise;
 
-/// Distance beyond a primitive's surface over which its density stays exact.
-/// Farther points report at most this much below zero, or nothing.
-pub(super) const SAMPLE_MARGIN: f64 = 0.3;
+/// Distance beyond a primitive's surface over which its density stays exact;
+/// farther points report nothing. It spans a whole lattice edge at the
+/// coarsest stride that samples grown trees, so every crossing's open
+/// corner knows the tree it meets.
+pub(crate) const SAMPLE_MARGIN: f64 = 0.3;
 
 /// Edge of the buckets that index primitives for point queries.
-const BUCKET_METRES: f64 = 0.5;
+const BUCKET_METRES: f64 = 1.0;
 
 /// What a solid point of a tree is made of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -21,6 +23,18 @@ pub enum Part {
     Root,
     /// Leaves or needles.
     Foliage,
+}
+
+/// Which parts of a tree a sample sees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Parts {
+    /// Everything, roots included: what the ground is made of.
+    All,
+    /// What the tree adds to the ground: wood and leaves. Roots only run
+    /// through ground that is already there.
+    Solid,
+    /// Wood alone, as water sees the tree: it runs through leaves.
+    Wood,
 }
 
 /// A tapered capsule of wood.
@@ -94,6 +108,8 @@ pub struct TreeModel {
     pub min: DVec3,
     /// Highest corner of every primitive's bounds.
     pub max: DVec3,
+    /// Bounds of the wood and leaves alone: what the tree adds to the ground.
+    solid: (DVec3, DVec3),
     noise_seed: u64,
     buckets: Buckets,
 }
@@ -111,6 +127,12 @@ impl TreeModel {
         foliage_density: f64,
         noise_seed: u64,
     ) -> Self {
+        // Bucket items are 16-bit; no preset comes near the limit.
+        let mut segments = segments;
+        let mut foliage = foliage;
+        let limit = usize::from(u16::MAX);
+        segments.truncate(limit);
+        foliage.truncate(limit - segments.len());
         let bounds = |a: DVec3, b: DVec3, radius: f64| (a.min(b) - radius, a.max(b) + radius);
         let primitives = segments
             .iter()
@@ -127,6 +149,21 @@ impl TreeModel {
                 (low.min(primitive_low), high.max(primitive_high))
             },
         );
+        let solid = primitives
+            .iter()
+            .zip(
+                segments
+                    .iter()
+                    .map(|segment| segment.part != Part::Root)
+                    .chain(foliage.iter().map(|_| true)),
+            )
+            .filter(|(_, solid)| *solid)
+            .fold(
+                (origin, origin),
+                |(low, high), (&(primitive_low, primitive_high), _)| {
+                    (low.min(primitive_low), high.max(primitive_high))
+                },
+            );
         let buckets = Buckets::new(min - SAMPLE_MARGIN, max + SAMPLE_MARGIN, &primitives);
         Self {
             origin,
@@ -139,16 +176,40 @@ impl TreeModel {
             foliage_density,
             min,
             max,
+            solid,
             noise_seed,
             buckets,
         }
     }
 
+    /// Bounds of the wood and leaves: where [`Parts::Solid`] can be positive
+    /// or within the exact range.
+    pub(crate) fn solid_bounds(&self) -> (DVec3, DVec3) {
+        (self.solid.0 - SAMPLE_MARGIN, self.solid.1 + SAMPLE_MARGIN)
+    }
+
+    /// Heap and inline bytes this model holds.
+    pub fn memory_bytes(&self) -> usize {
+        size_of::<Self>()
+            + self.segments.capacity() * size_of::<Segment>()
+            + self.axes.capacity() * size_of::<Axis>()
+            + self.foliage.capacity() * size_of::<FoliageBlob>()
+            + self.buckets.starts.capacity() * size_of::<u32>()
+            + self.buckets.items.capacity() * size_of::<u16>()
+    }
+
     /// Signed density at a point, positive inside, with the part that
     /// dominates there. `None` farther than about 0.3 m from every primitive.
     pub fn sample(&self, point: DVec3) -> Option<(f32, Part)> {
+        self.sample_parts(point, Parts::All)
+    }
+
+    /// [`Self::sample`] over only some of the tree's parts.
+    pub(crate) fn sample_parts(&self, point: DVec3, parts: Parts) -> Option<(f32, Part)> {
         let items = self.buckets.items_at(point)?;
-        let mut best = -SAMPLE_MARGIN;
+        // Only true densities within the exact range count: a floor here
+        // would lift the ground's own density wherever a bucket overlaps it.
+        let mut best = f64::NEG_INFINITY;
         let mut part = None;
         let mut noise = None;
         let segment_count = self.segments.len();
@@ -156,12 +217,15 @@ impl TreeModel {
             let item = item as usize;
             if item < segment_count {
                 let segment = &self.segments[item];
+                if segment.part == Part::Root && parts != Parts::All {
+                    continue;
+                }
                 let density = capsule_density(point, segment.a, segment.b, segment.ra, segment.rb);
                 if density > best {
                     best = density;
                     part = Some(segment.part);
                 }
-            } else {
+            } else if parts != Parts::Wood {
                 let blob = &self.foliage[item - segment_count];
                 let shell = capsule_density(point, blob.a, blob.b, blob.radius, blob.radius);
                 if shell <= best {
@@ -182,7 +246,8 @@ impl TreeModel {
             clippy::cast_possible_truncation,
             reason = "terrain stores densities as f32"
         )]
-        part.map(|part| (best as f32, part))
+        part.filter(|_| best > -SAMPLE_MARGIN)
+            .map(|part| (best as f32, part))
     }
 }
 
@@ -205,7 +270,8 @@ struct Buckets {
     min: DVec3,
     dims: [usize; 3],
     starts: Vec<u32>,
-    items: Vec<u32>,
+    /// Primitive indices; a tree holds fewer than 2^16 primitives.
+    items: Vec<u16>,
 }
 
 impl Buckets {
@@ -249,7 +315,7 @@ impl Buckets {
                 for y in from[1]..=to[1] {
                     for x in from[0]..=to[0] {
                         let flat = buckets.flat([x, y, z]);
-                        buckets.items[cursor[flat] as usize] = index as u32;
+                        buckets.items[cursor[flat] as usize] = index as u16;
                         cursor[flat] += 1;
                     }
                 }
@@ -284,7 +350,7 @@ impl Buckets {
         clippy::cast_sign_loss,
         reason = "checked against the bucket grid first"
     )]
-    fn items_at(&self, point: DVec3) -> Option<&[u32]> {
+    fn items_at(&self, point: DVec3) -> Option<&[u16]> {
         let local = (point - self.min) / BUCKET_METRES;
         if local.x < 0.0 || local.y < 0.0 || local.z < 0.0 {
             return None;

@@ -279,6 +279,7 @@ fn texture_directory(set: TextureSet) -> &'static str {
         TextureSet::Iron => "materials/iron/iron",
         TextureSet::Graphite => "materials/graphite/graphite",
         TextureSet::Copper => "materials/copper/copper",
+        TextureSet::Wood => "materials/wood/wood",
     }
 }
 
