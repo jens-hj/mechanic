@@ -22,7 +22,9 @@ pub(super) struct PoseCache {
     pub(super) shapes: Vec<OnceLock<ContactPolytope>>,
     pub(super) rounds: Vec<Option<ContactCylinder>>,
     pub(super) separations: std::cell::RefCell<CachedSeparations>,
-    pub(super) spare_shapes: std::cell::RefCell<Vec<ContactPolytope>>,
+    // Each collider's last transformed shape, kept after a pose change so its
+    // buffers, already the right size, take the next transform.
+    pub(super) stale_shapes: std::cell::RefCell<Vec<Option<ContactPolytope>>>,
     pub(super) clipping: std::cell::RefCell<mechanic_core::TriangleClipScratch>,
     pub(super) terrain_candidates: Vec<Vec<TerrainNodeId>>,
     pub(super) terrain_bounds: Vec<[DVec3; 2]>,
@@ -46,6 +48,9 @@ impl PoseCache {
         self.shapes
             .resize_with(machine.colliders.len(), OnceLock::new);
         self.rounds.resize(machine.colliders.len(), None);
+        self.stale_shapes
+            .get_mut()
+            .resize_with(machine.colliders.len(), || None);
         if self.poses != poses {
             self.separations.get_mut().clear();
         }
@@ -55,7 +60,7 @@ impl PoseCache {
             }
             for &row in &machine.body_colliders[body] {
                 if let Some(shape) = self.shapes[row].take() {
-                    self.spare_shapes.get_mut().push(shape);
+                    self.stale_shapes.get_mut()[row] = Some(shape);
                 }
                 self.bounds[row] = machine.colliders[row]
                     .local
@@ -82,10 +87,8 @@ impl PoseCache {
         if slot.get().is_none() {
             let pose = poses[machine.colliders[row].body];
             let local = &machine.colliders[row].local;
-            let mut shape = self
-                .spare_shapes
-                .borrow_mut()
-                .pop()
+            let mut shape = self.stale_shapes.borrow_mut()[row]
+                .take()
                 .unwrap_or_else(|| local.clone());
             local
                 .transformed_into(pose.position, pose.rotation, &mut shape)

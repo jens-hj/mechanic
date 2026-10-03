@@ -325,10 +325,8 @@ impl Contact {
                     (at - model.centre(body)).cross(direction)
                 };
                 let force = if angular { DVec3::ZERO } else { direction };
-                let weights = [
-                    force.x, force.y, force.z, torque.x, torque.y, torque.z,
-                ]
-                .map(|weight| sign * weight);
+                let weights = [force.x, force.y, force.z, torque.x, torque.y, torque.z]
+                    .map(|weight| sign * weight);
                 let basis = bodies.responses(body);
                 let rows = model.component_rows(body);
                 let length = rows.len();
@@ -371,7 +369,11 @@ impl BodyResponses {
         factor: &DynamicsFactor,
         body: usize,
     ) -> Result<(), PhysicsError> {
-        if !*self.ready.get(body).ok_or(PhysicsError::InvalidConstraints)? {
+        if !*self
+            .ready
+            .get(body)
+            .ok_or(PhysicsError::InvalidConstraints)?
+        {
             model.body_responses(body, factor, &mut self.values[body], &mut self.solve)?;
             self.ready[body] = true;
         }

@@ -719,7 +719,7 @@ fn builder_pipe_hierarchy_matches_exhaustive_pairs_at_rotated_poses() {
                 if first.body != second.body
                     && (first.moving || second.moving)
                     && geometry.suppressed.binary_search(&bodies).is_err()
-                    && geometry.fits.binary_search(&[a, b]).is_err()
+                    && !geometry.fits.contains(&[a, b])
                     && super::overlaps(bounds[a], bounds[b])
                 {
                     expected.push([a, b]);

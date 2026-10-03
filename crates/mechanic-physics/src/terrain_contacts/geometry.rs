@@ -8,6 +8,7 @@ use bevy_math::DVec3;
 use mechanic_core::{
     CompiledCreation, ContactCylinder, ContactPolytope, MaterialProperties, PartId,
 };
+use rustc_hash::FxHashSet;
 use std::sync::Mutex;
 
 pub(super) struct Collider {
@@ -74,9 +75,9 @@ pub struct MachineCollisionGeometry {
     // Sorted body pairs none of whose colliders may collide: joined by a
     // bearing or a mesh, or built touching, and fitted throughout.
     pub(super) suppressed: Vec<[usize; 2]>,
-    // Sorted collider pairs of one mechanism that never collide: built
-    // touching, resting on a face shared as built, or meshing.
-    pub(super) fits: Vec<[usize; 2]>,
+    // Collider pairs, lower row first, of one mechanism that never collide:
+    // built touching, resting on a face shared as built, or meshing.
+    pub(super) fits: FxHashSet<[usize; 2]>,
     pub(super) body_colliders: Vec<Vec<usize>>,
     pub(super) body_bounds: Vec<[DVec3; 2]>,
     pub(super) body_radii: Vec<f64>,
@@ -246,7 +247,7 @@ impl MachineCollisionGeometry {
             reach,
             motion_colliders,
             suppressed,
-            fits: Vec::new(),
+            fits: FxHashSet::default(),
             body_colliders,
             body_bounds,
             body_radii,
@@ -264,7 +265,7 @@ impl MachineCollisionGeometry {
         };
         // The fits are found over every pair, joined or not.
         let joined = std::mem::take(&mut geometry.suppressed);
-        geometry.fits = geometry.built_fits(creation)?;
+        geometry.fits = geometry.built_fits(creation)?.into_iter().collect();
         geometry.suppressed = geometry.fitted_throughout(&joined);
         let mut roots = vec![0_usize; assembly_count];
         for (body, parents) in creation.loop_topology.body_parents.iter().enumerate() {
@@ -611,7 +612,7 @@ impl MachineCollisionGeometry {
                     let mut kept = start;
                     for index in start..pairs.len() {
                         let [i, j] = pairs[index];
-                        if self.fits.binary_search(&[i.min(j), i.max(j)]).is_err() {
+                        if !self.fits.contains(&[i.min(j), i.max(j)]) {
                             pairs.swap(kept, index);
                             kept += 1;
                         }
