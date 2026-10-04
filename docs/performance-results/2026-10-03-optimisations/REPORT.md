@@ -2,9 +2,13 @@
 
 A broad audit of CPU physics, world generation and streaming, water, GPU
 physics, construction edits and the app, followed by changes that leave every
-system's output unchanged or, where the arithmetic order moved, statistically
-the same. Each change was measured against the commit before the pass,
-`a2cd0d0`.
+system's output unchanged. Each change was measured against the commit before
+the pass, `a2cd0d0`.
+
+PR #67 first shipped a contact-row change that reordered arithmetic and
+altered the builder's long-run behaviour. The follow-up below replaces it
+with exact row solves; builder figures marked "PR #67" are that superseded
+state, kept as history.
 
 ## Conditions
 
@@ -21,6 +25,67 @@ the same. Each change was measured against the commit before the pass,
   `mesh_digest`).
 - CPU profiles: macOS `sample` at 1 ms.
 
+## Follow-up: exact contact rows (after PR #67)
+
+PR #67 shipped change 1 (shared per-body responses). Its replay of the
+builder kept the baseline's state for 1,749 ticks, parted at tick 1,750 and
+came apart at tick 2,624 instead of the baseline's 3,699. The baseline spread
+argued below does not establish that as equivalent, so the follow-up replaces
+change 1 with a contact-row path that is exact.
+
+**Isolation.** `main` after PR #67 with only the shared-basis path switched
+off matches `a2cd0d0`'s builder state hash on all 3,698 ticks before the
+baseline comes apart. Every other change in the pass is therefore
+bit-identical over the full run, and change 1 alone caused the divergence.
+
+**Replacement.** Contact rows go back to one direct articulated solve per
+row, as at `a2cd0d0`. Two changes recover speed without touching the
+arithmetic:
+
+- The backward sweep skips a body whose own entry and accumulated load are
+  both exactly zero. Such a body only ever passed zeros up.
+- A contact's three or five rows are solved together (`solve_ranges_many`):
+  one walk over the bodies, each row seeing exactly the operations its own
+  solve performs.
+
+Builder replay, interleaved, load 2.6–9:
+
+| | Baseline `a2cd0d0` | Shared basis (PR #67) | Exact rows |
+|---|---|---|---|
+| tick median | 33.0–33.4 ms | 21.3–21.4 ms | 25.9–26.1 ms (−22 %) |
+| tick p95 | 46.7–46.9 ms | 31.0–31.1 ms | 36.4–36.6 ms (−22 %) |
+| contact rows median | 16.1 ms | 7.1 ms | 11.4–11.7 ms |
+| CPU cycles | 62.5–62.9 G | 43.8–43.9 G | 49.7 G (−21 %) |
+| state hash vs baseline | — | parts at tick 1,750 | equal on all 3,698 ticks |
+| comes apart at | 3,699 | 2,624 | 3,699 (same state) |
+| maximum resident / scratch | 130 MB / 8.457 MB | — | 123 MB / 8.460 MB |
+
+The physics suite matches the baseline (250 pass; only
+`a_box_dropped_on_a_resting_box…` fails, as at `a2cd0d0`), and the ledge
+test's outcome is the baseline's by construction.
+
+**After the treads merge (`ff3faf3`).** Remeasured on the merged head against
+the same `a2cd0d0` binary, three interleaved runs each, load 2.5–9. The state
+hash still equals the baseline's on every tick, including 22 ticks past the
+breakup.
+
+| Builder replay | Baseline `a2cd0d0` | Exact rows on `ff3faf3` |
+|---|---|---|
+| 600 ticks: tick median | 32.9–33.3 ms | 25.9–26.3 ms (−21 %) |
+| 600 ticks: tick p95 | 46.8–47.2 ms | 36.2–36.7 ms (−22 %) |
+| 600 ticks: CPU cycles | 62.9–63.2 G | 49.8–50.1 G (−21 %) |
+| 3,698 ticks: tick median | 32.4–32.6 ms | 26.2–26.6 ms (−19 %) |
+| 3,698 ticks: tick p95 | 46.1–46.5 ms | 36.9–37.2 ms (−20 %) |
+| 3,698 ticks: CPU cycles | 381–384 G | 306–308 G (−20 %) |
+
+The longer run includes the late ticks, where the build is coming apart and
+contact rows are a smaller share of each tick.
+
+**Unknown save fields.** `stored_water_with_an_unknown_field_keeps_what_this_build_knows`
+loads a water save with an unrecognised 50,000-entry list and checks the
+known fields survive. It takes 0.12 s with the vendored ron and 72 s against
+unpatched ron 0.12.2.
+
 ## Final serial comparison
 
 Run one at a time, baseline and current interleaved, with the load average
@@ -30,12 +95,13 @@ conditions to compare it.
 
 | Workload | Runs | Load before runs | CPU cycles | Elapsed |
 |---|---|---|---|---|
-| Builder replay, 600 ticks | 3 + 3 | 6.7–7.9 | 63.4–64.5 G → 44.4–45.8 G (−29.5 %) | tick median 33.4–34.6 → 21.6–22.6 ms (−35 %); p95 48.4–49.0 → 32.0–33.2 ms (−33 %); mean 32.1–33.2 → 22.1–23.1 ms (−31 %) |
+| Builder replay, 600 ticks, exact rows (current) | 2 + 2 | 2.6–9 | 62.5–62.9 G → 49.7 G (−21 %) | tick median 33.0–33.4 → 25.9–26.1 ms (−22 %); p95 46.7–46.9 → 36.4–36.6 ms (−22 %); mean 31.5 → 24.8 ms (−21 %) |
+| Builder replay, PR #67 shared basis (superseded) | 3 + 3 | 6.7–7.9 | 63.4–64.5 G → 44.4–45.8 G (−29.5 %) | tick median 33.4–34.6 → 21.6–22.6 ms (−35 %); p95 48.4–49.0 → 32.0–33.2 ms (−33 %) |
 | `terrain-cut`, titan_crags | 3 + 3 | 6.7–108 | 593–598 G → 479–483 G (−19.4 %) | not comparable: 25–41 s either way under shifting load |
 | `water-breach` | 2 + 2 | 32–120 | 455–461 G → 338–344 G (−25.6 %) | step p50 7.2–7.3 → 5.8–6.1 ms (−18 %); p95s load-dominated |
 | `terrain-cut`, nine biomes | 1 + 1 | 16 / 177 | 4,222 G → 3,439 G (−18.5 %) | not comparable |
 
-After the lone-body change, two further interleaved builder runs per build
+History, PR #67: after the lone-body change, two further interleaved builder runs per build
 (load 7.5–18): baseline 63.7–63.9 G cycles, tick median 33.6–33.9 ms; before
 the change 44.9–45.1 G, 21.95–22.03 ms; after it 44.87–44.91 G, 21.82–21.90 ms.
 All six runs ended on the same state hash.
@@ -44,7 +110,8 @@ Peak memory in the same runs (maximum resident / peak footprint):
 
 | Workload | Baseline | Current |
 |---|---|---|
-| Builder replay | 114–125 / 110–122 MB | 123–124 / 119–120 MB |
+| Builder replay, exact rows | 130 / 126 MB (one run) | 123 / 120 MB (one run) |
+| Builder replay, PR #67 shared basis | 114–125 / 110–122 MB | 123–124 / 119–120 MB |
 | titan_crags | 117–129 / 127–128 MB | 106–133 / 122–135 MB |
 | `water-breach` | 138–141 / 149–155 MB | 140–143 / 155 MB |
 | nine biomes | 129 / 128 MB | 137 / 140 MB |
@@ -67,10 +134,10 @@ variant with the fix, and unchanged by every other change).
 
 | Workload | Measure | Before | After |
 |---|---|---|---|
-| `cpu-physics --scenario builder-scale --copies 1`, 600 ticks (13 bodies, 1,744 colliders, ~2,650 contacts) | CPU cycles | 64.0 G | 45.4–46.1 G (−28 %) |
-| same | tick median / p95 | 34.5 / 49.3 ms | 23.0 / 34.5 ms |
-| same | contact rows / query, median | 16.3 / 17.6 ms | 7.5 / 14.9 ms |
-| same | contacts, degraded ticks | 2,652, 0 | 2,652, 0 |
+| `cpu-physics --scenario builder-scale --copies 1`, 600 ticks (13 bodies, 1,744 colliders, ~2,650 contacts) | CPU cycles | 62.5–62.9 G | 49.7 G (−21 %) |
+| same | tick median / p95 | 33.0–33.4 / 46.7–46.9 ms | 25.9–26.1 / 36.4–36.6 ms |
+| same | contact rows / query, median | 16.1 / 16.9 ms | 11.4 / 13.4 ms |
+| same | contacts, degraded ticks, state hash | 2,652, 0 | 2,652, 0, identical |
 | `terrain-cut --seed 42`, all nine biomes (108,408 nodes) | CPU cycles | 4,334 G | 3,503 G (−19 %) |
 | same | instructions | 17,994 G | 14,354 G (−20 %) |
 | same | sampling / extraction CPU | 5,773 / 1,066 s | 4,062 / 537 s |
@@ -81,7 +148,7 @@ variant with the fix, and unchanged by every other change).
 | `mechanic-bench --scenario terrain_dig` | cached selection p95 | 27–33 ms | 17–18 ms |
 | same | terrain stage p50 | 29–32 ms | 19 ms |
 
-### Builder replay by phase
+### Builder replay by phase (PR #67 shared basis, superseded)
 
 Full replays of the same fixture, same flags, same hardware, two interleaved
 repetitions per build, stopping when any contact overlaps by more than 10 cm
@@ -152,7 +219,8 @@ overlap; four paired single-biome runs split two each way.
 
 ### CPU physics
 
-1. **Contact rows share each body's responses.** Every contact row is a
+1. **Contact rows share each body's responses** (superseded by the exact
+   rows above; kept here as the record of what PR #67 measured). Every contact row is a
    combination of six spatial unit impulses at its body's centre of mass, so a
    substep now solves those six per touched body
    (`MachineKinematics::body_responses`) and combines them, instead of running
