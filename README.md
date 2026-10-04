@@ -539,14 +539,18 @@ publishes a failed tick.
 
 ### Outdoor sky and time
 
-Worlds start at 09:00 and complete a day in 60 minutes of active outdoor play.
-Time is saved per world and stops in menus, while loading, in the garage, and
-during debug frame freeze. Machine simulation speed does not affect the sun.
-The outdoor view uses Bevy's Earth atmosphere, dynamic reflections, stars, and
-a full moon; the garage retains its authored lighting.
+Worlds start at 09:00 on day zero and complete a day in 60 minutes of active
+outdoor play. Time is saved per world and stops in menus, while loading, in the
+garage, and during debug frame freeze. Machine simulation speed does not affect
+the sky. The outdoor view uses Bevy's Earth atmosphere, dynamic reflections, and
+the world's own [star system](docs/celestial.md): one, two, or three stars and
+up to three moons, each on its own orbit. Seasons, moon phases, eclipses, and
+the turning stars follow from those orbits. The garage retains its authored
+lighting.
 
-With developer tools enabled, `[` / `]` move time by one hour and `F8` pauses
-or resumes the cycle. The developer overlay shows solar time and cycle status.
-`Shift+F8` freezes the entire debug frame; click to resume.
+With developer tools enabled, `[` / `]` move time by one hour, `Shift+[` /
+`Shift+]` by one day, and `F8` pauses or resumes the cycle. The developer
+overlay shows the day, solar time, cycle status, the star system, and each
+moon's phase. `Shift+F8` freezes the entire debug frame; click to resume.
 See [environment controls](docs/environment.md) for fixed-time visual fixtures.
-World format 7 adds solar time; older formats are not migrated.
+World format 8 adds the elapsed day; older formats are not migrated.

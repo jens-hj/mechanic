@@ -239,10 +239,41 @@ impl WorldRuntime {
         self.document.time_of_day_seconds
     }
 
+    /// Solar days since the world began, with the time of day as the fraction.
+    #[expect(clippy::cast_precision_loss, reason = "day counts stay far below 2^52")]
+    pub(crate) fn solar_days(&self) -> f64 {
+        self.document.day as f64
+            + self.document.time_of_day_seconds / mechanic_core::SECONDS_PER_DAY
+    }
+
+    pub(crate) const fn seed(&self) -> mechanic_world::WorldSeed {
+        self.document.seed
+    }
+
+    /// Move the solar clock, carrying whole days. The clock never runs back
+    /// before the world's first day; there the time of day wraps instead.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "whole days carried by a finite clock step"
+    )]
     pub(crate) fn advance_day(&mut self, seconds: f64) {
         if seconds != 0.0 {
-            self.document.time_of_day_seconds = (self.document.time_of_day_seconds + seconds)
-                .rem_euclid(mechanic_core::SECONDS_PER_DAY);
+            const DAY: f64 = mechanic_core::SECONDS_PER_DAY;
+            let total = self.document.time_of_day_seconds + seconds;
+            let mut days = (total / DAY).floor();
+            let mut time = total - days * DAY;
+            // Rounding can land a hair short of midnight on midnight itself.
+            if time >= DAY {
+                time -= DAY;
+                days += 1.0;
+            }
+            self.document.time_of_day_seconds = time.max(0.0);
+            self.document.day = if days < 0.0 {
+                self.document.day.saturating_sub((-days) as u64)
+            } else {
+                self.document.day.saturating_add(days as u64)
+            };
             self.autosave.mutate(self.clock);
         }
     }

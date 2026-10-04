@@ -1,5 +1,6 @@
 //! Opt-in offscreen GPU captures. Player worlds are never loaded or saved.
 
+mod celestial;
 mod performance;
 mod scene;
 
@@ -70,13 +71,21 @@ fn save_image(app: &App, directory: &std::path::Path, name: &str) {
     .unwrap();
 }
 
-#[test]
-#[ignore = "real GPU atmosphere capture and synchronized frame timing comparison"]
+struct Fixture {
+    app: App,
+    camera: Entity,
+    readback: Entity,
+    directory: std::path::PathBuf,
+    adapter: String,
+}
+
+/// An offscreen app with the sky, production materials, and one camera
+/// whose frames read back into [`Pixels`].
 #[expect(
     clippy::too_many_lines,
     reason = "self-contained offscreen GPU fixture"
 )]
-fn atmosphere_captures_four_times_and_reports_cost() {
+fn fixture() -> Fixture {
     let mut app = App::new();
     let mut dev = DevTools::default();
     dev.cycle_paused = true;
@@ -181,6 +190,29 @@ fn atmosphere_captures_four_times_and_reports_cost() {
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.55, 0.0)),
     ));
+    Fixture {
+        app,
+        camera,
+        readback,
+        directory,
+        adapter,
+    }
+}
+
+#[test]
+#[ignore = "real GPU atmosphere capture and synchronized frame timing comparison"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "self-contained offscreen GPU fixture"
+)]
+fn atmosphere_captures_four_times_and_reports_cost() {
+    let Fixture {
+        mut app,
+        camera,
+        readback,
+        directory,
+        adapter,
+    } = fixture();
     scene::ground(&mut app);
     let sphere = app
         .world_mut()
@@ -241,12 +273,18 @@ fn atmosphere_captures_four_times_and_reports_cost() {
         );
         previous = pixels;
         let original = *app.world().entity(camera).get::<Transform>().unwrap();
-        let direction = celestial_rotation(hours * 3600.0)
-            * if name == "midnight" {
-                Vec3::NEG_X
-            } else {
-                Vec3::X
-            };
+        let current = app
+            .world()
+            .resource::<SkyState>()
+            .current()
+            .unwrap()
+            .clone();
+        // Night views look at the first moon, when the world has one.
+        let direction = current
+            .moons
+            .first()
+            .filter(|_| name == "midnight")
+            .map_or(current.stars[0].direction, |moon| moon.direction);
         app.world_mut()
             .entity_mut(camera)
             .insert(original.looking_to(direction, Vec3::Y));

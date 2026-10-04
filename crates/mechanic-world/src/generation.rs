@@ -37,7 +37,7 @@ use self::grid::JitterGrid;
 use self::interval::Interval;
 use self::noise::NoiseGen;
 use self::rivers::{DRAINAGE_CELL_METRES, RIVER_LIFT_METRES, RiverNetwork, drainage_side};
-use self::scatter::mix;
+pub(crate) use self::scatter::mix;
 use self::spec::{BiomeDoc, CarveDoc, Dims, Expr, Fractal, NoiseDoc, NoiseKind};
 use self::surfaces::{SurfaceProbe, SurfaceRules};
 use self::tape::{PlanarCache, Tape, smoothstep};

@@ -4,6 +4,7 @@
 //! [`TerrainCollisionChunk`]. This crate deliberately has no Bevy ECS dependency.
 
 mod breakage;
+mod celestial;
 mod clumps;
 mod construction_collision;
 mod coordinates;
@@ -24,6 +25,10 @@ mod water;
 pub use breakage::{
     BreakageAccumulator, BreakagePatch, BreakageResponse, CELL_QUANTA, ExtractionCell,
     MATERIAL_QUANTUM_M3,
+};
+pub use celestial::{
+    CelestialMoon, CelestialSky, CelestialStar, CelestialSystem, MAX_SYSTEM_MOONS,
+    MAX_SYSTEM_STARS, SkyMoon, SkyStar, blackbody_colour,
 };
 pub use clumps::{
     ClumpCollection, MAX_ACTIVE_CLUMPS, MaterialClump, SETTLE_SECONDS, TransferLimits,

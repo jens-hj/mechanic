@@ -18,6 +18,7 @@ follows.
 ## Features
 
 - [Atmosphere and solar time](atmosphere.md)
+- [Star systems, moons, and the night sky](celestial.md)
 - [Independent suspension](suspension.md)
 - [Linear bearings](linear-bearings.md)
 - [Pistons](pistons.md)

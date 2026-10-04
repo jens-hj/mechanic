@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// World document version written by this build.
-pub const WORLD_FORMAT_VERSION: u32 = 7;
+pub const WORLD_FORMAT_VERSION: u32 = 8;
 
 /// Serializable global orientation and position.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -78,6 +78,8 @@ pub struct WorldDocument {
     pub seed: WorldSeed,
     /// Unix timestamp of most recent play.
     pub last_played_unix_seconds: u64,
+    /// Whole solar days since the world began; moons and seasons follow it.
+    pub day: u64,
     /// Local solar time in seconds since midnight, finite and in `[0, 86400)`.
     pub time_of_day_seconds: f64,
     /// Latest player pose.
@@ -106,6 +108,7 @@ impl WorldDocument {
             worldgen: crate::WorldgenSpec::embedded().hash(),
             seed,
             last_played_unix_seconds: unix_now(),
+            day: 0,
             time_of_day_seconds: 9.0 * 3600.0,
             player_pose: WorldPoseDoc {
                 translation: safe_spawn,
