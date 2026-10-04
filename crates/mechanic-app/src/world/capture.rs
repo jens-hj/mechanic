@@ -1,9 +1,14 @@
 //! Opt-in screenshots of normally generated, streamed terrain in an isolated world.
+//!
+//! With `timing_frames`, each view also records that many frames of GPU pass
+//! timings once its terrain is ready, and writes their medians beside the
+//! screenshot, so a change's rendering cost can be compared view by view.
 
 use super::{AppSpace, WorldDiagnostics, WorldListState, WorldRuntime};
 use crate::{
     camera::{EYE_HEIGHT, MainCamera, PlayerState},
     dev_tools::{DevMode, DevTools},
+    render_diagnostics::{RenderTimings, Snapshot},
     schedule::FrameSet,
 };
 use bevy::math::DVec3;
@@ -33,6 +38,16 @@ struct CaptureConfig {
     seed: u64,
     directory: PathBuf,
     views: Vec<View>,
+    /// Width and height of the screenshots, and of the frames timed.
+    #[serde(default = "default_size")]
+    size: [u32; 2],
+    /// Frames of GPU timings recorded per view before its screenshot.
+    #[serde(default)]
+    timing_frames: usize,
+}
+
+const fn default_size() -> [u32; 2] {
+    [CAPTURE_WIDTH, CAPTURE_HEIGHT]
 }
 
 #[derive(Deserialize)]
@@ -52,6 +67,8 @@ struct Capture {
     started: Instant,
     target: Option<Handle<Image>>,
     reported: u64,
+    /// Frame time and GPU timings of the frames timed for this view.
+    timed: Vec<(f64, Snapshot)>,
 }
 
 pub(super) fn install(app: &mut App) {
@@ -84,6 +101,7 @@ pub(super) fn install(app: &mut App) {
             started: Instant::now(),
             target: None,
             reported: 0,
+            timed: Vec::new(),
         })
         .add_systems(First, stop_repeated_readback)
         .add_systems(PreUpdate, suppress_input.after(InputSystems))
@@ -93,11 +111,11 @@ pub(super) fn install(app: &mut App) {
             position.after(FrameSet::WorldList).before(FrameSet::Camera),
         )
         .add_systems(Update, aim.after(FrameSet::Camera).before(FrameSet::Hover))
-        .add_systems(Last, capture);
+        .add_systems(Last, (time_frames, capture).chain());
 }
 
 // Read the application cameras through an owned texture instead of relying
-// on capture of a background window surface.
+// on capture of a background window surface, by default this large.
 const CAPTURE_WIDTH: u32 = 1280;
 const CAPTURE_HEIGHT: u32 = 720;
 
@@ -110,13 +128,10 @@ fn prepare_target(
     mut capture: ResMut<Capture>,
     cameras: Query<Entity, (With<Camera>, Without<CaptureCamera>)>,
 ) {
+    let [width, height] = capture.config.size;
     let target = capture.target.get_or_insert_with(|| {
-        let mut image = Image::new_target_texture(
-            CAPTURE_WIDTH,
-            CAPTURE_HEIGHT,
-            TextureFormat::Rgba8UnormSrgb,
-            None,
-        );
+        let mut image =
+            Image::new_target_texture(width, height, TextureFormat::Rgba8UnormSrgb, None);
         image.texture_descriptor.usage |= TextureUsages::COPY_SRC;
         images.add(image)
     });
@@ -210,6 +225,27 @@ fn aim(
     }
 }
 
+/// Records a ready view's frames for its timings, unpaced, so frame times
+/// show the work rather than the display.
+fn time_frames(
+    mut capture: ResMut<Capture>,
+    timings: Res<RenderTimings>,
+    time: Res<Time<Real>>,
+    mut window: Single<&mut Window, With<bevy::window::PrimaryWindow>>,
+) {
+    if capture.settled < 3 || capture.timed.len() >= capture.config.timing_frames {
+        return;
+    }
+    timings.set_enabled(true);
+    window.present_mode = bevy::window::PresentMode::AutoNoVsync;
+    // The first frames after enabling carry no complete sample yet.
+    if capture.settled > 10 {
+        capture
+            .timed
+            .push((time.delta_secs_f64() * 1_000.0, timings.snapshot()));
+    }
+}
+
 fn capture(
     mut commands: Commands,
     mut capture: ResMut<Capture>,
@@ -252,6 +288,10 @@ fn capture(
         && capture.started.elapsed() >= Duration::from_secs(30);
     capture.settled = if ready { capture.settled + 1 } else { 0 };
     if capture.settled < 3 {
+        capture.timed.clear();
+        return;
+    }
+    if capture.timed.len() < capture.config.timing_frames {
         return;
     }
     let path = capture
@@ -266,6 +306,7 @@ fn capture(
         "triangles": diagnostics.triangle_count, "detail_scale": diagnostics.terrain_detail_scale,
         "streaming_backlog": diagnostics.streaming_backlog, "frame_sample_phase": "local terrain ready",
         "settle_seconds": capture.started.elapsed().as_secs_f64(),
+        "size": capture.config.size, "timing": timing_medians(&capture.timed),
     });
     std::fs::write(
         path.with_extension("json"),
@@ -314,8 +355,8 @@ fn save_capture(
         .join(format!("{}.png", capture.config.views[capture.view].name));
     Image::new(
         Extent3d {
-            width: CAPTURE_WIDTH,
-            height: CAPTURE_HEIGHT,
+            width: capture.config.size[0],
+            height: capture.config.size[1],
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
@@ -335,5 +376,29 @@ fn save_capture(
         capture.view += 1;
         capture.settled = 0;
         capture.started = Instant::now();
+        capture.timed.clear();
     }
+}
+
+/// Medians of the timed frames: frame time, the world's whole GPU span, and
+/// its opaque and transparent passes, each over the frames that measured it.
+fn timing_medians(timed: &[(f64, Snapshot)]) -> serde_json::Value {
+    let median = |values: Vec<f64>| {
+        let mut values = values;
+        values.sort_by(f64::total_cmp);
+        values.get(values.len() / 2).copied()
+    };
+    let of = |pick: fn(&Snapshot) -> Option<f64>| {
+        let values = timed
+            .iter()
+            .filter_map(|(_, snapshot)| pick(snapshot))
+            .collect::<Vec<_>>();
+        serde_json::json!({ "median_ms": median(values.clone()), "frames": values.len() })
+    };
+    serde_json::json!({
+        "frame": { "median_ms": median(timed.iter().map(|(frame, _)| *frame).collect()), "frames": timed.len() },
+        "gpu": of(|snapshot| snapshot.render_gpu_ms),
+        "opaque": of(|snapshot| snapshot.breakdown.opaque_ms),
+        "transparent": of(|snapshot| snapshot.breakdown.transparent_ms),
+    })
 }

@@ -82,6 +82,10 @@ Flags are on when set to `1`.
 `views` (`name`, `eye`, `target`; positions are global metre triples). It creates
 a disposable world, waits for streamed terrain and textures, saves native screenshots,
 and exits. Use `MECHANIC_SKY_TIME` to fix lighting. Normal launches are unaffected.
+Optional `size` (`[width, height]`, default `[1280, 720]`) sets the screenshot and
+rendered size. Optional `timing_frames` records that many unpaced frames per view
+once its terrain is ready, and adds the medians of frame time and of the world's
+GPU, opaque and transparent pass timings to the view's JSON.
 
 ## Cargo storage launcher
 
