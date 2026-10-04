@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run three sequential release-binary pairs for the generated CPU motion cases.
 
-Build the two binaries in separate target directories first. Keep profiling,
+Build and copy both binaries into durable measurement directories first.
+If using reusable Cargo slots, copy each binary while its lease is still held. Keep profiling,
 compilation, and application captures out of this timing run.
 """
 import argparse
@@ -11,6 +12,8 @@ from pathlib import Path
 import statistics
 import subprocess
 
+from cargo_storage import require_binary_lease
+
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -18,6 +21,8 @@ def digest(path):
 
 def run(baseline, candidate, output, warmup, ticks):
     binaries = {"baseline": baseline.resolve(), "candidate": candidate.resolve()}
+    for binary in binaries.values():
+        require_binary_lease(binary)
     hashes = {name: digest(path) for name, path in binaries.items()}
     if hashes["baseline"] == hashes["candidate"]:
         raise ValueError("baseline and candidate are the same executable")

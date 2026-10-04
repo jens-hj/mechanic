@@ -82,3 +82,17 @@ Flags are on when set to `1`.
 `views` (`name`, `eye`, `target`; positions are global metre triples). It creates
 a disposable world, waits for streamed terrain and textures, saves native screenshots,
 and exits. Use `MECHANIC_SKY_TIME` to fix lighting. Normal launches are unaffected.
+
+## Cargo storage launcher
+
+The Python launcher, outside the crates, reads `MECHANIC_CARGO_STORAGE` as an
+optional shared storage root. `--root` overrides it. `MECHANIC_CARGO_LEASE` is an
+internal inherited token: do not set it manually. The launcher sets
+`CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, and `CARGO_BUILD_BUILD_DIR`
+for the whole leased process tree; nested launchers verify it.
+The background capture script resolves its default binary from that target.
+An existing external `CARGO_TARGET_DIR` requires explicit `--unmanaged` mode.
+
+On Windows the launcher sets `_MSPDBSRV_ENDPOINT_` to a unique per-lease value so
+its MSVC PDB helper cannot be shared with another build. Nested commands inherit
+that endpoint; do not override it. No user-global environment is changed.

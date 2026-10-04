@@ -466,6 +466,13 @@ loose target blocks remain enabled.
 
 ## Commands
 
+Workers prefix Cargo commands below with `python3 scripts/cargo-storage.py`
+(`python` on Windows), for example `python3 scripts/cargo-storage.py cargo xtask ci`.
+The launcher leases reusable storage before Cargo starts. See
+[Cargo storage](docs/cargo-storage.md) for whole build/capture pipelines, explicit
+cleanup, crash recovery, and isolated measurement opt-outs. Ordinary ephemeral CI
+can continue using Cargo directly.
+
 `cargo xtask` is the single entry point for checks, on every platform. CI runs
 `cargo xtask ci`, so a green local run means a green pipeline:
 
