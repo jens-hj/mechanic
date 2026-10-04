@@ -429,3 +429,22 @@ fn tight_rows(data: &[u8], [width, height]: [u32; 2]) -> Vec<u8> {
         .copied()
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::tight_rows;
+
+    #[test]
+    fn padded_readback_rows_are_packed_into_the_image() {
+        // Three pixels wide: 12 bytes a row, padded to 16 as copies align them.
+        let padded = (0..2_u8)
+            .flat_map(|row| (0..12).map(move |byte| row * 100 + byte).chain([0xee; 4]))
+            .collect::<Vec<_>>();
+        let packed = tight_rows(&padded, [3, 2]);
+        assert_eq!(packed.len(), 24);
+        assert_eq!(&packed[..12], &(0..12).collect::<Vec<u8>>()[..]);
+        assert_eq!(&packed[12..], &(100..112).collect::<Vec<u8>>()[..]);
+        // Unpadded rows pass through untouched.
+        assert_eq!(tight_rows(&packed, [3, 2]), packed);
+    }
+}
