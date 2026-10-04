@@ -240,9 +240,12 @@ Final verdicts:
     to its own height and turned about the vertical.
   - The finest level holds how much of each 40 cm cell is wood and how much
     is leaves. Each coarser level merges eight cells below it, as the
-    terrain octree's levels do, seen through three layers of them: a crown
-    with gaps between its clumps reads as solid from afar, while a lone twig
-    averages away.
+    terrain octree's levels do. The 80 cm level is their plain mean, so
+    near crowns keep their volume and neighbours stay apart; coarser levels
+    see through two and then three layers of cells, so a crown with gaps
+    between its clumps reads as solid from afar, while a lone twig averages
+    away. Seen through three layers at 80 cm too, crowns 33–80 m away
+    fused into canopy mounds in the app (2026-10-04 capture).
   - A lattice reads the finest level whose cells are at least 1.5 spacings
     wide. Its surface lies where cells are 40 % full, so a branch one cell
     thick is as thick as the lattice holds in one piece.
