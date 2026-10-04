@@ -424,9 +424,13 @@ above it, so a sheet ends inside the ground instead of at its grid. Each
 vertex carries the depth of water under it (to 16 m) and its current.
 
 The app (`world/water_render.rs`) keeps a quadtree of tiles around the camera:
-2,048 m tiles split down to 64 m ones, with 64 cells each, out to 4 km. Tiles
-mesh on worker threads, and a tile the camera leaves stays until everything
-that replaces it is ready. `water_material.wgsl` colours by depth, fades to
+2,048 m tiles split down to 64 m ones, with 64 cells each. Water reaches only
+as far as the terrain is drawn: tiles stop at the terrain's horizon
+(`TERRAIN_HORIZON_METRES`, 1 km from the terrain's focus), and the material
+discards whatever part of a tile lies beyond it. Before, sheets ran on to
+4 km over no ground, and in an open view the water cost more GPU time than
+the terrain. Tiles mesh on worker threads, and a tile the camera leaves stays
+until everything that replaces it is ready. `water_material.wgsl` colours by depth, fades to
 clear at the shore, shows its current, and lights through Bevy's PBR path,
 so the sky reflects in it. Water neither casts nor receives shadows.
 

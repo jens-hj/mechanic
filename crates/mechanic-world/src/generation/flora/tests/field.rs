@@ -216,14 +216,19 @@ fn bounds_never_claim_a_tree_box_is_empty_or_solid_wrongly() {
 
 #[test]
 fn no_wood_or_crown_floats_at_coarse_levels_of_detail() {
-    let field = TerrainField::new(WorldSeed(42));
     #[expect(clippy::cast_possible_truncation, reason = "cells near the spawn")]
     let cell = |value: f64| (value / crate::TERRAIN_CELL_METERS).floor() as i32;
-    for tree in trees_near_spawn(&field, 60.0).iter().take(3) {
+    let fields = [42, 7].map(|seed| TerrainField::new(WorldSeed(seed)));
+    for (field, tree) in fields.iter().flat_map(|field| {
+        trees_near_spawn(field, 60.0)
+            .into_iter()
+            .take(6)
+            .map(move |tree| (field, tree))
+    }) {
         let base = tree.origin();
         let reach = tree.height() * 0.7 + 2.0;
-        // Grown at stride 4; impostors beyond.
-        for stride in [4, 8, 16] {
+        // Grown at stride 4; drawn from octrees beyond.
+        for stride in [4, 8, 16, 32, 64] {
             let span =
                 |metres: f64| usize::try_from(cell(metres) / stride + 1).expect("positive span");
             let lattice = Lattice {
@@ -298,7 +303,7 @@ fn trees_appear_in_terrain_meshes() {
     let snapshot = crate::TerrainOctree::default().snapshot();
     let trunk = WorldPosition(tree.origin() + DVec3::Y * 1.2);
     let brick = trunk.cell().expect("inside the world").brick();
-    // Grown at the finest levels, impostors beyond.
+    // Grown at the finest levels, drawn from octrees beyond.
     for level in [0, 1, 2, 3, 4, 5] {
         let node = crate::TerrainNodeId::containing(brick, level).expect("inside the world");
         let chunk = crate::mesh_chunk(
@@ -331,7 +336,7 @@ fn crowns_and_their_chunk_caps_are_painted_as_trees() {
     let trunk = WorldPosition(tree.origin() + DVec3::Y * 1.2);
     let brick = trunk.cell().expect("inside the world").brick();
     let unpainted = crate::SurfaceId::plain(TerrainMaterial::Rock);
-    // Impostor crowns are metres dense where a chunk's cap cuts them.
+    // Distant crowns are metres dense where a chunk's cap cuts them.
     for level in [0, 1, 2, 3, 4, 5] {
         let node = crate::TerrainNodeId::containing(brick, level).expect("inside the world");
         let chunk = crate::mesh_chunk(

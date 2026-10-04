@@ -11,6 +11,7 @@
 
 mod forest;
 mod grow;
+mod lod;
 mod metrics;
 mod model;
 mod noise;
@@ -23,6 +24,7 @@ pub(crate) use self::forest::{
     TreeInstance,
 };
 pub use self::grow::grow_tree;
+pub use self::lod::TreeLod;
 pub use self::metrics::TreeMetrics;
 pub use self::model::{Axis, FoliageBlob, Part, Segment, TreeModel};
 pub(crate) use self::model::{Parts, wood_floor};

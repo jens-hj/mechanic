@@ -256,8 +256,9 @@ Trees are part of the terrain field:
   painted with the species' `bark` and `foliage` looks from the palette.
 - **Roots** add no ground. They paint as wood the ground they run through,
   below its top 0.3 m.
-- **Distance:** terrain sampled coarser than 20 cm shows each tree as an
-  impostor, its trunk under a solid crown of its envelope.
+- **Distance:** terrain sampled coarser than 20 cm draws each tree from its
+  species' octree of levels of detail: a few trees grown once and averaged
+  level by level, scaled and turned to stand in for it.
 - **Ground queries:** `topmost_surface` and `surface_height` find the ground
   under the trees.
 

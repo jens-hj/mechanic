@@ -19,7 +19,7 @@ pub(crate) const SAMPLE_MARGIN: f64 = 0.3;
 /// solid corner beside every point of its axis; and as the point moves on,
 /// its nearest corner steps to a neighbour along a cube edge, so those solid
 /// corners join edge to edge, and the surface meshed over them is one piece.
-const RESOLVED_RADIUS: f64 = 0.9;
+pub(super) const RESOLVED_RADIUS: f64 = 0.9;
 
 /// Thinnest wood, in metres, that a lattice of `stride` cells holds in one
 /// piece. Thinner branches are sampled this thick, so they never break up
@@ -322,7 +322,7 @@ impl TreeModel {
 }
 
 /// Signed distance-like density of a tapered capsule, positive inside.
-fn capsule_density(point: DVec3, a: DVec3, b: DVec3, ra: f64, rb: f64) -> f64 {
+pub(super) fn capsule_density(point: DVec3, a: DVec3, b: DVec3, ra: f64, rb: f64) -> f64 {
     let axis = b - a;
     let length_squared = axis.length_squared();
     let t = if length_squared > 0.0 {

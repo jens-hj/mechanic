@@ -189,6 +189,13 @@ pub(super) struct Halo {
     columns: LatticeColumns,
 }
 
+impl Halo {
+    /// Whether any tree reaches the halo.
+    pub(super) const fn has_trees(&self) -> bool {
+        self.columns.has_trees()
+    }
+}
+
 pub(super) fn sample_halo(
     field: &TerrainField,
     edits: &PreparedTerrainRegion<'_>,
@@ -477,20 +484,49 @@ pub(super) fn lattice_from_halo(
     lattice
 }
 
-pub(super) fn synchronize_edited_boundary_lattice(
+/// Which points a chunk's transition faces share with coarser neighbours,
+/// and where those points can disagree with the neighbours' own samples.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BoundaryDisagreement {
+    /// Faces that meet a coarser neighbour.
+    pub(super) transition_mask: TerrainTransitionMask,
+    /// Within edited ground.
+    pub(super) edits: bool,
+    /// Near any surface, where trees reach: trees are drawn as thick as each
+    /// lattice holds them, and far off from octrees whose level follows the
+    /// stride.
+    pub(super) trees: bool,
+}
+
+/// Resamples, at the coarser neighbour's stride, the points a transition face
+/// shares with it wherever the two strides can disagree.
+pub(super) fn synchronize_boundary_lattice(
     field: &TerrainField,
     edits: &PreparedTerrainRegion<'_>,
     minimum: WorldCell,
     fine_stride: i32,
     lattice_edge: usize,
-    transition_mask: TerrainTransitionMask,
+    disagreement: BoundaryDisagreement,
     lattice: &mut [LatticePoint],
 ) {
-    if edits.is_empty() {
+    let BoundaryDisagreement {
+        transition_mask,
+        trees,
+        ..
+    } = disagreement;
+    let edited = disagreement.edits && !edits.is_empty();
+    if !edited && !trees {
         return;
     }
     let cubes = lattice_edge - 1;
     let coarse_stride = fine_stride * 2;
+    // A tree drawn at either stride lies within a few coarse spacings of
+    // where the other draws it.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "lattices store densities as f32"
+    )]
+    let tree_margin = (4.0 * f64::from(coarse_stride) * crate::TERRAIN_CELL_METERS) as f32;
     let maximum = WorldCell::new(
         minimum.x
             + i32::try_from(cubes).expect("lattice edge fits i32") * fine_stride
@@ -505,10 +541,11 @@ pub(super) fn synchronize_edited_boundary_lattice(
             + coarse_stride
             - 1,
     );
-    if edits
-        .minimum_promoted_density_between(minimum, maximum)
-        .is_none()
-    {
+    let edited = edited
+        && edits
+            .minimum_promoted_density_between(minimum, maximum)
+            .is_some();
+    if !edited && !trees {
         return;
     }
     let mut coarse_samples = FxHashMap::<WorldCell, LatticeSample>::default();
@@ -544,20 +581,22 @@ pub(super) fn synchronize_edited_boundary_lattice(
                     cell.y + coarse_stride - 1,
                     cell.z + coarse_stride - 1,
                 );
-                if edits
-                    .minimum_promoted_density_between(cell, maximum)
-                    .is_none()
-                {
+                let index = x + y * lattice_edge + z * lattice_edge.pow(2);
+                let near_trees = trees && lattice[index].sample.density.abs() < tree_margin;
+                let near_edits = edited
+                    && edits
+                        .minimum_promoted_density_between(cell, maximum)
+                        .is_some();
+                if !near_trees && !near_edits {
                     continue;
                 }
-                lattice[x + y * lattice_edge + z * lattice_edge.pow(2)] =
-                    transition_coarse_lattice_point(
-                        field,
-                        edits,
-                        cell,
-                        coarse_stride,
-                        &mut coarse_samples,
-                    );
+                lattice[index] = transition_coarse_lattice_point(
+                    field,
+                    edits,
+                    cell,
+                    coarse_stride,
+                    &mut coarse_samples,
+                );
             }
         }
     }

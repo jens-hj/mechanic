@@ -31,10 +31,21 @@ pub const STREAMED_LEVELS: usize = MAX_STREAMED_LEVEL as usize + 1;
 /// treat caves as closed rock, so they neither sample nor draw them.
 pub const CAVE_STREAMED_LEVEL: u8 = 2;
 
+/// Horizontal distance from the focus within which terrain nodes stream:
+/// nothing farther is drawn, so nothing drawn over the terrain, such as
+/// water, need reach farther either.
+pub const TERRAIN_HORIZON_METRES: f64 = 1_000.0;
+
 /// Horizontal band limits: a node within `LOD_BANDS[i].0` metres of a point
 /// of interest refines to level `LOD_BANDS[i].1`. Farther than the last band
 /// nothing streams.
-const LOD_BANDS: [(f64, u8); 5] = [(64.0, 2), (160.0, 3), (400.0, 4), (640.0, 5), (1_000.0, 6)];
+const LOD_BANDS: [(f64, u8); 5] = [
+    (64.0, 2),
+    (160.0, 3),
+    (400.0, 4),
+    (640.0, 5),
+    (TERRAIN_HORIZON_METRES, 6),
+];
 
 /// Observable selection counters used by streaming diagnostics and benchmarks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

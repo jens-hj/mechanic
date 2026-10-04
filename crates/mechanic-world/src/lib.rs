@@ -53,8 +53,8 @@ pub use generation::{
     Axis, BarkTraits, FoliageBlob, FoliageSpec, GenomeSweep, LakeBasin, LeafTraits, Outflow, Part,
     RiverReach, RootsSpec, Segment, SpeciesSpec, SurfaceId, SurfaceLook, SurfacePalette,
     TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TerrainField, TerrainMaterial, TerrainSample,
-    TextureSet, TreeMetrics, TreeModel, TreeSurface, TreeTexture, TreeTextureMaps, WaterBody,
-    WaterSurface, WorldgenError, WorldgenSpec, grow_tree,
+    TextureSet, TreeLod, TreeMetrics, TreeModel, TreeSurface, TreeTexture, TreeTextureMaps,
+    WaterBody, WaterSurface, WorldgenError, WorldgenSpec, grow_tree,
 };
 pub use material_response::TerrainMaterialError;
 pub use mesh::{
@@ -80,11 +80,11 @@ pub use soil::{
 };
 pub use streaming::{
     ActiveTerrainNode, CAVE_STREAMED_LEVEL, MAX_STREAMED_LEVEL, MIN_TERRAIN_DETAIL_SCALE,
-    STREAMED_LEVELS, TerrainActivation, TerrainBoundsCache, TerrainFace, TerrainPublicationDelta,
-    TerrainPublicationUpsert, TerrainReadiness, TerrainSelection, TerrainSelectionStats,
-    TerrainStreamer, TerrainTransitionMask, TerrainView, publication_face_mask,
-    select_active_nodes, select_active_nodes_cached, select_active_nodes_with_interests,
-    terrain_loading_worker_count, terrain_worker_count,
+    STREAMED_LEVELS, TERRAIN_HORIZON_METRES, TerrainActivation, TerrainBoundsCache, TerrainFace,
+    TerrainPublicationDelta, TerrainPublicationUpsert, TerrainReadiness, TerrainSelection,
+    TerrainSelectionStats, TerrainStreamer, TerrainTransitionMask, TerrainView,
+    publication_face_mask, select_active_nodes, select_active_nodes_cached,
+    select_active_nodes_with_interests, terrain_loading_worker_count, terrain_worker_count,
 };
 pub use water::{
     BedDoc, ErosionConfig, GrassDoc, JoinedCellDoc, NativeGrass, PoolDoc, PoolView, RunningView,
