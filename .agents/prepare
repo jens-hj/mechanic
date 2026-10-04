@@ -1,0 +1,18 @@
+#!/bin/sh
+# Delta runs this for every new local managed checkout (Git Bash on Windows).
+# Keep preparation advisory and offline: documentation-only work needs no tools.
+# Do not run Cargo/rustup, evaluate Nix, fetch dependencies, or lease build slots.
+# Do not link target/ or .direnv/: build storage is managed by cargo-storage.py,
+# and direnv's environment belongs to the individual checkout.
+
+if ! command -v cargo >/dev/null 2>&1; then
+    printf '%s\n' 'Mechanic: Cargo is not on PATH. Before building, enter the Nix dev shell or install the toolchain in rust-toolchain.toml.' >&2
+fi
+
+if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+    printf '%s\n' 'Mechanic: Python is not on PATH. Install Python 3 before using scripts/cargo-storage.py.' >&2
+fi
+
+# Presence checks intentionally do not invoke tools or validate their versions.
+# Dependencies (including private Mosaic access) are checked on the first build.
+printf '%s\n' 'Mechanic: use python3 scripts/cargo-storage.py cargo <arguments> for builds/checks (python on Windows). See AGENTS.md.'
