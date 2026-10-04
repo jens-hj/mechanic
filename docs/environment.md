@@ -86,6 +86,7 @@ Optional `size` (`[width, height]`, default `[1280, 720]`) sets the screenshot a
 rendered size. Optional `timing_frames` records that many unpaced frames per view
 once its terrain is ready, and adds the medians of frame time and of the world's
 GPU, opaque and transparent pass timings to the view's JSON.
+Optional `timeout_minutes` (default 10) bounds how long each view may take.
 
 ## Cargo storage launcher
 

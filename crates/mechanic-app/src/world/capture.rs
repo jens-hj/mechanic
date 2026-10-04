@@ -44,6 +44,13 @@ struct CaptureConfig {
     /// Frames of GPU timings recorded per view before its screenshot.
     #[serde(default)]
     timing_frames: usize,
+    /// Minutes a view may take to stream, settle and be timed.
+    #[serde(default = "default_timeout_minutes")]
+    timeout_minutes: u64,
+}
+
+const fn default_timeout_minutes() -> u64 {
+    10
 }
 
 const fn default_size() -> [u32; 2] {
@@ -268,7 +275,7 @@ fn capture(
             capture.settled
         );
     }
-    if capture.started.elapsed() > Duration::from_mins(10) {
+    if capture.started.elapsed() > Duration::from_mins(capture.config.timeout_minutes) {
         error!(
             "Terrain capture timed out: backlog={} local={}/{}",
             diagnostics.streaming_backlog,
