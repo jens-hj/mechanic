@@ -22,7 +22,7 @@ pub use collision::{TerrainCollisionChunk, TerrainRayHit};
 pub use groups::{TerrainIndexGroups, TerrainTriangleGroupMask};
 pub use lattice::PreparedTerrainRegion;
 pub(crate) use lattice::corner_water_density;
-use lattice::{lattice_from_halo, sample_halo, synchronize_edited_boundary_lattice};
+use lattice::{BoundaryDisagreement, lattice_from_halo, sample_halo, synchronize_boundary_lattice};
 use polygonise::{CUBE_CORNERS, polygonise_cube, weighted_materials};
 use transition::{generate_face_cap, generate_transition_face};
 pub(crate) use water::DEEPEST_METRES;
@@ -474,17 +474,19 @@ pub fn mesh_chunk_profiled_prepared(
     }
     let halo = sample_halo(field, edits, minimum, cubes, stride);
     let mut lattice = lattice_from_halo(field, &halo, minimum, cubes, stride);
-    if request.node.level < 5 {
-        synchronize_edited_boundary_lattice(
-            field,
-            edits,
-            minimum,
-            stride,
-            lattice_edge,
-            request.transition_mask,
-            &mut lattice,
-        );
-    }
+    synchronize_boundary_lattice(
+        field,
+        edits,
+        minimum,
+        stride,
+        lattice_edge,
+        BoundaryDisagreement {
+            transition_mask: request.transition_mask,
+            edits: request.node.level < 5,
+            trees: halo.has_trees(),
+        },
+        &mut lattice,
+    );
     let column_sampling_ms = sampling_started.elapsed().as_secs_f64() * 1_000.0;
 
     let polygonization_started = Instant::now();

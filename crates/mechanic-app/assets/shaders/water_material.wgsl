@@ -11,6 +11,8 @@
 // Mirrors `WaterRenderMaterial` in world/water_render.rs.
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> shallow: vec4<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var<uniform> deep: vec4<f32>;
+// The terrain's focus in x and z, and in w how far from it terrain is drawn.
+@group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> horizon: vec4<f32>;
 
 struct WaterVertex {
     @builtin(instance_index) instance_index: u32,
@@ -240,6 +242,10 @@ fn fragment(
     varyings: WaterVaryings,
     @builtin(front_facing) is_front: bool,
 ) -> FragmentOutput {
+    // Beyond the terrain's horizon there is no ground to hold water.
+    if distance(varyings.world_position.xz, horizon.xz) > horizon.w {
+        discard;
+    }
     var in: VertexOutput;
     in.position = varyings.position;
     in.world_position = varyings.world_position;

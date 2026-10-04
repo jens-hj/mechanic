@@ -7,12 +7,14 @@
 //! millisecond and up to a megabyte, so grown trees live in one shared map
 //! that forgets its oldest beyond a memory budget, behind a small table of
 //! recent trees per thread. Far away, where the terrain is sampled too coarsely
-//! for twigs, a tree is drawn as an impostor: its trunk and a crown-shaped
-//! ellipsoid, which needs no growing.
+//! for twigs, a tree is drawn from its species' octree of levels of detail
+//! ([`TreeLod`]): a few trees of each species, grown once at its tallest and
+//! averaged level by level, scaled and turned to stand in for each tree, which
+//! then needs no growing.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use bevy_math::DVec3;
 
@@ -21,7 +23,8 @@ use super::super::interval::Interval;
 use super::super::scatter::mix;
 use super::super::surfaces::SurfaceId;
 use super::super::tape::Tape;
-use super::grow::{crown_shape, tree_height};
+use super::grow::tree_height;
+use super::lod::TreeLod;
 use super::model::{Parts, SAMPLE_MARGIN};
 use super::{FLARE_HEIGHT, FLARE_WIDENING, Part, SpeciesSpec, TreeModel, grow_tree};
 use crate::TerrainMaterial;
@@ -42,15 +45,15 @@ const LOCAL_INSTANCE_SLOTS: usize = 16_384;
 const REACH_SLACK: f64 = 2.0;
 
 /// Coarsest lattice stride, in cells, that samples grown trees. Coarser
-/// levels of detail draw impostors: twigs are finer than their samples.
+/// levels of detail draw each species' octree: twigs are finer than their
+/// samples.
 pub(crate) const MAX_GROWN_STRIDE: i32 = 4;
 
 /// Densest a tree gets: no trunk or leaf ball is wider than this.
 pub(crate) const TREE_DENSITY_CEILING: f64 = 4.0;
 
-/// An impostor's crown fills this much of the crown the genome aims for, as
-/// foliage with holes reads smaller from afar.
-const IMPOSTOR_CROWN: f64 = 0.8;
+/// Trees of each species grown for its octree; each placed tree takes one.
+const LOD_VARIANTS: usize = 4;
 
 /// A species as the world grows it, with its looks and how far its trees can
 /// reach from their origins.
@@ -66,6 +69,9 @@ pub(crate) struct ForestSpecies {
     root_reach: f64,
     /// Deepest point below the origin.
     depth: f64,
+    /// Octrees of a few trees grown at the tallest height, made when first
+    /// sampled.
+    lods: [OnceLock<TreeLod>; LOD_VARIANTS],
 }
 
 impl ForestSpecies {
@@ -85,30 +91,39 @@ impl ForestSpecies {
             reach,
             root_reach,
             depth,
+            lods: Default::default(),
         }
     }
 
-    /// Whether a tree drawn `height` tall at `origin` can reach into a box:
-    /// its crown above ground, or with `roots`, its roots below.
-    fn could_reach(&self, origin: DVec3, height: f64, domain: &[Interval; 3], roots: bool) -> bool {
+    /// Bounds of what a tree drawn `height` tall at `origin` adds to the
+    /// ground: its crown, wood and leaves.
+    fn solid_bounds(&self, origin: DVec3, height: f64) -> (DVec3, DVec3) {
         let scale = height / self.spec.height.1;
         let crown = DVec3::new(
             self.reach * scale + REACH_SLACK,
             0.0,
             self.reach * scale + REACH_SLACK,
         );
-        let root_reach = DVec3::new(self.root_reach, 0.0, self.root_reach);
         let flare = DVec3::Y * (FLARE_HEIGHT + SAMPLE_MARGIN);
-        overlaps(
-            domain,
+        (
             origin - crown - flare,
             origin + crown + DVec3::Y * self.rise(height),
-        ) || roots
-            && overlaps(
-                domain,
-                origin - root_reach - DVec3::Y * self.depth,
-                origin + root_reach + flare,
-            )
+        )
+    }
+
+    /// Whether a tree drawn `height` tall at `origin` can reach into a box:
+    /// its crown above ground, or with `roots`, its roots below.
+    fn could_reach(&self, origin: DVec3, height: f64, domain: &[Interval; 3], roots: bool) -> bool {
+        let root_reach = DVec3::new(self.root_reach, 0.0, self.root_reach);
+        let flare = DVec3::Y * (FLARE_HEIGHT + SAMPLE_MARGIN);
+        let (low, high) = self.solid_bounds(origin, height);
+        overlaps(domain, low, high)
+            || roots
+                && overlaps(
+                    domain,
+                    origin - root_reach - DVec3::Y * self.depth,
+                    origin + root_reach + flare,
+                )
     }
 
     /// Highest point above the origin of a tree drawn this tall.
@@ -206,7 +221,11 @@ struct SharedTrees {
 /// Every tree a world can grow.
 #[derive(Debug)]
 pub(crate) struct Forest {
+    /// Identifies this world's trees in the caches.
     id: u64,
+    /// The world's seed, which the trees standing in for each species grow
+    /// from.
+    seed: u64,
     species: Vec<ForestSpecies>,
     layers: Vec<ForestLayer>,
     shared: Mutex<SharedTrees>,
@@ -216,9 +235,15 @@ pub(crate) struct Forest {
 pub(crate) type Placement<'a> = &'a dyn Fn(&ForestLayer, f64, f64) -> Option<DVec3>;
 
 impl Forest {
-    pub(crate) fn new(id: u64, species: Vec<ForestSpecies>, layers: Vec<ForestLayer>) -> Self {
+    pub(crate) fn new(
+        id: u64,
+        seed: u64,
+        species: Vec<ForestSpecies>,
+        layers: Vec<ForestLayer>,
+    ) -> Self {
         Self {
             id,
+            seed,
             species,
             layers,
             shared: Mutex::new(SharedTrees::default()),
@@ -521,53 +546,72 @@ impl Forest {
         best
     }
 
-    /// Bounds of an impostor whose trunk is at least `floor` metres thick:
-    /// its crown and trunk.
-    pub(crate) fn impostor_bounds(&self, instance: &TreeInstance, floor: f64) -> (DVec3, DVec3) {
-        let spec = &self.species[instance.species].spec;
-        let height = instance.height;
-        let widest = (spec.width * height * 0.5 * IMPOSTOR_CROWN)
-            .max(0.5)
-            .max(floor)
-            + 0.5;
-        let side = DVec3::new(widest, 0.0, widest);
+    /// The octree a placed tree is drawn from where twigs are too fine for
+    /// the lattice, with how much it is scaled and how far it is turned
+    /// about the vertical.
+    fn lod(&self, instance: &TreeInstance) -> (&TreeLod, f64, f64) {
+        let species = &self.species[instance.species];
+        let variant = (instance.seed >> 40) as usize % LOD_VARIANTS;
+        let lod = species.lods[variant].get_or_init(|| {
+            // Grown at the tallest height, so trees are only ever shrunk to
+            // it and stay within the bounds their own growth would have.
+            let tallest = species.spec.height.1;
+            let spec = SpeciesSpec {
+                height: (tallest, tallest),
+                ..species.spec.clone()
+            };
+            let seed = mix(self.seed ^ (instance.species as u64) << 32 ^ variant as u64);
+            TreeLod::new(&grow_tree(&spec, seed, DVec3::ZERO), &spec)
+        });
+        let scale = instance.height / lod.height();
+        #[expect(clippy::cast_precision_loss, reason = "16 bits of the seed")]
+        let turn = (instance.seed & 0xffff) as f64 * std::f64::consts::TAU / 65_536.0;
+        (lod, scale, turn)
+    }
+
+    /// Bounds of a placed tree drawn from its octree, with stems at least
+    /// `floor` metres thick. They never pass the bounds placement claims for
+    /// the tree, so a tree looked up at a point and one raised over a
+    /// lattice agree.
+    pub(crate) fn lod_bounds(&self, instance: &TreeInstance, floor: f64) -> (DVec3, DVec3) {
+        let (lod, scale, _) = self.lod(instance);
+        let (low, high) = lod.bounds(floor / scale);
+        let (claimed_low, claimed_high) =
+            self.species[instance.species].solid_bounds(instance.origin, instance.height);
         (
-            instance.origin - side - DVec3::Y * 0.5,
-            instance.origin + side + DVec3::Y * (height + 0.5),
+            (instance.origin + low * scale).max(claimed_low),
+            (instance.origin + high * scale).min(claimed_high),
         )
     }
 
-    /// An impostor's density at a point, for terrain too coarse to show
-    /// twigs: a trunk at least `floor` metres thick under a solid crown of
-    /// the species' own envelope.
-    pub(crate) fn impostor(&self, instance: &TreeInstance, point: DVec3, floor: f64) -> TreeHit {
-        let spec = &self.species[instance.species].spec;
-        let height = instance.height;
-        let crown_from = spec.crown_base * height;
-        let crown_height = (height - crown_from).max(1.0);
-        let widest = (spec.width * height * 0.5 * IMPOSTOR_CROWN).max(0.5);
-        let rise = point.y - instance.origin.y;
-        let t = ((rise - crown_from) / crown_height).clamp(0.0, 1.0);
-        let across = (point - instance.origin).with_y(0.0).length();
-        let crown = (crown_shape(t, spec.dominance) * widest - across)
-            .min(rise - crown_from)
-            .min(height - rise);
-        let trunk_radius = (spec.girth * height * 0.5).max(floor);
-        let trunk = (trunk_radius - across)
-            .min(rise + 0.5)
-            .min(crown_from + 0.5 * crown_height - rise);
-        if crown >= trunk {
-            TreeHit {
-                density: crown,
-                part: Part::Foliage,
-                species: instance.species,
-            }
-        } else {
-            TreeHit {
-                density: trunk,
-                part: Part::Wood,
-                species: instance.species,
-            }
+    /// A placed tree's density at a point, drawn from its octree as a
+    /// lattice `spacing` metres apart holds it, with stems at least `floor`
+    /// metres thick. `None` beyond everything the octree draws.
+    pub(crate) fn lod_hit(
+        &self,
+        instance: &TreeInstance,
+        point: DVec3,
+        spacing: f64,
+        floor: f64,
+        parts: Parts,
+    ) -> Option<TreeHit> {
+        let (low, high) = self.lod_bounds(instance, floor);
+        if point.cmplt(low).any() || point.cmpgt(high).any() {
+            return None;
         }
+        let (lod, scale, turn) = self.lod(instance);
+        let offset = (point - instance.origin) / scale;
+        let (sin, cos) = turn.sin_cos();
+        let local = DVec3::new(
+            cos * offset.x - sin * offset.z,
+            offset.y,
+            sin * offset.x + cos * offset.z,
+        );
+        let (density, part) = lod.sample_parts(local, spacing / scale, floor / scale, parts)?;
+        Some(TreeHit {
+            density: density * scale,
+            part,
+            species: instance.species,
+        })
     }
 }

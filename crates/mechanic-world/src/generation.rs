@@ -49,8 +49,8 @@ use crate::{
 
 pub use self::flora::{
     Axis, BarkTraits, FoliageBlob, FoliageSpec, GenomeSweep, LeafTraits, Part, RootsSpec, Segment,
-    SpeciesSpec, TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TreeMetrics, TreeModel, TreeSurface,
-    TreeTexture, TreeTextureMaps, grow_tree,
+    SpeciesSpec, TREE_TEXTURE_LUMA, TREE_TEXTURE_METRES, TreeLod, TreeMetrics, TreeModel,
+    TreeSurface, TreeTexture, TreeTextureMaps, grow_tree,
 };
 pub use self::load::{WorldgenError, WorldgenSpec};
 pub use self::spec::TextureSet;
@@ -442,7 +442,7 @@ impl LatticeColumns {
         match &self.trees {
             LatticeTrees::None => false,
             LatticeTrees::Grown(trees, _) => !trees.is_empty(),
-            LatticeTrees::Impostors(instances, _) => !instances.is_empty(),
+            LatticeTrees::Placed(instances, _) => !instances.is_empty(),
         }
     }
 }
@@ -453,7 +453,8 @@ pub(crate) enum LatticeTrees {
     #[default]
     None,
     Grown(Vec<Arc<Tree>>, TreeDetail),
-    Impostors(Vec<TreeInstance>, TreeDetail),
+    /// Placed trees, drawn from their species' octrees.
+    Placed(Vec<TreeInstance>, TreeDetail),
 }
 
 /// Where a sample finds its trees: looked up around the point at a level of
@@ -465,7 +466,8 @@ pub(crate) enum TreeSource<'a> {
 }
 
 /// How trees appear at a lattice spacing: grown where twigs can show, as
-/// impostors where the samples are too coarse for them, and either way no
+/// from their species' octrees where the samples are too coarse for them, and
+/// either way no
 /// thinner than the lattice holds in one piece.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TreeDetail {
@@ -488,6 +490,11 @@ impl TreeDetail {
     /// Thinnest wood the lattice holds in one piece, in metres.
     fn floor(self) -> f64 {
         wood_floor(self.stride)
+    }
+
+    /// Distance between the lattice's samples, in metres.
+    fn spacing(self) -> f64 {
+        f64::from(self.stride) * TERRAIN_CELL_METERS
     }
 }
 
@@ -1150,13 +1157,15 @@ impl TerrainField {
     }
 
     /// Untouched density at a position as a lattice of this stride samples
-    /// it: trees grown, or as impostors where the stride is too coarse.
+    /// it: trees grown, or from their octrees where the stride is too coarse,
+    /// and caves closed where the stride is too coarse for them.
     pub(crate) fn density_at_stride(&self, position: DVec3, stride: i32) -> f64 {
         let column = self.world.cached_column(position.x, position.z);
         if !column.inside {
             return -1.0;
         }
-        let ground = self.world.density_parts(&column, position).0;
+        let enclosed = stride <= 1 << crate::CAVE_STREAMED_LEVEL;
+        let ground = self.world.density_parts_seen(&column, position, enclosed).0;
         self.world.with_trees(
             &column,
             position,
@@ -1740,7 +1749,7 @@ impl CompiledWorld {
     }
 
     /// The tree that dominates a point at a level of detail, if one reaches
-    /// it: grown, or an impostor where the lattice is too coarse for twigs.
+    /// it: grown, or from its octree where the lattice is too coarse for twigs.
     fn tree_at(
         &self,
         column: &Column,
@@ -1749,7 +1758,7 @@ impl CompiledWorld {
         detail: TreeDetail,
     ) -> Option<TreeHit> {
         if !detail.grown() {
-            return self.impostor_at(column, position, detail);
+            return self.placed_at(column, position, parts, detail);
         }
         if self.forest.is_empty() || !column.inside {
             return None;
@@ -1767,8 +1776,15 @@ impl CompiledWorld {
             })
     }
 
-    /// The impostor that dominates a point, if one reaches it.
-    fn impostor_at(&self, column: &Column, position: DVec3, detail: TreeDetail) -> Option<TreeHit> {
+    /// The placed tree that dominates a point, drawn from its octree, if one
+    /// reaches it.
+    fn placed_at(
+        &self,
+        column: &Column,
+        position: DVec3,
+        parts: Parts,
+        detail: TreeDetail,
+    ) -> Option<TreeHit> {
         if self.forest.is_empty() || !column.inside {
             return None;
         }
@@ -1790,7 +1806,10 @@ impl CompiledWorld {
         );
         instances
             .iter()
-            .map(|instance| self.forest.impostor(instance, position, detail.floor()))
+            .filter_map(|instance| {
+                self.forest
+                    .lod_hit(instance, position, detail.spacing(), detail.floor(), parts)
+            })
             .max_by(|a, b| a.density.total_cmp(&b.density))
     }
 
@@ -1818,9 +1837,17 @@ impl CompiledWorld {
                         })
                 })
                 .max_by(|a, b| a.density.total_cmp(&b.density))?,
-            TreeSource::Among(LatticeTrees::Impostors(instances, detail)) => instances
+            TreeSource::Among(LatticeTrees::Placed(instances, detail)) => instances
                 .iter()
-                .map(|instance| self.forest.impostor(instance, position, detail.floor()))
+                .filter_map(|instance| {
+                    self.forest.lod_hit(
+                        instance,
+                        position,
+                        detail.spacing(),
+                        detail.floor(),
+                        Parts::All,
+                    )
+                })
                 .max_by(|a, b| a.density.total_cmp(&b.density))?,
         };
         // Roots show only in ground below its top layer, which stays soil for
@@ -1937,7 +1964,8 @@ impl CompiledWorld {
     }
 
     /// Raises a lattice's densities to the trees that reach it: grown trees
-    /// where the lattice is fine enough for twigs, impostors where it is not.
+    /// where the lattice is fine enough for twigs, their octrees where it is
+    /// not.
     fn raise_to_trees(
         &self,
         lattice: &Lattice,
@@ -2001,12 +2029,14 @@ impl CompiledWorld {
                     });
                 }
             }
-            LatticeTrees::Impostors(instances, detail) => {
-                let floor = detail.floor();
+            LatticeTrees::Placed(instances, detail) => {
+                let (spacing, floor) = (detail.spacing(), detail.floor());
                 for instance in instances {
-                    let (low, high) = self.forest.impostor_bounds(instance, floor);
+                    let (low, high) = self.forest.lod_bounds(instance, floor);
                     raise(low, high, &|point| {
-                        Some(self.forest.impostor(instance, point, floor).density)
+                        self.forest
+                            .lod_hit(instance, point, spacing, floor, parts)
+                            .map(|hit| hit.density)
                     });
                 }
             }
@@ -2014,7 +2044,7 @@ impl CompiledWorld {
     }
 
     /// The trees whose `parts` reach a lattice, gathered once: grown where
-    /// the lattice is fine enough for twigs, impostors where it is not.
+    /// the lattice is fine enough for twigs, placed where it is not.
     fn lattice_trees(&self, lattice: &Lattice, parts: Parts) -> LatticeTrees {
         if self.forest.is_empty() {
             return LatticeTrees::None;
@@ -2037,7 +2067,7 @@ impl CompiledWorld {
         } else {
             let mut instances = Vec::new();
             self.forest.instances_near(domain, &place, &mut instances);
-            LatticeTrees::Impostors(instances, detail)
+            LatticeTrees::Placed(instances, detail)
         }
     }
 
@@ -2072,6 +2102,17 @@ impl CompiledWorld {
     /// Density at a point, the carve layer that shaped it, and the biome
     /// density before rivers, carves and shores.
     fn density_parts(&self, column: &Column, position: DVec3) -> (f64, u8, f64) {
+        self.density_parts_seen(column, position, true)
+    }
+
+    /// [`Self::density_parts`] as a lattice sees it: without `enclosed`,
+    /// voids that cannot reach the surface count as rock.
+    fn density_parts_seen(
+        &self,
+        column: &Column,
+        position: DVec3,
+        enclosed: bool,
+    ) -> (f64, u8, f64) {
         let point = position.to_array();
         let mut blended = 0.0;
         for (biome, weight) in column.weights.iter() {
@@ -2079,7 +2120,7 @@ impl CompiledWorld {
         }
         let [temperature, humidity, continentalness, weirdness] = column.climate;
         let inputs = [blended, temperature, humidity, continentalness, weirdness];
-        let (density, carved) = self.compose(column, position.y, blended, true, |layer| {
+        let (density, carved) = self.compose(column, position.y, blended, enclosed, |layer| {
             self.carves[layer].void.eval(point, &inputs)
         });
         (density, carved, blended)
@@ -2689,7 +2730,7 @@ fn compile_forest(
             });
         }
     }
-    Ok(Forest::new(id, species, layers))
+    Ok(Forest::new(id, base, species, layers))
 }
 
 fn compile_biome(

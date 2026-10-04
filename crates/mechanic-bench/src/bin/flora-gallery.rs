@@ -5,7 +5,9 @@
 //! two seeds larger. Unless `--no-voxels`, `voxels-<name>.png` shows the first
 //! seed as the terrain field holds it: the front-most solid cells at 5 cm, the
 //! same at the 20 cm stride of a coarser level of detail, and a slice through
-//! the trunk. `texture-<name>.png` shows its bark and leaf maps, lit and
+//! the trunk. `lod-<name>.png` shows the species' octree of levels of detail
+//! as lattices 0.4, 0.8, 1.6 and 3.2 m apart draw it, beside the grown tree.
+//! `texture-<name>.png` shows its bark and leaf maps, lit and
 //! coloured, and `textures.png` all of them. With `--sweep <field>` or `--sweep all`, `sweep-<field>.png`
 //! grows the base species (`--species`, oak by default) at seven values of
 //! that field from its smallest to its largest, two seeds each. Emits one
@@ -29,8 +31,8 @@ use std::time::Instant;
 use bevy_math::DVec3;
 use mechanic_bench::images::write_png;
 use mechanic_world::{
-    GenomeSweep, Part, SpeciesSpec, TERRAIN_CELL_METERS, TREE_TEXTURE_LUMA, TreeMetrics, TreeModel,
-    TreeSurface, TreeTexture, grow_tree,
+    GenomeSweep, Part, SpeciesSpec, TERRAIN_CELL_METERS, TREE_TEXTURE_LUMA, TreeLod, TreeMetrics,
+    TreeModel, TreeSurface, TreeTexture, grow_tree,
 };
 
 const PANEL_WIDTH: usize = 300;
@@ -97,6 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         write_close_up(&out, species, trees)?;
         if voxels && let Some(tree) = trees.first() {
             write_voxels(&out, species, tree)?;
+            write_lods(&out, species, tree)?;
         }
         swatches.push(write_textures(&out, species)?);
     }
@@ -561,6 +564,78 @@ fn write_voxels(out: &Path, species: &SpeciesSpec, tree: &TreeModel) -> Result<(
         }
     }
     canvas.write(&out.join(format!("voxels-{}.png", species.name)))
+}
+
+/// Lattice spacings, in metres, the octree pictures show.
+const LOD_SPACINGS: [f64; 4] = [0.4, 0.8, 1.6, 3.2];
+
+/// The tree's octree as coarse lattices draw it: the front-most solid samples
+/// at each of [`LOD_SPACINGS`], after the grown tree at the 20 cm stride.
+fn write_lods(out: &Path, species: &SpeciesSpec, tree: &TreeModel) -> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
+    let lod = TreeLod::new(tree, species);
+    println!(
+        "{}",
+        serde_json::json!({
+            "kind": "lod",
+            "species": species.name,
+            "build_ms": started.elapsed().as_secs_f64() * 1_000.0,
+        })
+    );
+    let cell = TERRAIN_CELL_METERS;
+    let (low, high) = lod.bounds(LOD_SPACINGS[LOD_SPACINGS.len() - 1] * 0.9);
+    let (low, high) = (low + tree.origin, high + tree.origin);
+    let columns = ((high.x - low.x) / cell).ceil() as usize + 1;
+    let rows = ((high.y - low.y) / cell).ceil() as usize + 1;
+    let panels = LOD_SPACINGS.len() + 1;
+    let mut canvas = Canvas::new(panels * (columns + 4), rows, [1.0; 3]);
+    let bark = bark_colour(species);
+    let leaves = foliage_colour(species);
+    let colour = |part: Part| match part {
+        Part::Wood => bark,
+        Part::Root => ROOT,
+        Part::Foliage => leaves,
+    };
+    let depth_span = (high.z - low.z).max(cell);
+    let spacings = std::iter::once(0.2).chain(LOD_SPACINGS);
+    for (panel, spacing) in spacings.enumerate() {
+        let stride = (spacing / cell).round() as usize;
+        for row in (0..rows).step_by(stride) {
+            for column in (0..columns).step_by(stride) {
+                let x = (column as f64).mul_add(cell, low.x);
+                let y = (row as f64).mul_add(-cell, high.y);
+                let mut z = high.z;
+                let mut found = None;
+                while z >= low.z {
+                    let point = DVec3::new(x, y, z);
+                    let hit = if panel == 0 {
+                        tree.sample_at_stride(point, 4)
+                            .map(|(density, part)| (f64::from(density), part))
+                    } else {
+                        lod.sample(point - tree.origin, spacing, spacing * 0.9)
+                    };
+                    if let Some((density, part)) = hit
+                        && density > 0.0
+                    {
+                        found = Some((part, (z - low.z) / depth_span));
+                        break;
+                    }
+                    z -= spacing;
+                }
+                let shade = |nearness: f64| 0.45 + 0.55 * nearness as f32;
+                let paint = found.map_or(
+                    if y < tree.origin.y { SOIL } else { SKY },
+                    |(part, nearness)| colour(part).map(|channel| channel * shade(nearness)),
+                );
+                for dy in 0..stride.min(rows - row) {
+                    for dx in 0..stride.min(columns - column) {
+                        canvas.paint(panel * (columns + 4) + column + dx, row + dy, paint);
+                    }
+                }
+            }
+        }
+    }
+    canvas.write(&out.join(format!("lod-{}.png", species.name)))
 }
 
 /// The species' bark and foliage maps, each repeated two by two at half

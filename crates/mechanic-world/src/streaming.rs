@@ -15,8 +15,8 @@ pub use publication::{
 use publication::{neighbour_candidates, publication_face_mask_maps};
 pub use selection::{
     ActiveTerrainNode, CAVE_STREAMED_LEVEL, MAX_STREAMED_LEVEL, MIN_TERRAIN_DETAIL_SCALE,
-    STREAMED_LEVELS, TerrainSelection, TerrainSelectionStats, select_active_nodes,
-    select_active_nodes_cached, select_active_nodes_with_interests,
+    STREAMED_LEVELS, TERRAIN_HORIZON_METRES, TerrainSelection, TerrainSelectionStats,
+    select_active_nodes, select_active_nodes_cached, select_active_nodes_with_interests,
 };
 use selection::{adjacent_leaf, owner_of_leaf};
 

@@ -233,8 +233,30 @@ Final verdicts:
 **Distance.**
 - Terrain sampled at up to a 20 cm stride (levels 0 to 2, out to 22–64 m)
   shows grown trees.
-- Coarser levels show impostors: the trunk under a solid crown shaped by the
-  species' envelope (cone to dome by `dominance`), which needs no growing.
+- Coarser levels draw each tree from its species' octree (`flora/lod.rs`),
+  which needs no growing per tree:
+  - Four trees of each species are grown once, at its tallest height, when a
+    lattice first needs one. Each placed tree takes one by its seed, shrunk
+    to its own height and turned about the vertical.
+  - The finest level holds how much of each 40 cm cell is wood and how much
+    is leaves. Each coarser level merges eight cells below it, as the
+    terrain octree's levels do, seen through three layers of them: a crown
+    with gaps between its clumps reads as solid from afar, while a lone twig
+    averages away.
+  - A lattice reads the finest level whose cells are at least 1.5 spacings
+    wide. Its surface lies where cells are 40 % full, so a branch one cell
+    thick is as thick as the lattice holds in one piece.
+  - Whatever a level draws is joined to a stem and drawn as whole cells, so
+    no neck between cells is thinner than the lattice holds. Wood too thin
+    to draw that joins a clump to its stem is filled in along the shortest
+    way; clumps with no way to a stem are thinned away.
+  - A tree's octree never reaches past the bounds its placement claims, so
+    a tree looked up at a point and one raised over a lattice agree, and
+    transition seams close.
+  - Stems are capsules no thinner than the lattice holds, up to a cell into
+    the lowest leaves the level draws.
+  - `flora-gallery` writes `lod-<species>.png`: each level as lattices
+    0.4, 0.8, 1.6 and 3.2 m apart draw it, beside the grown tree.
 
 **Bounds.**
 - `classify` and `interval` are tree-aware from cheap placement bounds, so no
@@ -367,7 +389,22 @@ both.
   level. Impostor trunks were 10 cm thick on 40 cm lattices. Edits keep the
   finest level's densities, so dug wood far away is drawn at its true
   thickness.
-- **Grown trees end at the 20 cm stride; impostors take over.** With grown
+- **Distant trees come from octrees, not impostors.** Impostors were a trunk
+  under a solid cone or dome: every distant tree of a species looked alike,
+  and nothing like the trees it stood for. Octrees of real trees keep each
+  species' crown, at a few milliseconds per species to build. Growing every
+  tree within the 1 km horizon would cost a megabyte and a millisecond each
+  for tens of thousands of trees. On 2026-10-04 (`terrain-cut`, seed 42, M1
+  Pro under load), Verdant Hills went from 15.8 M to 17.3 M triangles, mostly
+  at the 40 cm level, where the octree's crowns are rougher than the
+  impostors' domes, and from 187 s to 193 s of sampling CPU. All biomes
+  together went from 111.6 M to 116.9 M triangles.
+- **Transition seams resample trees at the coarser stride.** Each stride
+  draws trees differently, so the points a transition face shares with its
+  coarser neighbour are sampled as the neighbour samples them wherever
+  trees reach, as edited ground already was. That sampling also closes
+  caves as the coarser stride does.
+- **Grown trees end at the 20 cm stride; octrees take over.** With grown
   trees at 40 cm, Verdant Hills cost 2.5×. Most of that was culling by the
   tree-aware interval and painting by per-vertex tree lookups. Both are now
   gathered once per lattice.

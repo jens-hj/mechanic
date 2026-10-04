@@ -17,8 +17,8 @@ use bevy::render::render_resource::{AsBindGroup, PrimitiveTopology, VertexFormat
 use bevy::shader::ShaderRef;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, futures_lite::future};
 use mechanic_world::{
-    WATER_CELL_METRES, WaterBody, WaterCell, WaterSheet, WaterShift, WaterSurface, WaterTile,
-    WetGround, joined_water_sheet,
+    TERRAIN_HORIZON_METRES, WATER_CELL_METRES, WaterBody, WaterCell, WaterSheet, WaterShift,
+    WaterSurface, WaterTile, WetGround, joined_water_sheet,
 };
 
 use super::{WorldOwned, WorldRuntime};
@@ -38,9 +38,6 @@ const TILE_CELLS: u32 = 64;
 
 /// A tile splits while the camera is nearer than this many of its edges.
 const SPLIT_DISTANCE_EDGES: f64 = 1.25;
-
-/// Water is drawn out to this distance from the camera, in metres.
-const WATER_REACH_METRES: f64 = 4_096.0;
 
 /// Tiles meshing at once.
 const TILES_IN_FLIGHT: usize = 8;
@@ -74,6 +71,11 @@ pub(crate) struct WaterRenderMaterial {
     #[texture(2)]
     #[sampler(3)]
     pub(crate) noise: Option<Handle<Image>>,
+    /// Where the terrain is drawn: x and z of its focus, in render space,
+    /// and in w how far from it. No water is drawn beyond, where there is no
+    /// ground to hold it.
+    #[uniform(4)]
+    pub(crate) horizon: Vec4,
 }
 
 impl Default for WaterRenderMaterial {
@@ -82,6 +84,7 @@ impl Default for WaterRenderMaterial {
             shallow: LinearRgba::rgb(0.05, 0.28, 0.3),
             deep: LinearRgba::rgb(0.005, 0.03, 0.08),
             noise: None,
+            horizon: Vec4::new(0.0, 0.0, 0.0, f32::MAX),
         }
     }
 }
@@ -330,6 +333,8 @@ pub(crate) struct WaterTiles {
     tiles: HashMap<TileKey, TileState>,
     /// Floating origin the shown tiles are placed against.
     origin: Option<DVec3>,
+    /// The horizon last given the material.
+    horizon: Option<Vec4>,
     /// Where each moved lake and river stood when the tiles were meshed.
     shifts: std::collections::BTreeMap<WaterBody, WaterShift>,
     /// Each tile of the stored water's surface: its entity, what it shows,
@@ -361,22 +366,24 @@ pub(crate) fn clear_water_tiles(mut tiles: ResMut<WaterTiles>) {
     *tiles = WaterTiles::default();
 }
 
-/// The tiles that cover the water around `camera`, finest nearest.
-fn wanted_tiles(camera: DVec3) -> Vec<TileKey> {
-    let lowest = |value: f64| ((value - WATER_REACH_METRES) / ROOT_EDGE_METRES).floor() as i32;
-    let highest = |value: f64| ((value + WATER_REACH_METRES) / ROOT_EDGE_METRES).floor() as i32;
+/// The tiles that cover the water within the terrain's horizon around
+/// `focus`, finest nearest `camera`.
+fn wanted_tiles(camera: DVec3, focus: DVec3) -> Vec<TileKey> {
+    let reach = TERRAIN_HORIZON_METRES;
+    let lowest = |value: f64| ((value - reach) / ROOT_EDGE_METRES).floor() as i32;
+    let highest = |value: f64| ((value + reach) / ROOT_EDGE_METRES).floor() as i32;
     let mut stack = Vec::new();
-    for z in lowest(camera.z)..=highest(camera.z) {
-        for x in lowest(camera.x)..=highest(camera.x) {
+    for z in lowest(focus.z)..=highest(focus.z) {
+        for x in lowest(focus.x)..=highest(focus.x) {
             stack.push(TileKey { level: 0, x, z });
         }
     }
     let mut wanted = Vec::new();
     while let Some(key) = stack.pop() {
-        let distance = key.distance_to(camera);
-        if distance > WATER_REACH_METRES {
+        if key.distance_to(focus) > reach {
             continue;
         }
+        let distance = key.distance_to(camera);
         if key.level < FINEST_LEVEL && distance < key.edge() * SPLIT_DISTANCE_EDGES {
             stack.extend(key.children());
         } else {
@@ -456,7 +463,17 @@ pub(crate) fn stream_water(
         .get_or_insert_with(|| materials.add(WaterRenderMaterial::with_noise(&mut images)))
         .clone();
     let camera = origin + camera.translation().as_dvec3();
-    let wanted = wanted_tiles(camera);
+    let focus = runtime.selection_focus.map_or(camera, |focus| focus.0);
+    let horizon = (focus - origin)
+        .as_vec3()
+        .extend(TERRAIN_HORIZON_METRES as f32);
+    if tiles.horizon != Some(horizon)
+        && let Some(mut water) = materials.get_mut(&material)
+    {
+        water.horizon = horizon;
+        tiles.horizon = Some(horizon);
+    }
+    let wanted = wanted_tiles(camera, focus);
     let mesh = |key: TileKey, tiles: &WaterTiles| {
         let field = runtime.field.clone();
         let edits = runtime.edits.snapshot();
@@ -920,11 +937,11 @@ fn note_joined(tiles: &mut WaterTiles, cells: &[(WaterCell, WaterSurface)], owne
 mod tests {
     use bevy::math::DVec3;
 
-    use mechanic_world::WetGround;
+    use mechanic_world::{TERRAIN_HORIZON_METRES, WetGround};
 
     use super::{
-        FINEST_LEVEL, NOISE_CELLS, TileKey, WATER_REACH_METRES, WET_CHANNELS, gradient_noise,
-        half_bits, wanted_tiles, wet_texels,
+        FINEST_LEVEL, NOISE_CELLS, TileKey, WET_CHANNELS, gradient_noise, half_bits, wanted_tiles,
+        wet_texels,
     };
 
     fn wet(column: (i32, i32), top: f64, soaked: f64) -> WetGround {
@@ -977,20 +994,34 @@ mod tests {
     #[test]
     fn tiles_cover_the_reach_once_with_the_finest_nearest() {
         let camera = DVec3::new(130.0, 5.0, -70.0);
-        let wanted = wanted_tiles(camera);
+        let wanted = wanted_tiles(camera, camera);
         let nearest = wanted[0];
         assert_eq!(nearest.level, FINEST_LEVEL);
         assert!(nearest.distance_to(camera) <= 0.0);
         // Sample points in the reach are each covered by exactly one tile.
         for step in 0..64 {
             let angle = f64::from(step) * 0.7;
-            let radius = f64::from(step) / 64.0 * WATER_REACH_METRES * 0.9;
+            let radius = f64::from(step) / 64.0 * TERRAIN_HORIZON_METRES * 0.9;
             let point = camera + DVec3::new(angle.cos() * radius, 0.0, angle.sin() * radius);
             let covering = wanted
                 .iter()
                 .filter(|key: &&TileKey| key.distance_to(point) <= 0.0 && inside(**key, point))
                 .count();
             assert_eq!(covering, 1, "point {point} is covered {covering} times");
+        }
+    }
+
+    #[test]
+    fn no_tile_lies_wholly_beyond_the_terrains_horizon() {
+        let camera = DVec3::new(130.0, 40.0, -70.0);
+        let focus = DVec3::new(110.0, 2.0, -60.0);
+        let wanted = wanted_tiles(camera, focus);
+        assert!(!wanted.is_empty());
+        for key in &wanted {
+            assert!(
+                key.distance_to(focus) <= TERRAIN_HORIZON_METRES,
+                "tile {key:?} lies beyond the terrain"
+            );
         }
     }
 
