@@ -5,6 +5,29 @@ The active architectural redesign follows
 checkpoint and exact acceptance gates. The dated profiling pauses below are
 historical; they do not pause the authorized CPU/GPU and production-rendering work.
 
+## Optimisation pass (2026-10-03)
+
+[Evidence](performance-results/2026-10-03-optimisations/REPORT.md). Builder
+CPU tick 33.2 → 26.0 ms median with identical state; full terrain cut −19 % cycles with identical
+meshes; water −26 % cycles; cached terrain selection p95 about 30 → 17 ms.
+
+- [x] Contact rows from six basis responses per touched body; replaced by
+  exact batched row solves after it changed the builder's long-run state.
+- [x] Fx hashing for collision and mesher maps; one-key candidate sort.
+- [x] Tape arguments gathered once; grid rows evaluated as lanes.
+- [x] Terrain cut balanced and stitched with hashed membership.
+- [x] Level-6 owners visible to balancing and seams.
+- [x] Vendored ron with upstream's linear number parsing: a save with an
+  unknown field no longer takes minutes to open.
+- [ ] Settle the ledge-blocks limit cycle: a tilted block's contact flips
+  between a face manifold and one edge point with ~3.7 cm overlap.
+- [ ] Builder spin gain past the 500 rad/s speed limit after ~3,000 ticks.
+- [ ] Water ground lookups miss the 1,024-slot column cache.
+- [x] Background in-app capture: streaming settles sooner; frame time
+  unchanged within noise.
+- [ ] Focused capture to attribute the water surface's ~40 ms transparent
+  pass.
+
 ## Procedural ground (2026-10-03)
 
 [Terrain materials](terrain-materials.md) draws grass, dirt and stone from a

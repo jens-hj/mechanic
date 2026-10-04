@@ -404,27 +404,20 @@ fn dirty_leaf_save_and_hierarchy_reconstruction_are_deterministic() {
 }
 
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "exact integral clock steps and lossless persistence"
-)]
 fn worlds_keep_independent_solar_times() {
     let temporary = TempDir::new();
     let store = WorldStore::new(&temporary.0);
-    for (name, seconds) in [("Morning", 32400.0), ("Night", 86399.75)] {
+    let times = [("Morning", 0, 32400.0), ("Night", 412, 86399.75)];
+    for (name, day, seconds) in times {
         let mut world = WorldDocument::new(name, WorldSeed(42), WorldPosition::default());
-        assert_eq!(world.time_of_day_seconds, 32400.0);
+        assert_eq!((world.day, world.time_of_day_seconds), (0, 32400.0));
+        world.day = day;
         world.time_of_day_seconds = seconds;
         store.save_world(&world).unwrap();
     }
-    for (name, seconds) in [("Morning", 32400.0), ("Night", 86399.75)] {
-        assert_eq!(
-            store
-                .load_world(&store.directory_for(name))
-                .unwrap()
-                .time_of_day_seconds,
-            seconds
-        );
+    for (name, day, seconds) in times {
+        let world = store.load_world(&store.directory_for(name)).unwrap();
+        assert_eq!((world.day, world.time_of_day_seconds), (day, seconds));
     }
 }
 
@@ -446,4 +439,30 @@ fn invalid_solar_times_are_rejected_on_read_and_write() {
             Err(WorldSaveError::InvalidTimeOfDay { .. })
         ));
     }
+}
+
+// A world saved by a build that stores more opens with everything this build
+// knows. Skipping the rest once scanned the whole remaining document for every
+// skipped number; a list this long then took seconds instead of milliseconds.
+#[test]
+fn stored_water_with_an_unknown_field_keeps_what_this_build_knows() {
+    let directory = TempDir::new();
+    let store = WorldStore::new(&directory.0);
+    let water = crate::StoredWaterDoc {
+        sea_m3: 12.5,
+        air_m3: 0.25,
+        ..crate::StoredWaterDoc::default()
+    };
+    fs::create_dir_all(store.directory_for("pond")).unwrap();
+    store.save_water("pond", &water).unwrap();
+    let path = store.directory_for("pond").join("water.ron");
+    let saved = fs::read_to_string(&path).unwrap();
+    let unknown = (0..50_000)
+        .map(|index| format!("(column:({index},{index}),health:0.000000000000000000000001)"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let body = saved.trim_end().strip_suffix(')').unwrap();
+    fs::write(&path, format!("{body},meadow:[{unknown}])")).unwrap();
+
+    assert_eq!(store.load_water("pond").unwrap(), water);
 }

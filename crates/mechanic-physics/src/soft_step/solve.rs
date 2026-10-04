@@ -266,8 +266,8 @@ impl Contact {
         model: &MachineKinematics,
         factor: &DynamicsFactor,
         output: &mut PointRows,
-        jacobian: &mut [f64],
-        response: &mut Vec<f64>,
+        jacobians: &mut [Vec<f64>; 5],
+        responses: &mut [Vec<f64>; 5],
     ) -> Result<(), PhysicsError> {
         let world = |body: usize, local: DVec3| {
             let pose = model.poses[body];
@@ -303,8 +303,23 @@ impl Contact {
             .enumerate()
             .take(count)
         {
+            let jacobian = &mut jacobians[row];
             model.contact_row(&point, direction, row >= 3, jacobian)?;
-            output.rows[row].refresh_local(factor, jacobian, response, &ranges)?;
+            let response = &mut responses[row];
+            response.resize(jacobian.len(), 0.0);
+            for range in &ranges {
+                response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
+            }
+        }
+        // One sweep over the bodies for all of the contact's rows.
+        factor.solve_ranges_many(&mut responses[..count], &ranges)?;
+        for (row, (jacobian, response)) in jacobians
+            .iter()
+            .zip(responses.iter())
+            .enumerate()
+            .take(count)
+        {
+            output.rows[row].store_local(jacobian, response, &ranges);
         }
         output.separation = separation;
         output.moved = 0.0;
@@ -791,18 +806,13 @@ impl Row {
         Ok(())
     }
 
-    fn refresh_local(
+    // Stores a row whose response over `ranges` is already solved.
+    fn store_local(
         &mut self,
-        factor: &DynamicsFactor,
         jacobian: &[f64],
-        response: &mut Vec<f64>,
+        response: &[f64],
         ranges: &[std::ops::Range<usize>],
-    ) -> Result<(), PhysicsError> {
-        response.resize(jacobian.len(), 0.0);
-        for range in ranges {
-            response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
-        }
-        factor.solve_ranges(response, ranges)?;
+    ) {
         let inverse = ranges
             .iter()
             .flat_map(Clone::clone)
@@ -829,7 +839,6 @@ impl Row {
                 .map(|row| (row, response[row]))
                 .filter(|(_, v)| *v != 0.0),
         );
-        Ok(())
     }
 
     fn coupling(&self, other: &Self) -> f64 {
@@ -915,8 +924,8 @@ impl Soft {
 #[derive(Default)]
 pub(super) struct Scratch {
     pub(super) points: Vec<PointRows>,
-    jacobian: Vec<f64>,
-    response: Vec<f64>,
+    jacobians: [Vec<f64>; 5],
+    responses: [Vec<f64>; 5],
     factor: Option<DynamicsFactor>,
     diagonal: Vec<f64>,
 }
@@ -932,7 +941,13 @@ impl Scratch {
                     (row.jacobian.capacity() + row.response.capacity()) * size_of::<(usize, f64)>()
                 })
                 .sum::<usize>()
-            + (self.jacobian.capacity() + self.response.capacity() + self.diagonal.capacity())
+            + (self
+                .jacobians
+                .iter()
+                .chain(&self.responses)
+                .map(Vec::capacity)
+                .sum::<usize>()
+                + self.diagonal.capacity())
                 * size_of::<f64>()
             + self
                 .factor
@@ -995,7 +1010,9 @@ pub(super) fn substep(
             .points
             .resize_with(contacts.len(), PointRows::default);
     }
-    scratch.jacobian.resize(state.velocities.len(), 0.0);
+    for jacobian in &mut scratch.jacobians {
+        jacobian.resize(state.velocities.len(), 0.0);
+    }
     let points = &mut scratch.points[..contacts.len()];
     for (contact, point) in contacts.iter_mut().zip(points.iter_mut()) {
         contact.settle_ground(dt);
@@ -1003,8 +1020,8 @@ pub(super) fn substep(
             &model,
             factor,
             point,
-            &mut scratch.jacobian,
-            &mut scratch.response,
+            &mut scratch.jacobians,
+            &mut scratch.responses,
         )?;
     }
     let mut closures = creation

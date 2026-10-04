@@ -1082,6 +1082,7 @@ fn out_of_range_cuboid_dimension_is_refused() {
         appearance: crate::MaterialAppearance::BAKED,
         layers: Vec::new(),
         rack: None,
+        treads: Vec::new(),
     };
 
     assert!(matches!(
@@ -1555,6 +1556,75 @@ fn nested_cylinder_features_round_trip_and_compile_under_current_format() {
     let compiled = restored.compile().unwrap();
     assert!(compiled.compounds[0].mass_properties.mass > 0.0);
     assert!(!compiled.colliders.is_empty());
+}
+
+#[test]
+fn treads_survive_a_serialized_round_trip() {
+    let tread = |pattern, depth_mm| Some(crate::TreadSpec::new(pattern, depth_mm).unwrap());
+    let custom = crate::TreadPattern::Custom(crate::TreadMask::new(0x8142_2418_1824_4281).unwrap());
+    let tyre = PartSpec::Cylinder(CylinderSpec::new(
+        CylinderDimensions::new(1.0, 0.5, 0.5).unwrap(),
+        crate::BuildPose::from_position_ticks(
+            IVec3::new(0, 400, 0),
+            crate::GridRotation::default(),
+        ),
+    ))
+    .with_layer(
+        crate::LayerFace::OuterWall,
+        0.1,
+        ConstructionMaterial::Rubber,
+        crate::MaterialAppearance::BAKED,
+    )
+    .unwrap();
+    let mut graph = ConstructionGraph::new();
+    let BuildOutcome::Spawned(wheel) = graph
+        .apply(crate::BuildCommand::SpawnCylinder(
+            tyre.as_cylinder().unwrap(),
+        ))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let BuildOutcome::Spawned(skid) = graph
+        .apply(crate::BuildCommand::Spawn(cuboid(
+            [2, 1, 4],
+            IVec3::new(8, 1, 0),
+        )))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    for (part, surface, tread) in [
+        (
+            wheel,
+            crate::LayerFace::OuterWall,
+            tread(crate::TreadPattern::Chevron, 25),
+        ),
+        (wheel, crate::LayerFace::Bore, tread(custom, 3)),
+        (
+            skid,
+            crate::LayerFace::Face(crate::FaceKind::NegativeY),
+            tread(crate::TreadPattern::Studded, 30),
+        ),
+    ] {
+        graph
+            .apply(crate::BuildCommand::SetTread {
+                part,
+                surface,
+                tread,
+            })
+            .unwrap();
+    }
+    let document = CreationDocument::from_graph(&graph, "Treads", &Vec::new());
+    let restored = round_trip(&document).into_graph().unwrap().graph;
+    let treads = |graph: &ConstructionGraph| {
+        graph
+            .treaded_parts()
+            .map(|(part, treads)| (*graph.part(part).unwrap(), treads))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(treads(&restored).len(), 2);
+    assert_eq!(treads(&restored), treads(&graph));
 }
 
 #[test]

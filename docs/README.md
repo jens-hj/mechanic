@@ -18,6 +18,7 @@ follows.
 ## Features
 
 - [Atmosphere and solar time](atmosphere.md)
+- [Star systems, moons, and the night sky](celestial.md)
 - [Independent suspension](suspension.md)
 - [Linear bearings](linear-bearings.md)
 - [Pistons](pistons.md)
@@ -25,6 +26,7 @@ follows.
 - [Spirals on cylinders](spiral-tool.md)
 - [Gears and meshes](gears.md)
 - [Coupler: live welding](coupler.md)
+- [Treads](treads.md)
 - [Feature weld placement](feature-weld-placement.md)
 - [Live construction editing and dimension-link freezing](live-construction-editing.md)
 - [Multitool guide](multitool/GUIDE.md)

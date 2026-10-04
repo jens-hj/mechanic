@@ -1,18 +1,178 @@
 mod gpu;
 
 use super::*;
-use mechanic_world::FloatingOrigin;
+use mechanic_world::{FloatingOrigin, SkyMoon, SkyStar};
+
+fn star(direction: Vec3, irradiance: f32) -> SkyStar {
+    SkyStar {
+        direction: direction.normalize(),
+        angular_radius: 0.0047,
+        irradiance,
+        colour: Vec3::ONE,
+    }
+}
+
+fn moon(direction: Vec3, irradiance: f32) -> SkyMoon {
+    SkyMoon {
+        direction: direction.normalize(),
+        angular_radius: 0.005,
+        irradiance,
+        lit: [1.0, 0.0, 0.0],
+        illuminated_fraction: 0.5,
+        body: Mat3::IDENTITY,
+        albedo: 0.2,
+        tint: Vec3::ONE,
+        pattern: 0,
+    }
+}
+
+fn sky_of(stars: Vec<SkyStar>, moons: Vec<SkyMoon>) -> CelestialSky {
+    CelestialSky {
+        rotation: Quat::IDENTITY,
+        stars,
+        moons,
+    }
+}
 
 #[test]
-fn sunrise_noon_sunset_and_full_moon_share_one_orbit() {
-    for hour in [6.0, 18.0] {
-        let sun = celestial_rotation(hour * 3600.0) * Vec3::X;
-        assert!(sun.y.abs() < 1e-6);
+fn only_the_brightest_light_above_the_horizon_casts_shadows() {
+    let up = Vec3::new(0.3, 0.6, 0.4);
+    let down = Vec3::new(0.3, -0.6, 0.4);
+    let lit = |sun: Vec3, companion: Vec3, moons: Vec<SkyMoon>| {
+        lights::plan(&sky_of(vec![star(sun, 1.0), star(companion, 4e-4)], moons)).shadows
+    };
+    assert_eq!(lit(up, up, vec![moon(up, 1e-6)]), Some(0));
+    assert_eq!(lit(down, up, vec![moon(up, 1e-6)]), Some(1));
+    assert_eq!(lit(down, down, vec![moon(up, 1e-6)]), Some(2));
+    assert_eq!(lit(down, down, vec![moon(down, 1e-6)]), None);
+    // Risen moons pool their light along the brightest; set ones add none.
+    let plan = lights::plan(&sky_of(
+        vec![star(down, 1.0)],
+        vec![
+            moon(up, 2e-6),
+            moon(-up.reflect(Vec3::Y), 1e-6),
+            moon(down, 9e-6),
+        ],
+    ));
+    assert!(plan.moon.direction.distance(up.normalize()) < 1e-6);
+    assert!(
+        (plan.moon.lux / (3e-6 * bevy::light::light_consts::lux::RAW_SUNLIGHT) - 13.0).abs() < 1e-3
+    );
+}
+
+#[test]
+fn exposure_adapts_to_suns_and_to_bright_nights() {
+    let noon = Vec3::new(0.0, std::f32::consts::FRAC_PI_3.sin(), 0.5);
+    let night = Vec3::new(0.0, -0.8, 0.6);
+    let ev = |sky: CelestialSky| lights::ev100(&sky, &lights::plan(&sky));
+    assert!((ev(sky_of(vec![star(noon, 1.0)], vec![])) - 13.0).abs() < 1e-3);
+    // Two suns together light the day more than one.
+    assert!(
+        ev(sky_of(vec![star(noon, 0.8), star(noon, 0.6)], vec![]))
+            > ev(sky_of(vec![star(noon, 1.0)], vec![]))
+    );
+    let dark = ev(sky_of(vec![star(night, 1.0)], vec![]));
+    assert!((dark - 1.0).abs() < 1e-3);
+    let moonlit = ev(sky_of(vec![star(night, 1.0)], vec![moon(noon, 2e-5)]));
+    assert!(moonlit > dark + 1.0);
+    let companion = ev(sky_of(vec![star(night, 1.0), star(noon, 1e-3)], vec![]));
+    assert!(companion > dark + 1.0 && companion < 10.0);
+}
+
+#[test]
+fn moon_shading_lights_the_side_facing_each_star() {
+    let north = moon(Vec3::NEG_Z, 1e-6);
+    let stars = [star(Vec3::X, 1.0), star(Vec3::NEG_X, 0.5)];
+    let mut lit = north;
+    lit.lit = [1.0, 0.5, 0.0];
+    let quad = moons::facing(north.direction);
+    let uniform = moons::uniform(&lit, &stars, 30.0, quad);
+    let east = uniform.light_direction[0];
+    let west = uniform.light_direction[1];
+    assert!(east.truncate().distance(Vec3::X) < 1e-5);
+    assert!(west.truncate().distance(Vec3::NEG_X) < 1e-5);
+    let raw = bevy::light::light_consts::lux::RAW_SUNLIGHT;
+    assert!((east.w - raw).abs() < 1.0 && (west.w - raw * 0.5).abs() < 1.0);
+    assert_eq!(uniform.light_direction[2], Vec4::ZERO);
+    // The quad faces the camera: its z axis points back along the view.
+    assert!((Mat3::from_quat(quad) * Vec3::Z).distance(Vec3::Z) < 1e-5);
+    assert!(uniform.planetshine.x > 0.0);
+}
+
+#[test]
+fn outdoor_sky_keeps_a_light_per_star_and_a_disk_per_moon() {
+    let system = (0..10_000)
+        .map(|seed| CelestialSystem::generate(WorldSeed(seed)))
+        .find(|system| system.stars().len() == 3 && system.moons().len() >= 2)
+        .unwrap();
+    let mut app = App::new();
+    app.init_resource::<WorldRuntime>()
+        .init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<MoonMaterial>>()
+        .add_systems(Startup, moons::setup)
+        .add_systems(Update, (update_sky, lights::place, moons::place).chain());
+    let seed = app.world().resource::<WorldRuntime>().seed();
+    app.insert_resource(SkyState {
+        outdoors: true,
+        system: Some((seed, system.clone())),
+        fixed_seconds: Some(3.5 * SECONDS_PER_DAY),
+        ..default()
+    });
+    let camera = app
+        .world_mut()
+        .spawn((
+            MainCamera,
+            Transform::from_xyz(5.0, 2.0, -3.0),
+            Exposure::default(),
+            Skybox::default(),
+        ))
+        .id();
+    app.world_mut().spawn((
+        Sun,
+        DirectionalLight::default(),
+        bevy::light::SunDisk::EARTH,
+        Transform::default(),
+    ));
+    let mut commands = app.world_mut().commands();
+    lights::spawn_moonlight(&mut commands);
+    app.world_mut().flush();
+    for _ in 0..3 {
+        app.update();
     }
-    let noon = celestial_rotation(12.0 * 3600.0) * Vec3::X;
-    assert!((noon.y.asin().to_degrees() - 60.0).abs() < 1e-4);
-    let midnight_moon = celestial_rotation(0.0) * Vec3::NEG_X;
-    assert!(midnight_moon.distance(noon) < 1e-6);
+    let world = app.world_mut();
+    let suns = world
+        .query_filtered::<&DirectionalLight, With<Sun>>()
+        .iter(world)
+        .count();
+    let disks = world.query::<&MoonDisk>().iter(world).count();
+    let shadows = world
+        .query::<&DirectionalLight>()
+        .iter(world)
+        .filter(|light| light.shadow_maps_enabled)
+        .count();
+    assert_eq!(suns, 3);
+    assert_eq!(disks, system.moons().len());
+    assert!(shadows <= 1);
+    let expected = system.sky(3.5).rotation;
+    let rotation = app.world().entity(camera).get::<Skybox>().unwrap().rotation;
+    assert!(rotation.angle_between(expected) < 1e-4);
+}
+
+#[test]
+#[expect(
+    clippy::float_cmp,
+    reason = "exact integral clock steps and lossless persistence"
+)]
+fn clock_steps_carry_whole_days_and_never_run_before_day_zero() {
+    let mut runtime = WorldRuntime::from_world(&mut World::new());
+    runtime.advance_day(-runtime.time_of_day_seconds());
+    runtime.advance_day(30.0 * 3600.0);
+    assert_eq!(runtime.solar_days(), 1.25);
+    runtime.advance_day(-2.0 * SECONDS_PER_DAY);
+    assert_eq!(runtime.solar_days(), 0.25);
+    runtime.advance_day(SECONDS_PER_DAY * 3.0 + 18.0 * 3600.0);
+    assert_eq!(runtime.solar_days(), 4.0);
+    assert_eq!(runtime.time_of_day_seconds(), 0.0);
 }
 
 #[test]

@@ -12,20 +12,27 @@ Biome(
         Ref("grain"),
     ]),
 
-    density: SmoothUnion(1.2, [
-        Height(Ref("height")),
-        Scatter(
-            cell: 36, reach: 5, chance: 0.4,
-            ground: Ref("height"), lift: (-1.2, -0.2), tilt: 35,
-            vars: {"r": (1.1, 2.4)},
-            shape: Warp(
-                by: (freq: 0.45, octaves: 2, amp: 0.35, seed: 5),
-                of: Stretch((1.35, 0.8, 1.0), Sphere(Ref("r"))),
-            ),
+    let: {
+        "boulders": Scatter(
+            cell: 36, reach: 6, chance: 0.5,
+            ground: Ref("height"), lift: (-0.55, -0.25), tilt: 22,
+            vars: {
+                "r": (1.1, 2.7), "cut": (0.62, 0.96), "phase": (0, 500),
+                "width": (0.85, 1.4), "rise": (0.65, 1.1), "depth": (0.8, 1.2), "lean": (-0.2, 0.2),
+            },
+            shape: Ref("weathered_rock"),
         ),
+    },
+
+    density: SmoothUnion(0.18, [
+        Height(Ref("height")),
+        Ref("boulders"),
     ]),
 
     surface: [
+        // Rock stays rock on its flat top and throughout its buried body.
+        (when: All([Field(Ref("boulders"), -0.15, inf), Up(0.2, 1), Field(Noise(freq: 0.8, octaves: 2, seed: 151), 0.05, 1)]), use: "weathered_granite"),
+        (when: Field(Ref("boulders"), -0.15, inf), use: "granite"),
         // Established beds and the narrow bare shore precede vegetation.
         (when: All([WaterDepth(-0.35, 0), Up(0.55, 1), Depth(0, 0.8)]), use: "loam"),
         (when: All([WaterDepth(0, inf), NearRiver(9), Up(0.55, 1), Depth(0, 0.8)]), use: "river_gravel"),

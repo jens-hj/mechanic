@@ -110,7 +110,10 @@ Rules for names and noise:
 - `dims: Two` noise is evaluated once per column, which is much cheaper than
   3D noise.
 
-A scatter's `reach` must enclose its shape and fillet.
+A scatter's `reach` must enclose its shape and fillet. Its `ground` and
+`mask` use the enclosing terrain seed, so references to terrain height agree
+with the ground being instanced onto. Its `seed` decorrelates placement,
+rotation, vars and shape detail without changing those terrain fields.
 
 ### How a biome gets its own shape language
 
@@ -118,15 +121,76 @@ The draft biomes show the range the nodes cover:
 
 | Biome | Shape language |
 |---|---|
-| **verdant_hills** | Familiar rolling FBm hills with boulders half sunk into them. The spawn biome. |
+| **verdant_hills** | Familiar rolling FBm hills with weathered granite boulders embedded in them. The spawn biome. |
 | **dune_sea** | Stretched, warped ridged noise on a nearly flat base. |
 | **arch_steppe** | Terraced mesas. Scattered tori stand on edge and are half buried as arches. Strata grooves are cut by `Sin(Y)`. |
-| **titan_crags** | Ridged mountains, terraced into cliff bands that a 3D warp pushes into overhangs. |
+| **titan_crags** | Ridged mountains, terraced into cliff bands with weathered outcrops at their edges; a shared 3D warp pushes both into overhangs. |
 | **karst_needles** | Concave spires rise from Voronoi cell centres, gathered into groves by a noise mask. Sinkhole funnels drop into shafts, and tunnels are twice as wide. |
 | **gyroid_reef** | A warped gyroid lattice intersected with mound heights, giving porous, walkable tunnels. |
 | **drift_isles** | One 3D-noise blob per Voronoi cell, squeezed into a band about 80 m up: floating islands with conical undersides. |
 | **shelf_mire** | Scattered stacked caps on crooked stems over wet flats. |
 | **sunken_coast** | A basin below sea level with scattered sea stacks. |
+
+## Rocks and cliff formations
+
+`library.ron` defines `weathered_rock`: curved shoulders interrupted by unequal
+fracture faces, with independently varied proportions, lean, cut depth and
+weathering. A seeded domain offset varies the relief between instances.
+Shallow seams and bounded chips affect geometry; mineral grain comes from
+triplanar diffuse, normal and roughness maps rather than extra mesh detail.
+With procedural ground enabled, stone combines those maps with continuous
+large-scale weathering and a smoothly distorted mineral domain; it no longer
+paints closed polygon outlines over rock. Analytic texture gradients retain
+filtering through the distortion.
+The terrain stone maps use [Poly Haven Rock 01](https://polyhaven.com/a/rock_01),
+with provenance and CC0 terms recorded beside the assets.
+
+Verdant Hills embeds individual boulders in the turf with a small ground
+fillet. Exposed tops and buried interiors remain rock. Titan Crags places
+larger, aligned outcrops where four-metre probes find a terrace edge; broad
+flat treads do not seed formations. The cliff and outcrops share a slow warp,
+keeping their roots attached. Exposed upper faces have restrained weathering
+variation, and snow can still settle on high tops.
+
+These are ordinary terrain density: editing, collision, LOD bounds and
+meshing all use the existing terrain path. Their definition change updates
+the worldgen digest, so existing saves with the old digest are listed as
+outdated, as with other world-generation edits.
+
+Native-app capture configurations live in `docs/images/rocks/native/`.
+From the repository root, set `MECHANIC_TERRAIN_CAPTURE` to either configuration
+and `MECHANIC_SKY_TIME=10`, then run `cargo run -p mechanic-app`. This creates
+a disposable world and waits for nearby streamed terrain and textures before
+saving screenshots. The capture's adjacent JSON records camera positions,
+terrain detail and remaining distant-streaming work. The application cameras
+render to an owned 1280 × 720 image for GPU readback, avoiding background-window
+surface capture. Historical CPU preview comparisons in `sampling.json` are retained as
+authoring evidence; they predate the final shape revision.
+
+Actual native-app views (M1 Pro, seed 42 for boulders and seed 7 for cliffs,
+10:00 lighting, procedural ground enabled):
+
+| Terrain | Close view | Gameplay distance |
+|---|---|---|
+| Boulder | ![Weathered boulder](images/rocks/native/boulder-detail.png) | ![Boulder at gameplay distance](images/rocks/native/boulder-gameplay.png) |
+| Cliff | ![Cliff outcrop](images/rocks/native/cliff-detail.png) | ![Cliff at gameplay distance](images/rocks/native/cliff-gameplay.png) |
+
+The captures wait for local terrain. Distant terrain can still be streaming;
+the adjacent JSON records that backlog. These are review evidence, not a claim
+that the rest of the terrain renderer or the requested visual review is complete.
+The [paired GPU report](images/rocks/native/gpu-cost.json) measures the stone
+opaque pass at 11.84 ms before and 15.11 ms after on an M1 Pro at 4096 × 2524
+(about +28%). Grass and soil changed by about +5% and +4%. This full-screen
+material fixture is not a gameplay frame-time measurement. The existing
+repetition test passes with a rock correlation of 0.406 against its 0.5 limit.
+
+Intermediate diagnostics preserve the [outlined stone material](images/rocks/native/boulder-procedural-before.png)
+and [overly rounded cliff shape](images/rocks/native/cliff-rounded-before.png).
+
+For fast geometry authoring, `worldgen-preview --seed 42 --out <dir>
+--view-target <x>,<y>,<z> --view-offset <dx>,<dy>,<dz>` writes a headless
+`view.png`. This omits the app's terrain textures and lighting and cannot
+establish final visual quality.
 
 ## Carve layers
 

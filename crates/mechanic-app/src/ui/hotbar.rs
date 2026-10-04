@@ -103,11 +103,14 @@ pub(crate) fn Hotbar(handles: Handles) -> Element {
                     (selected.tool == Some(MainTool::MatterManipulator)).then(|| {
                         let choose = if matches!(
                             selected.matter_mode,
-                            MatterMode::Item | MatterMode::Chroma
+                            MatterMode::Item | MatterMode::Chroma | MatterMode::Tread
                         ) {
                             let selector_key =
                                 controls.with(|bindings| bindings.label(GameAction::MaterialWheel));
-                            if selected.matter_mode == MatterMode::Chroma {
+                            if matches!(
+                                selected.matter_mode,
+                                MatterMode::Chroma | MatterMode::Tread
+                            ) {
                                 format!(" · Press {selector_key} to configure")
                             } else {
                                 format!(" · Hold {selector_key} to choose")
@@ -298,6 +301,7 @@ fn mode_slot(handles: &Handles, matter_mode: MatterMode) -> Element {
         MatterMode::Chroma => icon(Tool::Chroma),
         MatterMode::Spiral => icon(Tool::Spiral),
         MatterMode::Gear => icon(Tool::Gear),
+        MatterMode::Tread => icon(Tool::Tread),
     };
     view! {
         stack width:{ Length::px(SLOT) } height:{ Length::px(SLOT) } align:center justify:center
@@ -410,6 +414,7 @@ fn contextual_choice(
         MatterMode::Terrain => terrain_material,
         MatterMode::Manipulate => shape_status,
         MatterMode::Chroma => "Appearance brush",
+        MatterMode::Tread => "Grip patterns cut into surfaces",
     }
     .to_owned()
 }
@@ -765,6 +770,19 @@ pub(super) fn icon(tool: Tool) -> Element {
                 line from:(x:8px y:13px) to:(x:32px y:7px) stroke:(width:4px color:accent.speed)
                 line from:(x:8px y:23px) to:(x:32px y:17px) stroke:(width:4px color:accent.speed)
                 line from:(x:8px y:33px) to:(x:32px y:27px) stroke:(width:4px color:accent.speed)
+            }
+        },
+        // A tyre seen head-on, chevron lugs across its face.
+        Tool::Tread => view! {
+            canvas width:{ Length::px(ICON) } height:{ Length::px(ICON) } {
+                rect at:(x:20px y:20px) size:(w:24px h:34px) radius:7px exponent:1 fill:ink.muted
+                    stroke:(width:2px color:ink.fg)
+                line from:(x:12px y:11px) to:(x:20px y:15px) stroke:(width:3px color:accent.speed)
+                line from:(x:20px y:15px) to:(x:28px y:11px) stroke:(width:3px color:accent.speed)
+                line from:(x:12px y:19px) to:(x:20px y:23px) stroke:(width:3px color:accent.speed)
+                line from:(x:20px y:23px) to:(x:28px y:19px) stroke:(width:3px color:accent.speed)
+                line from:(x:12px y:27px) to:(x:20px y:31px) stroke:(width:3px color:accent.speed)
+                line from:(x:20px y:31px) to:(x:28px y:27px) stroke:(width:3px color:accent.speed)
             }
         },
         Tool::Chroma => view! {

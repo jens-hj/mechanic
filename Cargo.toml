@@ -10,11 +10,12 @@ members = [
     "crates/xtask",
 ]
 resolver = "2"
-exclude = ["vendor/bevy_pbr", "vendor/mosaic-macros", "vendor/mosaic-text", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal"]
+exclude = ["vendor/bevy_pbr", "vendor/mosaic-macros", "vendor/mosaic-text", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal", "vendor/ron"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
 wgpu-hal = { path = "vendor/wgpu-hal" }
+ron = { path = "vendor/ron" }
 
 [patch."https://github.com/bevyengine/bevy.git"]
 bevy_pbr = { path = "vendor/bevy_pbr" }
@@ -23,7 +24,7 @@ bevy_render = { path = "vendor/bevy_render" }
 bevy_winit = { path = "vendor/bevy_winit" }
 
 [workspace.package]
-version = "0.4.2"
+version = "0.6.1"
 edition = "2024"
 rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
@@ -50,6 +51,7 @@ ron = "0.12"
 fastnoise-lite = { version = "1.1.1", features = ["f64"] }
 getrandom = "0.3"
 png = "0.18"
+rustc-hash = "2.1"
 
 # Mosaic is pinned to the first upstream revision containing the external-device
 # renderer used by `bevy_mosaic`. Keep every crate on the same revision.

@@ -66,6 +66,7 @@ mod terrain_publication;
 #[cfg(test)]
 mod testing;
 mod tool_fx;
+mod tread;
 mod ui;
 mod weld_publication;
 mod weld_tool;
@@ -187,7 +188,9 @@ fn main() {
                     task_pool_options: task_pool_options(),
                 })
                 .set(bevy::winit::WinitPlugin {
-                    prevent_activation: automation::background() || tool_fx::capture_active(),
+                    prevent_activation: automation::background()
+                        || tool_fx::capture_active()
+                        || env::is_set(env::TERRAIN_CAPTURE),
                     ..default()
                 })
                 .set(WindowPlugin {
@@ -199,7 +202,9 @@ fn main() {
                         } else {
                             (1280, 720).into()
                         },
-                        focused: !automation::background() && !tool_fx::capture_active(),
+                        focused: !automation::background()
+                            && !tool_fx::capture_active()
+                            && !env::is_set(env::TERRAIN_CAPTURE),
                         ..default()
                     }),
                     ..Default::default()
@@ -250,6 +255,7 @@ fn main() {
         .init_resource::<SelectedTool>()
         .init_resource::<SelectedMaterial>()
         .init_resource::<ChromaBrush>()
+        .init_resource::<tread::TreadBrush>()
         .init_resource::<SelectedTerrainMaterial>()
         .init_resource::<PlayerState>()
         .init_resource::<MaterialWheelState>()

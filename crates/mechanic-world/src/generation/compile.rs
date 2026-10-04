@@ -237,7 +237,9 @@ impl Compiler<'_> {
         let seed = mix(self.seed ^ u64::from(doc.seed).wrapping_mul(0x2545_f491_4f6c_dd1d));
         let context = format!("{} scatter", self.context);
         let planar = |expr: &Expr, part: &str| {
-            compile_planar(expr, self.scope, seed, &format!("{context} {part}"))
+            // Placement reads the enclosing terrain, not the instance shape
+            // seed; otherwise a Ref("height") samples different hills.
+            compile_planar(expr, self.scope, self.seed, &format!("{context} {part}"))
         };
         let mask = doc
             .mask

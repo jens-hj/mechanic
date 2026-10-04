@@ -11,6 +11,7 @@ fastnoise-lite.workspace = true
 getrandom.workspace = true
 mechanic-core.workspace = true
 ron.workspace = true
+rustc-hash.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

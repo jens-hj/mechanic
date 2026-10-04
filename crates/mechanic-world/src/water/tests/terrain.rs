@@ -895,6 +895,12 @@ fn off_segment(point: DVec3, from: DVec3, to: DVec3) -> f64 {
 
 /// Whether the generator put water in a cell's column just under `level`.
 fn generated_water(field: &TerrainField, cell: crate::water::WaterCell, level: f64) -> bool {
+    // A rock can overhang generated water below the waterline. Check the
+    // cell's actual volume as well as the shallow shore probes below.
+    let layers = usize::try_from(super::super::ground::WATER_CELL_EDGE_CELLS).unwrap();
+    if (0..layers).any(|layer| field.is_water(cell.layer_centre(layer))) {
+        return true;
+    }
     let centre = cell.centre();
     let half = 0.5 * super::super::WATER_CELL_METRES;
     [

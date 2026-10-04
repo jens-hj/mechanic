@@ -7,6 +7,7 @@ use crate::{
     TerrainOctreeSnapshot, WorldPosition,
 };
 use bevy_math::DVec3;
+use rustc_hash::FxHashSet;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// One selected node and the exact mesh generation it requires.
@@ -195,14 +196,22 @@ pub fn select_active_nodes_with_interests(
         cache,
         &mut state,
     );
-    balance_cut(field, terrain, cache, &mut state.stats, &mut state.selected);
+    // Membership is asked for far more often than the cut is walked in order.
+    let mut members = state.selected.iter().copied().collect::<FxHashSet<_>>();
+    balance_cut(
+        field,
+        terrain,
+        cache,
+        &mut state.stats,
+        (&mut state.selected, &mut members),
+    );
     let mut transition_masks = state
         .selected
         .iter()
         .copied()
-        .map(|id| (id, transition_mask(id, &state.selected)))
+        .map(|id| (id, transition_mask(id, &members)))
         .collect::<BTreeMap<_, _>>();
-    propagate_transition_boundary_sync(&state.selected, &mut transition_masks);
+    propagate_transition_boundary_sync(&members, &mut transition_masks);
     let nodes = transition_masks
         .into_iter()
         .map(|(id, transition_mask)| ActiveTerrainNode {
@@ -395,7 +404,7 @@ pub(super) fn balance_cut(
     terrain: &TerrainOctreeSnapshot,
     cache: &mut TerrainBoundsCache,
     stats: &mut TerrainSelectionStats,
-    selected: &mut BTreeSet<TerrainNodeId>,
+    (selected, members): (&mut BTreeSet<TerrainNodeId>, &mut FxHashSet<TerrainNodeId>),
 ) {
     loop {
         let mut split = BTreeSet::new();
@@ -404,10 +413,9 @@ pub(super) fn balance_cut(
                 let Some(neighbour) = adjacent_leaf(node, face) else {
                     continue;
                 };
-                let Some(owner) = owner_of_leaf(selected, neighbour) else {
-                    continue;
-                };
-                if owner.level > node.level + 1 {
+                // The cut never overlaps, so a leaf has one owner at most:
+                // only levels two or more above this node can need splitting.
+                if let Some(owner) = owner_from_level(members, neighbour, node.level + 2) {
                     split.insert(owner);
                 }
             }
@@ -417,11 +425,13 @@ pub(super) fn balance_cut(
         }
         for coarse in split {
             selected.remove(&coarse);
+            members.remove(&coarse);
             for child in coarse.children().expect("a coarse neighbour can split") {
                 let distant = child.level > CAVE_STREAMED_LEVEL;
                 match classify_node(field, terrain, child, distant, cache) {
                     TerrainDensityClass::Mixed => {
                         selected.insert(child);
+                        members.insert(child);
                     }
                     TerrainDensityClass::Empty => stats.rejected_empty += 1,
                     TerrainDensityClass::Solid => stats.rejected_solid += 1,
@@ -433,14 +443,18 @@ pub(super) fn balance_cut(
 
 pub(super) fn transition_mask(
     node: TerrainNodeId,
-    selected: &BTreeSet<TerrainNodeId>,
+    selected: &FxHashSet<TerrainNodeId>,
 ) -> TerrainTransitionMask {
     let mut mask = TerrainTransitionMask::NONE;
     for face in TerrainFace::ALL {
         let Some(neighbour) = adjacent_leaf(node, face) else {
             continue;
         };
-        if owner_of_leaf(selected, neighbour).is_some_and(|owner| owner.level == node.level + 1) {
+        // The cut never overlaps, so the leaf's owner is one level up only
+        // if that node itself is selected.
+        if TerrainNodeId::containing(neighbour, node.level + 1)
+            .is_some_and(|owner| selected.contains(&owner))
+        {
             mask.insert(face);
         }
     }
@@ -448,7 +462,7 @@ pub(super) fn transition_mask(
 }
 
 pub(super) fn propagate_transition_boundary_sync(
-    selected: &BTreeSet<TerrainNodeId>,
+    selected: &FxHashSet<TerrainNodeId>,
     masks: &mut BTreeMap<TerrainNodeId, TerrainTransitionMask>,
 ) {
     let transitions = masks
@@ -531,10 +545,19 @@ pub(super) fn equal_lod_neighbor(node: TerrainNodeId, face: TerrainFace) -> Opti
 }
 
 pub(super) fn owner_of_leaf(
-    selected: &BTreeSet<TerrainNodeId>,
+    selected: &FxHashSet<TerrainNodeId>,
     leaf: BrickCoord,
 ) -> Option<TerrainNodeId> {
-    (0..=5).find_map(|level| {
+    owner_from_level(selected, leaf, 0)
+}
+
+/// The selected node holding a leaf, looking only from `level` up.
+fn owner_from_level(
+    selected: &FxHashSet<TerrainNodeId>,
+    leaf: BrickCoord,
+    level: u8,
+) -> Option<TerrainNodeId> {
+    (level..=MAX_STREAMED_LEVEL).find_map(|level| {
         let id = TerrainNodeId::containing(leaf, level)?;
         selected.contains(&id).then_some(id)
     })

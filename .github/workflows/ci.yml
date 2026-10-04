@@ -29,6 +29,23 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
+      - name: Install Linux software Vulkan adapter
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libvulkan1 mesa-vulkan-drivers vulkan-tools
+          # Hosted Linux runners have no display GPU. Exercise the real Vulkan
+          # backend with lavapipe, including tests that require an adapter.
+          shopt -s nullglob
+          drivers=(/usr/share/vulkan/icd.d/lvp_icd*.json)
+          test "${#drivers[@]}" -eq 1
+          export VK_DRIVER_FILES="${drivers[0]}"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/vulkan-runtime"
+          install -d -m 700 "$XDG_RUNTIME_DIR"
+          echo "VK_DRIVER_FILES=$VK_DRIVER_FILES" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          vulkaninfo --summary
       - run: cargo xtask ci
       - name: Fence acquisition and concurrent queue regression
         run: cargo test --manifest-path vendor/wgpu-core/Cargo.toml --features noop,wgsl --config 'patch.crates-io.wgpu-hal.path="vendor/wgpu-hal"' acquisition_does_not_block

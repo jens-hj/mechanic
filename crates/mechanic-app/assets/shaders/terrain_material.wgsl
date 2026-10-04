@@ -194,37 +194,30 @@ fn hash_corner(corner: vec3<f32>) -> f32 {
     return f32(state) * (1.0 / 4294967296.0);
 }
 
-fn value_noise(point: vec3<f32>) -> f32 {
+// Value and analytic derivative, so mineral-domain warping keeps explicit
+// texture gradients even inside the material-selection branch.
+fn value_noise_gradient(point: vec3<f32>) -> vec4<f32> {
     let base = floor(point);
     let fraction = point - base;
     let weight = fraction * fraction * (3.0 - 2.0 * fraction);
-    let low = mix(
-        mix(
-            hash_corner(base),
-            hash_corner(base + vec3<f32>(1.0, 0.0, 0.0)),
-            weight.x,
-        ),
-        mix(
-            hash_corner(base + vec3<f32>(0.0, 1.0, 0.0)),
-            hash_corner(base + vec3<f32>(1.0, 1.0, 0.0)),
-            weight.x,
-        ),
-        weight.y,
-    );
-    let high = mix(
-        mix(
-            hash_corner(base + vec3<f32>(0.0, 0.0, 1.0)),
-            hash_corner(base + vec3<f32>(1.0, 0.0, 1.0)),
-            weight.x,
-        ),
-        mix(
-            hash_corner(base + vec3<f32>(0.0, 1.0, 1.0)),
-            hash_corner(base + vec3<f32>(1.0, 1.0, 1.0)),
-            weight.x,
-        ),
-        weight.y,
-    );
-    return mix(low, high, weight.z);
+    let slope = 6.0 * fraction * (1.0 - fraction);
+    let a = hash_corner(base);
+    let b = hash_corner(base + vec3<f32>(1.0, 0.0, 0.0));
+    let c = hash_corner(base + vec3<f32>(0.0, 1.0, 0.0));
+    let d = hash_corner(base + vec3<f32>(1.0, 1.0, 0.0));
+    let e = hash_corner(base + vec3<f32>(0.0, 0.0, 1.0));
+    let f = hash_corner(base + vec3<f32>(1.0, 0.0, 1.0));
+    let g = hash_corner(base + vec3<f32>(0.0, 1.0, 1.0));
+    let h = hash_corner(base + vec3<f32>(1.0, 1.0, 1.0));
+    let low = mix(mix(a, b, weight.x), mix(c, d, weight.x), weight.y);
+    let high = mix(mix(e, f, weight.x), mix(g, h, weight.x), weight.y);
+    let dx = mix(mix(b - a, d - c, weight.y), mix(f - e, h - g, weight.y), weight.z);
+    let dy = mix(mix(c - a, d - b, weight.x), mix(g - e, h - f, weight.x), weight.z);
+    return vec4<f32>(mix(low, high, weight.z), slope * vec3<f32>(dx, dy, high - low));
+}
+
+fn value_noise(point: vec3<f32>) -> f32 {
+    return value_noise_gradient(point).x;
 }
 
 // Wet ground's ragged edge: noise this coarse and this strong moves where the
@@ -402,9 +395,6 @@ const DIRT_LIGHT: vec3<f32> = vec3<f32>(0.1070, 0.0595, 0.0356);
 const PEBBLE: vec3<f32> = vec3<f32>(0.1500, 0.1274, 0.1070);
 const PEBBLE_LINE: vec3<f32> = vec3<f32>(0.0232, 0.0144, 0.0103);
 const STONE_BASE: vec3<f32> = vec3<f32>(0.1329, 0.1529, 0.1812);
-const STONE_SLAB: vec3<f32> = vec3<f32>(0.0976, 0.1144, 0.1413);
-const STONE_CHIP: vec3<f32> = vec3<f32>(0.2159, 0.2462, 0.2961);
-const STONE_CRACK: vec3<f32> = vec3<f32>(0.0343, 0.0409, 0.0545);
 
 // The cache's shape. Mirrors world/terrain_cache.rs.
 const FIELD_EDGE: f32 = 512.0;
@@ -419,10 +409,7 @@ const FIELD_REACH: f32 = 0.5 * FIELD_EDGE - 32.0 - FIELD_MARGIN;
 // to the next coarser level.
 const FIELD_HANDOVER: f32 = 0.15;
 // Field encodings and feature sizes. Mirror terrain_field_cache.wgsl.
-const SLAB_RANGE: f32 = 0.05;
 const BORDER_RANGE: f32 = 0.03;
-const STONE_SLAB_CELL: f32 = 0.75;
-const STONE_CHIP_CELL: f32 = 0.24;
 const DIRT_PEBBLE_CELL: f32 = 0.08;
 const GRASS_STROKE_WIDTH: f32 = 0.08;
 // The grain tile's span. Mirrors the cell counts in world/terrain_cache.rs.
@@ -526,12 +513,6 @@ fn load_fields(fields: texture_2d_array<f32>, pick: FieldPick, point: vec2<f32>)
     return textureLoad(fields, texel & vec2<i32>(i32(FIELD_EDGE) - 1), pick.layer, 0);
 }
 
-// A dark line along cell borders, at least a pixel wide, as a mix weight.
-fn outline(border: f32, footprint: f32) -> f32 {
-    let width = max(OUTLINE_METRES, footprint);
-    return 1.0 - smoothstep(0.5 * width, width, border);
-}
-
 // A fragment's body and outline from its signed distance field: how far in
 // it is and how much of its outline shows.
 fn fragment_shape(field: f32, footprint: f32) -> vec2<f32> {
@@ -594,33 +575,15 @@ fn dirt_look(
     return out;
 }
 
-fn stone_look(
-    stone: vec4<f32>,
-    ids: vec4<f32>,
-    tone: f32,
-    grain: vec4<f32>,
-    footprint: f32,
-) -> Procedural {
+// Broad weathering varies continuously across the world. Fractures belong to
+// the rock geometry; mineral detail comes from the measured stone maps below.
+fn stone_look(tone: f32, grain: vec4<f32>) -> Procedural {
     var out: Procedural;
-    out.occlusion = 0.95;
-    out.roughness = 0.8;
+    out.color = STONE_BASE * (0.85 + 0.3 * tone) * (0.96 + 0.08 * grain.b);
+    out.occlusion = 1.0;
+    out.roughness = 1.0;
     out.mask = 1.0;
-    // Slabs: tilted facets with dark cracks between them.
-    let slab_shown = resolved(STONE_SLAB_CELL * 0.5, footprint);
-    let slab = ids.b;
-    out.color = mix(STONE_BASE, mix(STONE_SLAB, STONE_BASE, 0.3 + 0.7 * slab), slab_shown);
-    out.roughness += 0.12 * (fract(slab * 7.3) - 0.5) * slab_shown;
-    out.gradient = facet(slab, 0.35) * slab_shown;
-    let crack = outline(stone.r * SLAB_RANGE, footprint) * slab_shown;
-    out.color = mix(out.color, STONE_CRACK, crack);
-    out.occlusion -= 0.4 * crack;
-    // Chips: clusters of small, pale, outlined fragments over the slabs.
-    let shape = fragment_shape(stone.g, footprint) * resolved(STONE_CHIP_CELL * 0.5, footprint);
-    out.color = mix(out.color, STONE_CHIP * (0.85 + 0.3 * ids.a), shape.x);
-    out.color = mix(out.color, STONE_CRACK, shape.y);
-    out.occlusion -= 0.3 * shape.y;
-    out.gradient = mix(out.gradient, facet(ids.a, 0.5), shape.x);
-    out.color *= (1.0 + 0.35 * (tone - 0.5)) * (1.0 + 0.3 * (grain.b - 0.5));
+    out.gradient = vec2<f32>(0.0);
     return out;
 }
 
@@ -679,9 +642,7 @@ fn procedural_plane(
             return dirt_look(soil, ids.b, grass.g, grain, footprint);
         }
         default: {
-            let stone = sample_fields(stone_fields, pick, point);
-            let ids = load_fields(stone_fields, pick, point);
-            return stone_look(stone, ids, grass.g, grain, footprint);
+            return stone_look(grass.g, grain);
         }
     }
 }
@@ -880,6 +841,35 @@ fn fragment(
                 projection,
                 pbr_input.world_normal,
             );
+            if recipe == RECIPE_STONE {
+                // Smooth, nonperiodic distortion breaks the mineral tile's
+                // visible grid without discontinuities or extra texture taps.
+                let point = coordinates / repeat;
+                let drift = value_noise_gradient(point * 0.24 + vec3<f32>(13.7, 4.1, 91.3));
+                let direction = vec3<f32>(0.8, 0.584, -0.488);
+                let across = ddx / repeat;
+                let down = ddy / repeat;
+                let warped = point + direction * (drift.x - 0.5);
+                let warped_x = across + direction * (0.24 * dot(drift.yzw, across));
+                let warped_y = down + direction * (0.24 * dot(drift.yzw, down));
+                let mineral = sample_layer(
+                    i32(look.params.x),
+                    false,
+                    warped,
+                    warped_x,
+                    warped_y,
+                    projection,
+                    pbr_input.world_normal,
+                );
+                // Keep the procedural mean used by palette recolouring while
+                // preserving mineral colour, roughness and small-scale relief.
+                drawn.color = vec4<f32>(
+                    drawn.color.rgb * mineral.color.rgb / max(look.shade.x, 0.02),
+                    mineral.color.a,
+                );
+                drawn.surface = mineral.surface;
+                drawn.normal = mineral.normal;
+            }
         } else {
 #else
         let recipe = 0u;

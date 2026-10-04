@@ -32,7 +32,7 @@ const RATINGS_OFFSET_Y: f32 = 318.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Model {
     pub(crate) open: bool,
-    pub(crate) chroma_config: bool,
+    pub(crate) config_panel: bool,
     pub(crate) highlighted: Option<WheelChoice>,
 }
 
@@ -488,13 +488,13 @@ mod tests {
     fn model_preserves_open_and_highlight_state() {
         let model = Model {
             open: true,
-            chroma_config: false,
+            config_panel: false,
             highlighted: Some(WheelChoice::ConstructionMaterial(
                 ConstructionMaterial::Wood,
             )),
         };
         assert!(model.open);
-        assert!(!model.chroma_config);
+        assert!(!model.config_panel);
         assert_eq!(
             model.highlighted,
             Some(WheelChoice::ConstructionMaterial(

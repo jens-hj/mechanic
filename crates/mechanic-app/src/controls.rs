@@ -21,6 +21,8 @@ pub(crate) enum GameAction {
     DevSpeedReset,
     DevTimeEarlier,
     DevTimeLater,
+    DevDayEarlier,
+    DevDayLater,
     DevTimePause,
     DevErosion,
     DevErosionMap,
@@ -71,6 +73,7 @@ pub(crate) enum GameAction {
     MatterChroma,
     MatterSpiral,
     MatterGear,
+    MatterTread,
     ClearPipette,
     Rotate,
     PipeTurn,
@@ -115,6 +118,8 @@ impl GameAction {
                 | Self::DevSpeedReset
                 | Self::DevTimeEarlier
                 | Self::DevTimeLater
+                | Self::DevDayEarlier
+                | Self::DevDayLater
                 | Self::DevTimePause
                 | Self::DevErosion
                 | Self::DevErosionMap
@@ -122,7 +127,7 @@ impl GameAction {
         )
     }
 
-    pub(crate) const ALL: [Self; 85] = [
+    pub(crate) const ALL: [Self; 88] = [
         Self::DevNoclip,
         Self::DevSpectator,
         Self::DevSpeedDecrease,
@@ -130,6 +135,8 @@ impl GameAction {
         Self::DevSpeedReset,
         Self::DevTimeEarlier,
         Self::DevTimeLater,
+        Self::DevDayEarlier,
+        Self::DevDayLater,
         Self::DevTimePause,
         Self::DevErosion,
         Self::DevErosionMap,
@@ -174,6 +181,7 @@ impl GameAction {
         Self::MatterChroma,
         Self::MatterSpiral,
         Self::MatterGear,
+        Self::MatterTread,
         Self::ClearPipette,
         Self::Rotate,
         Self::PipeTurn,
@@ -220,7 +228,7 @@ impl GameAction {
         (Self::ToolHammer, crate::hotbar::MainTool::Hammer),
     ];
 
-    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 9] = [
+    pub(crate) const MODE_ACTIONS: [(Self, crate::hotbar::MatterMode); 10] = [
         (Self::MatterBlock, crate::hotbar::MatterMode::Block),
         (Self::MatterCylinder, crate::hotbar::MatterMode::Cylinder),
         (Self::MatterLayer, crate::hotbar::MatterMode::Layer),
@@ -233,6 +241,7 @@ impl GameAction {
         (Self::MatterChroma, crate::hotbar::MatterMode::Chroma),
         (Self::MatterSpiral, crate::hotbar::MatterMode::Spiral),
         (Self::MatterGear, crate::hotbar::MatterMode::Gear),
+        (Self::MatterTread, crate::hotbar::MatterMode::Tread),
     ];
 
     pub(crate) const fn for_tool(tool: crate::hotbar::MainTool) -> Self {
@@ -255,6 +264,7 @@ impl GameAction {
             crate::hotbar::MatterMode::Chroma => Self::MatterChroma,
             crate::hotbar::MatterMode::Spiral => Self::MatterSpiral,
             crate::hotbar::MatterMode::Gear => Self::MatterGear,
+            crate::hotbar::MatterMode::Tread => Self::MatterTread,
         }
     }
 
@@ -267,6 +277,8 @@ impl GameAction {
             Self::DevSpeedReset => "Dev Speed Reset",
             Self::DevTimeEarlier => "Dev Time Earlier",
             Self::DevTimeLater => "Dev Time Later",
+            Self::DevDayEarlier => "Dev Day Earlier",
+            Self::DevDayLater => "Dev Day Later",
             Self::DevTimePause => "Dev Day Cycle Pause",
             Self::DevErosion => "Dev Erosion Speed",
             Self::DevErosionMap => "Dev Erosion Heatmap",
@@ -316,6 +328,7 @@ impl GameAction {
             Self::MatterChroma => "Matter: Chroma",
             Self::MatterSpiral => "Matter: Spiral",
             Self::MatterGear => "Matter: Gear",
+            Self::MatterTread => "Matter: Tread",
             Self::ClearPipette => "Clear / Pipette",
             Self::Rotate => "Rotate / Cycle",
             Self::PipeTurn => "Add Pipe Bend",
@@ -360,6 +373,8 @@ impl GameAction {
             | Self::DevSpeedReset
             | Self::DevTimeEarlier
             | Self::DevTimeLater
+            | Self::DevDayEarlier
+            | Self::DevDayLater
             | Self::DevTimePause
             | Self::DevErosion
             | Self::DevErosionMap
@@ -408,7 +423,8 @@ impl GameAction {
             | Self::MatterManipulate
             | Self::MatterChroma
             | Self::MatterSpiral
-            | Self::MatterGear => "Tools",
+            | Self::MatterGear
+            | Self::MatterTread => "Tools",
             Self::FreezeCreation | Self::RaiseFrozenCreation | Self::LowerFrozenCreation => {
                 "Hammer"
             }
@@ -778,6 +794,16 @@ impl Default for Controls {
             Some(InputChord::key(K::BracketRight)),
             None,
         );
+        set(
+            A::DevDayEarlier,
+            Some(InputChord::key(K::BracketLeft).with_shift()),
+            None,
+        );
+        set(
+            A::DevDayLater,
+            Some(InputChord::key(K::BracketRight).with_shift()),
+            None,
+        );
         set(A::DevTimePause, Some(InputChord::key(K::F8)), None);
         set(A::DevErosion, Some(InputChord::key(K::F10)), None);
         set(A::DevErosionMap, Some(InputChord::key(K::F9)), None);
@@ -889,6 +915,7 @@ impl Default for Controls {
             K::Digit7,
             K::Digit8,
             K::Digit9,
+            K::Digit0,
         ];
         for ((action, _), key) in A::MODE_ACTIONS.into_iter().zip(mode_keys) {
             set(action, Some(InputChord::key(key).with_shift()), None);

@@ -13,6 +13,7 @@ them. CI runs the wgpu fence regression test separately.
 | `mosaic-macros` | [`MECHANIC-PATCH.md`](mosaic-macros/MECHANIC-PATCH.md) | Reactive shape geometry with static appearance |
 | `mosaic-text` | [`MECHANIC-PATCH.md`](mosaic-text/MECHANIC-PATCH.md) | Positioned scalable glyph outlines from existing shaping |
 | `bevy_winit` | [`MECHANIC-PATCH.md`](bevy_winit/MECHANIC-PATCH.md) | `WinitPlugin::prevent_activation` |
+| `ron` | [`MECHANIC-PATCH.md`](ron/MECHANIC-PATCH.md) | Upstream fixes for quadratic float and escaped-string parsing |
 | `wgpu-core`, `wgpu-hal` | [`WGPU-FENCE-BACKPORT.md`](WGPU-FENCE-BACKPORT.md) | Fence-acquisition backport; the literal patch is [`wgpu-fence-upstream.patch`](wgpu-fence-upstream.patch) |
 
 Every note names the upstream revision the copy was taken from.

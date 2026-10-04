@@ -12,7 +12,7 @@ use std::path::PathBuf;
 /// `1` enables developer navigation and its rebindable controls.
 pub(crate) const DEV_TOOLS: &str = "MECHANIC_DEV_TOOLS";
 
-/// Render-only fixed solar hour in [0, 24); stops clock advancement without editing saves.
+/// Render-only fixed solar time in hours since day zero; stops clock advancement without editing saves.
 pub(crate) const SKY_TIME: &str = "MECHANIC_SKY_TIME";
 
 /// `gpu` runs published ticks on the GPU runtime; anything else runs the CPU solver.
@@ -28,6 +28,9 @@ pub(crate) const RENDER_EXPERIMENT: &str = "MECHANIC_RENDER_EXPERIMENT";
 /// World-generation definition directory to generate from and hot-reload.
 #[cfg(debug_assertions)]
 pub(crate) const WORLDGEN_DIR: &str = "MECHANIC_WORLDGEN_DIR";
+
+/// JSON configuration for native terrain screenshots in a disposable world.
+pub(crate) const TERRAIN_CAPTURE: &str = "MECHANIC_TERRAIN_CAPTURE";
 
 /// Directory receiving per-frame performance JSONL.
 pub(crate) const PERF_CAPTURE_DIR: &str = "MECHANIC_PERF_CAPTURE_DIR";

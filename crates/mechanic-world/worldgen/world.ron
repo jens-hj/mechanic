@@ -142,7 +142,8 @@ World(
         (name: "alpine_turf", material: SurfaceCover, texture: Grass, tint: "#c4d29a"),
         (name: "dark_granite", material: Rock, texture: Stone, tint: "#6c6c74", recolor: true),
         (name: "copper_vein", material: Iron, texture: Copper),
-        (name: "granite_grey", material: Rock, texture: Stone, tint: "#bcbcc0", recolor: true, scale: 2),
+        (name: "granite_grey", material: Rock, texture: Stone, tint: "#97958f", recolor: true),
+        (name: "weathered_granite", material: Rock, texture: Stone, tint: "#a69c87", recolor: true, roughness: 1.1),
         // Karst needles
         (name: "karst_moss", material: SurfaceCover, texture: Grass, tint: "#86b884"),
         (name: "graphite_streak", material: Graphite, texture: Graphite),

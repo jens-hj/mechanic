@@ -1,0 +1,32 @@
+{
+  "captured_at_utc": "2026-10-03T19:37:03.542678+00:00",
+  "app_version": "0.4.2",
+  "adapter": "Apple M1 Pro / Metal",
+  "lighting_hour": 10,
+  "procedural_ground": true,
+  "shader_sha256": "0ce220d19a1296718372e163550647fd5d4f767d476ed2c4795a7b20bbac28f1",
+  "native_binary_sha256": "1778910508602f8f6987ba71112cab9e9334d4f6af99b4a73f526f2ae12956d9",
+  "worldgen": {
+    "crates/mechanic-world/worldgen/biomes/arch_steppe.ron": "326edfca4a5c1d365ac0a96922fbfe4b59d789a0d72aa67544752cb08d567646",
+    "crates/mechanic-world/worldgen/biomes/drift_isles.ron": "067d85b8bd1de3c2a2fc2e4c3fa815ee5ece6cf02499a1d09a37675151bbd09e",
+    "crates/mechanic-world/worldgen/biomes/dune_sea.ron": "590d26a15b36bb1d983642378af10ab21a63128c1618e776638c9c656cdd25f4",
+    "crates/mechanic-world/worldgen/biomes/gyroid_reef.ron": "cf661f0917dcd1a647b9e1f2cbc84ade5de36a6511686d795c8a16e0038d3b2d",
+    "crates/mechanic-world/worldgen/biomes/karst_needles.ron": "21b1e826807a221757838a483b8dd8f33b4e5622967b4f6edb335c02e50841e1",
+    "crates/mechanic-world/worldgen/biomes/shelf_mire.ron": "404ff32bd6439c3f6acb7d9417846dee3b1464f9f8466c066a804c7d1860491d",
+    "crates/mechanic-world/worldgen/biomes/sunken_coast.ron": "9500e975cd0c60f4169f7116f737d623ed14b4b713f53adf4b6adc568cb6d1c3",
+    "crates/mechanic-world/worldgen/biomes/titan_crags.ron": "91c7fd431d0e46b7f0bb1fedff4d54bff326901c7259995f5376a77182ab210d",
+    "crates/mechanic-world/worldgen/biomes/verdant_hills.ron": "5fcc66dc793e22a7867c4960b457ae100e6f845332b1c97fda605f35171152a8",
+    "crates/mechanic-world/worldgen/flora.ron": "f4466ea279d275e949c1d8134c8071b74f6dcec7ce92b18e0c8460ff9a8a0405",
+    "crates/mechanic-world/worldgen/library.ron": "68bc892a3e943ba5c3c22f04336282584a7aa8adae584c69d3a585eb546c9be1",
+    "crates/mechanic-world/worldgen/world.ron": "730ddc7e473232d440d23ed5bc656efbeb08a334d46338d1672366ae53adb4c9"
+  },
+  "images": {
+    "boulder-close.png": "19bf52348f879a7bfb507e7d1e142b6e46cb4244d17aa9b1734dbd6e8170f981",
+    "boulder-gameplay.png": "8c23ac94d715f3f8d2b7d8f386a4d9fc3403e85ad01ae9c850c7105bb3a48910",
+    "boulder-detail.png": "1595e1032ce8fdbe323e8cd62b1d8f1ac72d3a3f1008628ae655821aca0bd893",
+    "cliff-close.png": "90aee396227c3233b1ae34fc70857377947d8359f3eff64212b10294a44dcb89",
+    "cliff-gameplay.png": "31396b3306b6a7f0a330acc62ce1448e92c48355b700c31550a74c973fe980fc",
+    "cliff-detail.png": "c63f564aef36ab81e8d6ab9c4d644ae719a8f48414a59d6095d8bc438dd622e9"
+  },
+  "limitations": "Local terrain ready; distant terrain still streaming, with per-view backlog in adjacent JSON. Native application cameras rendered to a GPU image target. No image retouching."
+}

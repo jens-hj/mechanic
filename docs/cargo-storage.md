@@ -194,8 +194,8 @@ one source also supplied that guidance there. This branch replaces that deletion
 sequence with admission refusal, reporting/preview and coordinated exclusive
 cleanup; the old wording must not survive integration. The current 20 GiB floor
 is explicit binary units, rather than interpreting the old ambiguous GB wording.
-This documentation change does not itself modify other checkouts while integration
-refresh remains queued.
+This documentation change does not itself modify other checkouts before
+publication and integration are approved.
 
 For any proposed legacy cleanup, assign one cleaner and coordinate an explicit
 no-new-users window for the exact target. Obtain release from all builders,
@@ -242,11 +242,23 @@ store for its next genuinely needed command. Include the entire build/execution
 pipeline, measure growth, and keep initial adoption to one invocation at a time.
 Do not create another cold target merely to demonstrate adoption. Retire legacy
 caches only through the independent review above; do not migrate live storage.
-As of 2026-10-04, integration refresh remains queued behind PR #71 and draft PR
-publication approval is pending. These are prepared instructions, not evidence
-that existing workers already use the managed workflow.
+On 2026-10-04, PR #71 merged and this branch was refreshed once onto accumulated
+main `2ee2249a5531df1840774990501d2aadf9267c72`. The coherent task version is now
+0.6.1 over main 0.6.0. The unsafe main guidance is replaced in this integration
+diff; other checkouts do not acquire it until integration. Push and draft PR
+publication still require explicit approval. These prepared instructions are not
+evidence that existing workers already use the managed workflow.
 
 ### Validation status
+
+After the local main integration, all six Python suites passed: 54 cases, with
+one Windows-only case skipped on macOS. The 23 storage cases include admission,
+unchanged A/B/A incompatible APIs and execution lifetime. Leased
+`cargo xtask fmt` and `cargo xtask consistency` passed in the existing task slot;
+locked/offline metadata confirms all eight workspace packages are 0.6.1. The
+storage runtime, tests and lifecycle workflow are unchanged from the previously
+green hosted revision below. No new hosted/full Bevy CI result is claimed for
+this unpublished integration; main's separate GPU provisioning changes are retained.
 
 Latest validation (revision `f91f3ff`, 2026-10-03): the full lightweight lifecycle
 matrix passed on Windows, macOS and Ubuntu, including admission and checkout

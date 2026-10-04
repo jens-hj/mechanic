@@ -37,7 +37,7 @@ use self::grid::JitterGrid;
 use self::interval::Interval;
 use self::noise::NoiseGen;
 use self::rivers::{DRAINAGE_CELL_METRES, RIVER_LIFT_METRES, RiverNetwork, drainage_side};
-use self::scatter::mix;
+pub(crate) use self::scatter::mix;
 use self::spec::{BiomeDoc, CarveDoc, Dims, Expr, Fractal, NoiseDoc, NoiseKind};
 use self::surfaces::{SurfaceProbe, SurfaceRules};
 use self::tape::{PlanarCache, Tape, smoothstep};
@@ -1836,7 +1836,16 @@ impl CompiledWorld {
         )]
         let shows = match hit.part {
             Part::Root => hit.density > 0.0 && density > ROOT_COVER_METRES,
-            Part::Wood | Part::Foliage => hit.density as f32 >= density as f32,
+            Part::Wood | Part::Foliage => {
+                hit.density as f32 >= density as f32
+                    // Culled empty ground blocks hold a sign-preserving bound,
+                    // not the distance used to choose their surface material.
+                    // A tree raised into such a block still owns its open
+                    // crossing corner when it is nearer than the actual ground.
+                    || (density < 0.0
+                        && hit.density < 0.0
+                        && hit.density >= self.density_parts(column, position).0)
+            }
         };
         shows.then_some(hit)
     }
@@ -2131,7 +2140,7 @@ impl CompiledWorld {
         let [nx, ny, nz] = lattice.dims;
         let columns: Vec<Column> = (0..nz)
             .flat_map(|k| (0..nx).map(move |i| (i, k)))
-            .map(|(i, k)| self.column(lattice.coordinate(0, i), lattice.coordinate(2, k)))
+            .map(|(i, k)| self.cached_column(lattice.coordinate(0, i), lattice.coordinate(2, k)))
             .collect();
         let mut densities = vec![0.0; lattice.len()];
         let mut carved = vec![0; lattice.len()];

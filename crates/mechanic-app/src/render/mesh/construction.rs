@@ -11,6 +11,7 @@ use crate::render::mesh::pipe::{
     append_pipe_bend_shape, append_pipe_bend_shape_with_end_faces, append_pipe_junction_shape,
     pipe_end_faces, pipe_texture_offsets, welded_pipe_ends,
 };
+use crate::render::mesh::tread::{PartPlacement, append_part_treads};
 use crate::{AuthoredPart, builder, chroma, shape_tool};
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::Indices;
@@ -124,6 +125,8 @@ pub(crate) fn combined_construction_mesh_filtered(
         if graph.region_of(part).is_some() {
             continue;
         }
+        let first_index = indices.len();
+        let placement = part_placement(graph, BuildTransform::IDENTITY, part);
         if spec.is_layered() {
             append_layered_part(
                 graph,
@@ -138,6 +141,15 @@ pub(crate) fn combined_construction_mesh_filtered(
                 &mut colors,
                 &mut indices,
             );
+            append_treads(
+                graph,
+                part,
+                placement,
+                material,
+                first_index,
+                (&mut positions, &mut normals, &mut uvs),
+                (&mut tangents, &mut colors, &mut indices),
+            );
             continue;
         }
         if let PartSpec::Cuboid(cuboid) = *spec
@@ -147,6 +159,7 @@ pub(crate) fn combined_construction_mesh_filtered(
                 .all(|dimension| dimension.units() == 1)
             && cuboid.pose.rotation == GridRotation::default()
             && cuboid.rack().is_none()
+            && graph.part_treads(part).is_empty()
             && graph.part_frame(part) == Some(mechanic_core::ConstructionFrame::IDENTITY)
             && !graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part))
         {
@@ -188,6 +201,15 @@ pub(crate) fn combined_construction_mesh_filtered(
             chroma::encode_appearance(spec.appearance().expect("ordinary parts have appearances")),
             positions.len() - first_vertex,
         ));
+        append_treads(
+            graph,
+            part,
+            placement,
+            material,
+            first_index,
+            (&mut positions, &mut normals, &mut uvs),
+            (&mut tangents, &mut colors, &mut indices),
+        );
     }
     append_merged_block_cuboids(
         &mergeable_blocks,
@@ -249,6 +271,53 @@ pub(crate) fn combined_construction_mesh_filtered(
     .with_inserted_attribute(Mesh::ATTRIBUTE_TANGENT, tangents)
     .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
     .with_inserted_indices(Indices::U32(indices))
+}
+
+/// Where a part's own frame lands in a mesh drawn through `placement`.
+pub(crate) fn part_placement(
+    graph: &ConstructionGraph,
+    placement: BuildTransform,
+    part: PartId,
+) -> PartPlacement {
+    PartPlacement {
+        translation: placement.point(graph.part_position(part).expect("part exists")),
+        rotation: placement.rotation * graph.part_rotation(part).expect("part exists"),
+    }
+}
+
+/// Cuts a part's treads into what was just drawn of it. A part with Shape
+/// features keeps its drawn surfaces: its trimmed faces are no longer the
+/// rectangles and rings a relief is laid out on.
+#[expect(
+    clippy::type_complexity,
+    reason = "the six mesh buffers, grouped to keep the call short"
+)]
+pub(crate) fn append_treads(
+    graph: &ConstructionGraph,
+    part: PartId,
+    placement: PartPlacement,
+    material: Option<ConstructionMaterial>,
+    first_index: usize,
+    (positions, normals, uvs): (&mut Vec<[f32; 3]>, &mut Vec<[f32; 3]>, &mut Vec<[f32; 2]>),
+    (tangents, colors, indices): (&mut Vec<[f32; 4]>, &mut Vec<[f32; 4]>, &mut Vec<u32>),
+) {
+    let treads = graph.part_treads(part);
+    if treads.is_empty() || graph.owner_has_shape_features(mechanic_core::SolidOwner::Part(part)) {
+        return;
+    }
+    append_part_treads(
+        *graph.part(part).expect("part exists"),
+        treads,
+        placement,
+        material,
+        first_index,
+        positions,
+        normals,
+        uvs,
+        tangents,
+        colors,
+        indices,
+    );
 }
 
 pub(crate) fn rigid_render_groups(graph: &ConstructionGraph) -> Vec<usize> {
@@ -1194,23 +1263,15 @@ pub(crate) fn append_textured_part(
         // pipe direction to wrap a texture around.
         PartSpec::Cuboid(_) | PartSpec::PipeJunction(_) => {
             let frame_rotation = rotation * spec.pose().rotation.quaternion().conjugate();
-            let frame_translation = translation - frame_rotation * spec.pose().translation();
-            for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
-                let local_position =
-                    frame_rotation.conjugate() * (Vec3::from_array(position) - frame_translation);
-                let local_normal = frame_rotation.conjugate() * Vec3::from_array(normal);
-                let absolute = local_normal.abs();
-                let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
-                    ([local_position.x, local_position.z], Vec3::X)
-                } else if absolute.x >= absolute.z {
-                    ([local_position.z, local_position.y], Vec3::Z)
-                } else {
-                    ([local_position.x, local_position.y], Vec3::X)
-                };
-                uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
-                let tangent = frame_rotation * tangent;
-                tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
-            }
+            append_block_texture_coordinates(
+                frame_rotation,
+                translation - frame_rotation * spec.pose().translation(),
+                first,
+                positions,
+                normals,
+                uvs,
+                tangents,
+            );
         }
         PartSpec::Cylinder(_) => {
             append_cylinder_texture_coordinates(
@@ -1250,6 +1311,35 @@ pub(crate) fn append_textured_part(
     }
     for uv in &mut uvs[first..] {
         uv[0] += texture_offset.u / MATERIAL_TEXTURE_METERS_PER_REPEAT;
+    }
+}
+
+/// Block projection in the construction grid's own frame, so a texture runs
+/// on across neighbouring blocks.
+pub(crate) fn append_block_texture_coordinates(
+    frame_rotation: Quat,
+    frame_translation: Vec3,
+    first: usize,
+    positions: &[[f32; 3]],
+    normals: &[[f32; 3]],
+    uvs: &mut Vec<[f32; 2]>,
+    tangents: &mut Vec<[f32; 4]>,
+) {
+    for (&position, &normal) in positions[first..].iter().zip(&normals[first..]) {
+        let local_position =
+            frame_rotation.conjugate() * (Vec3::from_array(position) - frame_translation);
+        let local_normal = frame_rotation.conjugate() * Vec3::from_array(normal);
+        let absolute = local_normal.abs();
+        let (uv, tangent) = if absolute.y >= absolute.x && absolute.y >= absolute.z {
+            ([local_position.x, local_position.z], Vec3::X)
+        } else if absolute.x >= absolute.z {
+            ([local_position.z, local_position.y], Vec3::Z)
+        } else {
+            ([local_position.x, local_position.y], Vec3::X)
+        };
+        uvs.push(uv.map(|value| value / MATERIAL_TEXTURE_METERS_PER_REPEAT));
+        let tangent = frame_rotation * tangent;
+        tangents.push([tangent.x, tangent.y, tangent.z, 1.0]);
     }
 }
 

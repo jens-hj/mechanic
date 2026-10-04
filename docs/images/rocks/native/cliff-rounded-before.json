@@ -1,0 +1,18 @@
+{
+  "detail_scale": 1.0,
+  "eye": [
+    -488.75,
+    129.0,
+    -1355.14
+  ],
+  "frame_sample_phase": "local terrain ready",
+  "seed": 7,
+  "settle_seconds": 35.607789625,
+  "streaming_backlog": 19046,
+  "target": [
+    -500.75,
+    124.0,
+    -1345.14
+  ],
+  "triangles": 1398523
+}

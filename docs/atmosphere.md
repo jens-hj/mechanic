@@ -16,30 +16,34 @@ set of shadow draws. Displaced or incompatible views fall back to their own maps
 This preserves the transparent tool overlay without a second sky or LUT pass.
 Only explicitly marked static environments permanently retire their generator.
 
-World format 7 stores `time_of_day_seconds` as finite seconds in `[0, 86400)`.
-New worlds start at 09:00. One hour of active outdoor play advances one solar day,
-independent of simulation speed. Pause menus, selection/loading, garage visits,
-and debug frame freeze stop advancement. Autosave and exit saves include time-only
-changes. There is no offline advancement or old-format migration.
+World format 8 stores the elapsed `day` and `time_of_day_seconds`, finite seconds
+in `[0, 86400)`. New worlds start at 09:00 on day zero. One hour of active outdoor
+play advances one solar day, independent of simulation speed. Pause menus,
+selection/loading, garage visits, and debug frame freeze stop advancement.
+Autosave and exit saves include time-only changes. There is no offline
+advancement or old-format migration.
 
-Sunrise is 06:00, sunset is 18:00, and maximum solar elevation is 60 degrees.
-One tilted celestial rotation drives the sun, shadows, night cubemap, and opposite
-full moon. Sunlight starts at Bevy's raw solar illuminance and is attenuated by
-the atmosphere. The moon light has no solar disk; the generated cubemap supplies
-a textured lunar disk and deterministic stars. Night exposure and fill are
-intentionally brighter than a photometrically realistic moonlit scene.
+The sun, moons, and stars follow the world's [star system](celestial.md). Each
+star is a directional light with a sun disk sized to its apparent diameter,
+coloured by its temperature, and attenuated by the atmosphere. The brightest
+light above the horizon, star or moonlight, is the only one that casts shadows.
+The moons are drawn as lit spheres; one moonlight carries the light of every
+risen moon. The generated cubemap supplies the background stars and the galaxy,
+fixed in the system's ecliptic frame and turned by the skybox. Night exposure
+and fill are intentionally brighter than a photometrically realistic night, and
+adapt upwards for bright moons and distant companion stars.
 
 The atmosphere's local tangent plane follows the camera horizontally and uses
 the floating origin's vertical offset. Rebasing therefore preserves the camera's
 height above the atmosphere's surface without bending the finite world around a
 planet. This is for ground-level travel, not orbital views.
 
-With developer tools enabled, `[` / `]` adjust time by one hour and `F8` toggles
-cycle advancement. These actions use the existing focus and modal-input gates.
-The overlay shows time and running/paused/fixture status. The cycle pause is
+With developer tools enabled, `[` / `]` adjust time by one hour, `Shift+[` /
+`Shift+]` by one day, and `F8` toggles cycle advancement. These actions use the existing focus and modal-input gates.
+The overlay shows the day, time, running/paused/fixture status, the star system, and each moon's phase. The cycle pause is
 session-only; time adjustments persist. `Shift+F8` freezes the entire debug frame.
 
-`MECHANIC_SKY_TIME=6`, `12`, `18`, or `0` fixes the rendered time without changing
+`MECHANIC_SKY_TIME=6`, `12`, `18`, or `0` (hours since day zero) fixes the rendered time without changing
 the saved clock. Fixed-time launches default to a temporary world store, so player
 saves are isolated. An automated capture can explicitly supply a disposable store
 with `MECHANIC_AUTO_WORLD_STORE`.

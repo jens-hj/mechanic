@@ -110,6 +110,7 @@ pub(crate) fn handle_shortcuts(
     mut hammer: ResMut<HammerInteraction>,
     mut material: ResMut<SelectedMaterial>,
     mut chroma_brush: ResMut<ChromaBrush>,
+    mut tread_brush: ResMut<crate::tread::TreadBrush>,
     mut bearing_settings: ResMut<BearingToolSettings>,
     mut cylinder_settings: ResMut<CylinderToolSettings>,
     window: Single<&Window, With<PrimaryWindow>>,
@@ -134,7 +135,18 @@ pub(crate) fn handle_shortcuts(
         }
     }
     if actions.just_pressed(GameAction::ClearPipette) {
-        if selection.active_editor_tool() == Some(Tool::Chroma) {
+        if selection.active_editor_tool() == Some(Tool::Tread) {
+            match crate::editor::treads::sample(&graph.0, &state) {
+                Some(tread) => {
+                    *tread_brush = tread_brush.sampled(tread);
+                    state.feedback = Some(format!(
+                        "Sampled {} tread",
+                        crate::tread::tread_label(tread)
+                    ));
+                }
+                None => state.feedback = Some("Point at a treaded surface to sample it".to_owned()),
+            }
+        } else if selection.active_editor_tool() == Some(Tool::Chroma) {
             if let Some(appearance) = suspension_editor::sample_appearance(&graph.0, &state) {
                 chroma_brush.appearance = appearance;
                 state.feedback = Some("Sampled suspension appearance".into());
