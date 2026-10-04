@@ -7,7 +7,7 @@ output is bit-identical to the baseline.
 ## Conditions
 
 - Apple M1 Pro, 10 cores, macOS. `profiling` profile (release with debug info).
-- Baseline: `31b134b` (`main`). Candidate: this branch, version 0.5.2.
+- Baseline: `31b134b` (`main`). Candidate: this branch on the same base.
 - Runs were interleaved one at a time, baseline first. Load average before
   each run was 2.9–3.9. Cycles and instructions come from `/usr/bin/time -l`.
 - Profiles: macOS `sample` at 1 ms.
