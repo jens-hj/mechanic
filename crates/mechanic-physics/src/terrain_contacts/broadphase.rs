@@ -72,6 +72,7 @@ impl Tree {
         }
     }
     /// Traverse overlapping nodes of both trees; ties split the first tree.
+    /// Returns how many node pairs were tested.
     pub(super) fn pairs(
         &self,
         bounds: &[Bounds],
@@ -81,28 +82,36 @@ impl Tree {
         output: &mut Vec<[usize; 2]>,
     ) -> usize {
         stack.clear();
-        if !self.nodes.is_empty() && !other.nodes.is_empty() {
+        if self.nodes.is_empty() || other.nodes.is_empty() {
+            return 0;
+        }
+        // Each pair is tested as it is reached, so only overlapping pairs are
+        // stacked; they are still visited depth first, left before right.
+        let mut tests = 1;
+        if overlaps(bounds[0], other_bounds[0]) {
             stack.push([0, 0]);
         }
-        let mut tests = 0;
         while let Some([a, b]) = stack.pop() {
-            tests += 1;
-            if !overlaps(bounds[a], other_bounds[b]) {
-                continue;
-            }
             let first = &self.nodes[a];
             let second = &other.nodes[b];
-            match (first.children(), second.children()) {
+            let children = match (first.children(), second.children()) {
                 (None, None) => {
                     output.push([first.item.min(second.item), first.item.max(second.item)]);
+                    continue;
                 }
                 (Some([left, right]), _)
                     if second.children().is_none() || first.item >= second.item =>
                 {
-                    stack.extend([[right, b], [left, b]]);
+                    [[right, b], [left, b]]
                 }
-                (_, Some([left, right])) => stack.extend([[a, right], [a, left]]),
+                (_, Some([left, right])) => [[a, right], [a, left]],
                 _ => unreachable!("a non-leaf first node was handled above"),
+            };
+            for [a, b] in children {
+                tests += 1;
+                if overlaps(bounds[a], other_bounds[b]) {
+                    stack.push([a, b]);
+                }
             }
         }
         tests
@@ -139,6 +148,46 @@ impl Tree {
 mod tests {
     use super::*;
 
+    // Every node pair popped by a traversal that stacks children untested, and
+    // the leaf pairs it reports in order: the count and order `Tree::pairs`
+    // keeps while testing children before stacking them.
+    fn traverse(
+        first: &Tree,
+        bounds: &[Bounds],
+        second: &Tree,
+        other_bounds: &[Bounds],
+    ) -> (usize, Vec<[usize; 2]>) {
+        let mut stack = Vec::new();
+        if !first.nodes.is_empty() && !second.nodes.is_empty() {
+            stack.push([0, 0]);
+        }
+        let (mut tests, mut output) = (0, Vec::new());
+        while let Some([a, b]) = stack.pop() {
+            tests += 1;
+            if !overlaps(bounds[a], other_bounds[b]) {
+                continue;
+            }
+            let (one, two) = (&first.nodes[a], &second.nodes[b]);
+            match (one.children(), two.children()) {
+                (None, None) => output.push([one.item.min(two.item), one.item.max(two.item)]),
+                (Some([left, right]), _) if two.children().is_none() || one.item >= two.item => {
+                    stack.extend([[right, b], [left, b]]);
+                }
+                (_, Some([left, right])) => stack.extend([[a, right], [a, left]]),
+                _ => unreachable!(),
+            }
+        }
+        (tests, output)
+    }
+
+    fn visited(first: &Tree, a: &[Bounds], second: &Tree, b: &[Bounds]) -> usize {
+        traverse(first, a, second, b).0
+    }
+
+    fn stack_order(first: &Tree, a: &[Bounds], second: &Tree, b: &[Bounds]) -> Vec<[usize; 2]> {
+        traverse(first, a, second, b).1
+    }
+
     #[test]
     fn paired_trees_match_exhaustive_overlaps_for_large_uneven_chassis() {
         let bounds = (0..2049)
@@ -163,7 +212,14 @@ mod tests {
                 first.refit(&swept, &mut a);
                 second.refit(&swept, &mut b);
                 pairs.clear();
-                first.pairs(&a, &second, &b, &mut stack, &mut pairs);
+                let tests = first.pairs(&a, &second, &b, &mut stack, &mut pairs);
+                assert_eq!(
+                    (tests, &pairs),
+                    (
+                        visited(&first, &a, &second, &b),
+                        &stack_order(&first, &a, &second, &b)
+                    )
+                );
                 pairs.sort_unstable();
                 let expected = (0..1024)
                     .flat_map(|a| {

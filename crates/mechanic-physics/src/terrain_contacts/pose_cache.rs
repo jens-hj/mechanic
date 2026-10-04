@@ -4,8 +4,10 @@
 use super::TerrainContactScene;
 use super::geometry::{Collider, MachineCollisionGeometry};
 use crate::{BodyPose, PhysicsError};
-use bevy_math::DVec3;
-use mechanic_core::{ContactCylinder, ContactPolytope, ConvexSeparation};
+use bevy_math::{DQuat, DVec3};
+use mechanic_core::{
+    ContactCylinder, ContactPolytope, ConvexSeparation, SeparatingFace, SeparationOutcome,
+};
 use mechanic_world::TerrainNodeId;
 use rustc_hash::FxHashMap;
 use std::sync::OnceLock;
@@ -13,7 +15,281 @@ use std::sync::OnceLock;
 // Cached construction geometry is relative to the simulation origin, independent
 // of terrain publications. Exact body-pose changes invalidate only that body's
 // shapes. Topology owns the cache and cannot be changed in place.
-pub(super) type CachedSeparations = FxHashMap<[usize; 2], (f64, Option<ConvexSeparation>)>;
+
+/// Collider-pair separations at the current poses, and for each pair the face
+/// that last proved it separated beyond the query's reach.
+///
+/// Nearly every candidate pair of a construction is separated, and from one
+/// substep to the next the same face keeps proving it. A witness remembers
+/// that face, the gap it measured and how far the two bodies had drifted
+/// apart by then. While the drift since stays well inside the gap's excess
+/// over the reach, the face provably still separates and the pair is skipped;
+/// otherwise the face is tested first. Either way the answer is exactly the
+/// one the full separating-axis test gives, so witnesses outlive pose
+/// changes; separations do not.
+#[derive(Default)]
+pub(super) struct PairCache {
+    // Bumped whenever any pose changes. A record from an older epoch keeps
+    // only its witness.
+    epoch: u64,
+    records: Records,
+    // Separations within reach at the current poses; few pairs have one.
+    within: FxHashMap<[usize; 2], ConvexSeparation>,
+    drifts: Drifts,
+}
+
+// Pair records by the pair's first collider, sorted by the second. Queries
+// visit pairs in ascending order, so a cursor finds most records without
+// searching.
+#[derive(Default)]
+struct Records {
+    lists: Vec<Vec<PairRecord>>,
+    cursor: [usize; 2],
+}
+
+#[derive(Default)]
+struct Drifts {
+    epoch: u64,
+    // Never dropped: a witness measures from the path length it saw, and there
+    // are at most as many as body pairs.
+    paths: FxHashMap<[usize; 2], Drift>,
+    // Drifts already brought up to this epoch, direct mapped by body pair.
+    recent: Vec<Option<([usize; 2], [f64; 2])>>,
+}
+
+const RECENT_DRIFTS: usize = 256;
+
+#[derive(Clone, Copy)]
+struct PairRecord {
+    second: usize,
+    // The epoch `reach` and `within` describe, and the last one the pair was
+    // looked up in.
+    epoch: u64,
+    // The largest reach this pair was found separated beyond, if any.
+    reach: f64,
+    // Whether `PairCache::within` holds this pair's separation.
+    within: bool,
+    witness: Option<Witness>,
+}
+
+#[derive(Clone, Copy)]
+struct Witness {
+    face: SeparatingFace,
+    // The face's gap, and the drift of the opposing body in the face body's
+    // frame, when the gap was measured.
+    gap: f64,
+    drift: [f64; 2],
+}
+
+// One body's pose in another's frame, and the path length both have covered
+// since the pair was first seen: translation in metres, and twice the chord
+// between unit quaternions, which bounds how far a point at unit distance
+// from the body origin can turn.
+#[derive(Clone, Copy)]
+struct Drift {
+    epoch: u64,
+    rotation: DQuat,
+    translation: DVec3,
+    travelled: [f64; 2],
+}
+
+// Pairs not looked up for this many pose changes are dropped, checked as often.
+const PAIR_RECORD_EPOCHS: u64 = 128;
+
+impl PairCache {
+    fn advance(&mut self) {
+        self.epoch += 1;
+        self.within.clear();
+        self.drifts.epoch = self.epoch;
+        self.drifts.recent.fill(None);
+        if self.epoch.is_multiple_of(PAIR_RECORD_EPOCHS) {
+            let oldest = self.epoch - PAIR_RECORD_EPOCHS;
+            for records in &mut self.records.lists {
+                records.retain(|record| record.epoch >= oldest);
+            }
+        }
+    }
+}
+
+impl Records {
+    // The pair's record, its reach and separation reset in a new epoch.
+    fn get(&mut self, [first, second]: [usize; 2], epoch: u64) -> &mut PairRecord {
+        if self.lists.len() <= first {
+            self.lists.resize_with(first + 1, Vec::new);
+        }
+        let list = &mut self.lists[first];
+        let [last_first, after] = self.cursor;
+        let mut index = if last_first == first
+            && after <= list.len()
+            && (after == 0 || list[after - 1].second < second)
+        {
+            after
+        } else {
+            list.partition_point(|record| record.second < second)
+        };
+        while list.get(index).is_some_and(|record| record.second < second) {
+            index += 1;
+        }
+        if list.get(index).is_none_or(|record| record.second != second) {
+            list.insert(
+                index,
+                PairRecord {
+                    second,
+                    epoch,
+                    reach: f64::NEG_INFINITY,
+                    within: false,
+                    witness: None,
+                },
+            );
+        }
+        self.cursor = [first, index + 1];
+        let record = &mut list[index];
+        if record.epoch != epoch {
+            record.epoch = epoch;
+            record.reach = f64::NEG_INFINITY;
+            record.within = false;
+        }
+        record
+    }
+}
+
+impl Drifts {
+    // Path length covered by `moving`'s frame as seen from `face`'s, up to now.
+    fn drift(&mut self, [face, moving]: [usize; 2], poses: &[BodyPose]) -> [f64; 2] {
+        let key = [face, moving];
+        let slot = (face.wrapping_mul(31) ^ moving) % RECENT_DRIFTS;
+        if self.recent.is_empty() {
+            self.recent.resize(RECENT_DRIFTS, None);
+        }
+        if let Some((_, travelled)) = self.recent[slot].filter(|(k, _)| *k == key) {
+            return travelled;
+        }
+        let inverse = poses[face].rotation.normalize().conjugate();
+        let rotation = inverse * poses[moving].rotation.normalize();
+        let translation = inverse * (poses[moving].position - poses[face].position);
+        let epoch = self.epoch;
+        let drift = self.paths.entry(key).or_insert(Drift {
+            epoch,
+            rotation,
+            translation,
+            travelled: [0.0; 2],
+        });
+        if drift.epoch != epoch {
+            let turn = (rotation - drift.rotation)
+                .length()
+                .min((rotation + drift.rotation).length());
+            drift.travelled[0] += (translation - drift.translation).length();
+            drift.travelled[1] += 2.0 * turn;
+            drift.rotation = rotation;
+            drift.translation = translation;
+            drift.epoch = epoch;
+        }
+        let travelled = drift.travelled;
+        self.recent[slot] = Some((key, travelled));
+        travelled
+    }
+}
+
+impl PairCache {
+    /// The pair's separation when it lies within `reach`, as
+    /// [`ContactPolytope::convex_separation_within`] reports it at these poses
+    /// for the colliders `shapes` transforms. `bodies` and `radii` are each
+    /// collider's body and conservative radius about that body's origin.
+    ///
+    /// # Errors
+    /// Whatever `shapes` returns, and invalid geometry.
+    pub(super) fn separation<'a>(
+        &mut self,
+        pair: [usize; 2],
+        [first_body, second_body]: [usize; 2],
+        radii: [f64; 2],
+        poses: &[BodyPose],
+        reach: f64,
+        shapes: impl Fn() -> Result<[&'a ContactPolytope; 2], PhysicsError>,
+    ) -> Result<Option<ConvexSeparation>, PhysicsError> {
+        let Self {
+            epoch,
+            records,
+            within,
+            drifts,
+        } = self;
+        let record = records.get(pair, *epoch);
+        if record.within {
+            return Ok(within.get(&pair).copied());
+        }
+        if record.reach >= reach {
+            return Ok(None);
+        }
+        // The face's body, the opposing body, and the opposing collider's radius.
+        let frame = |face: SeparatingFace| match face {
+            SeparatingFace::Own(_) => ([first_body, second_body], radii[1]),
+            SeparatingFace::Other(_) => ([second_body, first_body], radii[0]),
+        };
+        let mut witness = record.witness;
+        let mut beyond = false;
+        if let Some(found) = witness {
+            let (bodies, radius) = frame(found.face);
+            let drift = drifts.drift(bodies, poses);
+            // Every opposing vertex has moved at most this far relative to the
+            // face, so the face's gap has shrunk by at most this much.
+            let moved = (drift[0] - found.drift[0]) + (drift[1] - found.drift[1]) * radius;
+            // Far more than the rounding of either measured gap.
+            let rounding = 1e-9
+                + 1e-10
+                    * (poses[first_body].position.length()
+                        + poses[second_body].position.length()
+                        + radii[0]
+                        + radii[1]);
+            // Transforming a shape would refuse a rotation this far from unit.
+            let transformable = [first_body, second_body]
+                .iter()
+                .all(|&body| (poses[body].rotation.length_squared() - 1.0).abs() < 1e-6);
+            if transformable && found.gap - moved - rounding > reach {
+                beyond = true;
+            } else {
+                let [first, second] = shapes()?;
+                let gap = first.face_gap(second, found.face);
+                if gap > reach {
+                    witness = Some(Witness {
+                        gap,
+                        drift,
+                        ..found
+                    });
+                    beyond = true;
+                }
+            }
+        }
+        let separation = if beyond {
+            None
+        } else {
+            let [first, second] = shapes()?;
+            match first
+                .convex_separation_witnessed(second, reach)
+                .map_err(|_| PhysicsError::InvalidCollision)?
+            {
+                SeparationOutcome::Within(separation) => Some(separation),
+                SeparationOutcome::Beyond(face) => {
+                    let (bodies, _) = frame(face);
+                    witness = Some(Witness {
+                        face,
+                        gap: first.face_gap(second, face),
+                        drift: drifts.drift(bodies, poses),
+                    });
+                    None
+                }
+            }
+        };
+        record.witness = witness;
+        match separation {
+            Some(separation) => {
+                within.insert(pair, separation);
+                record.within = true;
+            }
+            None => record.reach = reach,
+        }
+        Ok(separation)
+    }
+}
 
 #[derive(Default)]
 pub(super) struct PoseCache {
@@ -21,7 +297,7 @@ pub(super) struct PoseCache {
     pub(super) bounds: Vec<[DVec3; 2]>,
     pub(super) shapes: Vec<OnceLock<ContactPolytope>>,
     pub(super) rounds: Vec<Option<ContactCylinder>>,
-    pub(super) separations: std::cell::RefCell<CachedSeparations>,
+    pub(super) pairs: std::cell::RefCell<PairCache>,
     // Each collider's last transformed shape, kept after a pose change so its
     // buffers, already the right size, take the next transform.
     pub(super) stale_shapes: std::cell::RefCell<Vec<Option<ContactPolytope>>>,
@@ -52,7 +328,7 @@ impl PoseCache {
             .get_mut()
             .resize_with(machine.colliders.len(), || None);
         if self.poses != poses {
-            self.separations.get_mut().clear();
+            self.pairs.get_mut().advance();
         }
         for (body, &pose) in poses.iter().enumerate() {
             if self.poses.get(body) == Some(&pose) {
@@ -125,6 +401,7 @@ pub(super) struct PairScratch {
     pub(super) candidates: Vec<usize>,
     pub(super) node_pair_tests: usize,
     pub(super) pairs: Vec<[usize; 2]>,
+    pub(super) unsorted: Vec<[usize; 2]>,
     pub(super) pair_stack: Vec<[usize; 2]>,
 }
 

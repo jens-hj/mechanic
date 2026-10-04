@@ -182,6 +182,40 @@ impl DynamicsFactor {
         }
     }
 
+    /// The component of an articulated factor whose velocities are exactly
+    /// `range`, which [`Self::solve_lanes`] can solve.
+    pub(crate) fn lane_component(&self, range: &std::ops::Range<usize>) -> Option<usize> {
+        match &self.storage {
+            FactorStorage::Articulated(factor) => factor.component_of(range),
+            FactorStorage::Dense(_) => None,
+        }
+    }
+
+    /// The velocities of a component [`Self::lane_component`] named.
+    pub(crate) fn lane_velocities(&self, component: usize) -> std::ops::Range<usize> {
+        match &self.storage {
+            FactorStorage::Articulated(factor) => factor.component_velocities(component),
+            FactorStorage::Dense(_) => 0..0,
+        }
+    }
+
+    /// Solves many right-hand sides confined to one component of an
+    /// articulated factor, each exactly as [`Self::solve_ranges`] solves a
+    /// lone one. `values` holds each lane's slice of the component's
+    /// velocities in turn; `finite` receives whether each lane's solve would
+    /// have succeeded.
+    pub(crate) fn solve_lanes(
+        &self,
+        component: usize,
+        values: &mut [f64],
+        finite: &mut Vec<bool>,
+        scratch: &mut articulated::LaneScratch,
+    ) {
+        if let FactorStorage::Articulated(factor) = &self.storage {
+            factor.solve_lanes(component, values, finite, scratch);
+        }
+    }
+
     /// Applies inverse dynamics in-place to a generalized impulse.
     ///
     /// # Errors

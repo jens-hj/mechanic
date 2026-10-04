@@ -1,4 +1,5 @@
 mod fits;
+mod pair_witnesses;
 mod path_bounds;
 mod treads;
 

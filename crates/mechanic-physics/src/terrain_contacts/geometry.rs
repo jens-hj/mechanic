@@ -562,6 +562,7 @@ impl MachineCollisionGeometry {
             refitted,
             stack,
             pairs,
+            unsorted,
             pair_stack,
             node_pair_tests,
             ..
@@ -627,8 +628,45 @@ impl MachineCollisionGeometry {
                 }
             }
         }
-        // The same order as sorting the pairs themselves, compared as one key.
-        pairs.sort_unstable_by_key(|&[first, second]| (first as u128) << 64 | second as u128);
+        sort_pairs(pairs, unsorted, self.colliders.len());
         CandidatePairs { scratch }
+    }
+}
+
+// Sorts distinct collider pairs below `rows` into ascending order, as sorting
+// the pairs themselves would: a least-significant-digit radix sort over the
+// second row, then the first, each a stable counting pass.
+pub(super) fn sort_pairs(pairs: &mut Vec<[usize; 2]>, scratch: &mut Vec<[usize; 2]>, rows: usize) {
+    const DIGIT: u32 = 11;
+    if pairs.len() < 512 {
+        pairs.sort_unstable();
+        return;
+    }
+    let bits = usize::BITS - (rows.max(2) - 1).leading_zeros();
+    let mut counts = [0_usize; 1 << DIGIT];
+    for half in [1, 0] {
+        let mut shift = 0;
+        while shift < bits {
+            let width = DIGIT.min(bits - shift);
+            let mask = (1 << width) - 1;
+            let digit = |pair: &[usize; 2]| (pair[half] >> shift) & mask;
+            counts[..=mask].fill(0);
+            for pair in pairs.iter() {
+                counts[digit(pair)] += 1;
+            }
+            let mut start = 0;
+            for count in &mut counts[..=mask] {
+                (*count, start) = (start, start + *count);
+            }
+            scratch.clear();
+            scratch.resize(pairs.len(), [0; 2]);
+            for pair in pairs.iter() {
+                let slot = &mut counts[digit(pair)];
+                scratch[*slot] = *pair;
+                *slot += 1;
+            }
+            std::mem::swap(pairs, scratch);
+            shift += width;
+        }
     }
 }

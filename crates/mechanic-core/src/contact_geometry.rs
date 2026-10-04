@@ -10,7 +10,7 @@ mod envelope;
 mod pair;
 mod quadratic;
 pub use cylinder::{ContactCylinder, CylinderAnchor, TriangleSupport};
-pub use pair::{ConvexFeature, ConvexSeparation};
+pub use pair::{ConvexFeature, ConvexSeparation, SeparatingFace, SeparationOutcome};
 pub use quadratic::ContactVelocity;
 
 /// Invalid compiled geometry or query input. A failed query is not an empty hit.

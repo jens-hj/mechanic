@@ -51,8 +51,8 @@ pub use compile::{
 };
 pub use contact_geometry::{
     ContactCylinder, ContactGeometryError, ContactPolytope, ContactVelocity, ConvexFeature,
-    ConvexSeparation, CylinderAnchor, RigidContactSweep, SweepOutcome, TriangleClipScratch,
-    TriangleContactPoint, TriangleSupport,
+    ConvexSeparation, CylinderAnchor, RigidContactSweep, SeparatingFace, SeparationOutcome,
+    SweepOutcome, TriangleClipScratch, TriangleContactPoint, TriangleSupport,
 };
 pub use controller_input::ControllerKeys;
 pub use coupler::CouplerSpec;

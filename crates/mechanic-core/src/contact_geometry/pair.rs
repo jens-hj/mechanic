@@ -41,6 +41,24 @@ pub struct ConvexSeparation {
     pub feature: ConvexFeature,
 }
 
+/// A face plane that separates two solids, by plane row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeparatingFace {
+    /// Face plane of the receiving polytope.
+    Own(usize),
+    /// Face plane of the other polytope.
+    Other(usize),
+}
+
+/// Result of a margin-limited separating-axis test.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SeparationOutcome {
+    /// The solids are no further apart than the margin along every face axis.
+    Within(ConvexSeparation),
+    /// This face separates the solids by more than the margin.
+    Beyond(SeparatingFace),
+}
+
 impl ContactPolytope {
     /// Separating-axis test against another convex solid over both face sets
     /// and every edge-pair cross product. Face axes are preferred unless an edge
@@ -67,6 +85,25 @@ impl ContactPolytope {
         other: &Self,
         margin: f64,
     ) -> Result<Option<ConvexSeparation>, ContactGeometryError> {
+        self.convex_separation_witnessed(other, margin)
+            .map(|outcome| match outcome {
+                SeparationOutcome::Within(separation) => Some(separation),
+                SeparationOutcome::Beyond(_) => None,
+            })
+    }
+
+    /// [`Self::convex_separation_within`], also naming the face that proved a
+    /// separation beyond the margin. Testing that face first at a later pose
+    /// with [`Self::face_gap`] returns the same answer whenever it
+    /// still separates, at the cost of one face instead of all of them.
+    ///
+    /// # Errors
+    /// Rejects invalid geometry or a NaN margin.
+    pub fn convex_separation_witnessed(
+        &self,
+        other: &Self,
+        margin: f64,
+    ) -> Result<SeparationOutcome, ContactGeometryError> {
         if margin.is_nan() {
             return Err(ContactGeometryError);
         }
@@ -86,7 +123,7 @@ impl ContactPolytope {
             };
             let gap = project(&other.vertices, normal)[0] - project(&self.vertices, normal)[1];
             if gap > margin {
-                return Ok(None);
+                return Ok(SeparationOutcome::Beyond(SeparatingFace::Own(row)));
             }
             consider_face(-normal, gap, ConvexFeature::OwnFace(row));
         }
@@ -96,7 +133,7 @@ impl ContactPolytope {
             };
             let gap = project(&self.vertices, normal)[0] - project(&other.vertices, normal)[1];
             if gap > margin {
-                return Ok(None);
+                return Ok(SeparationOutcome::Beyond(SeparatingFace::Other(row)));
             }
             consider_face(normal, gap, ConvexFeature::OtherFace(row));
         }
@@ -127,10 +164,10 @@ impl ContactPolytope {
             return Err(ContactGeometryError);
         }
         let Some((axis, separation, own_row, other_row)) = edge else {
-            return Ok(Some(face));
+            return Ok(SeparationOutcome::Within(face));
         };
         if separation <= face.separation + EDGE_AXIS_BIAS {
-            return Ok(Some(face));
+            return Ok(SeparationOutcome::Within(face));
         }
         // Keep the edge axis and its tighter gap for distance bounds; only the
         // manifold comes from the aligned face.
@@ -146,7 +183,7 @@ impl ContactPolytope {
                 .filter(|(alignment, _)| *alignment >= EDGE_FACE_ALIGNMENT)
                 .max_by(|a, b| a.0.total_cmp(&b.0));
         if let Some((_, feature)) = aligned {
-            return Ok(Some(ConvexSeparation {
+            return Ok(SeparationOutcome::Within(ConvexSeparation {
                 axis,
                 separation,
                 feature,
@@ -157,13 +194,31 @@ impl ContactPolytope {
         let (Some(own), Some(theirs)) = (own, theirs) else {
             // A vertex, not an edge, realizes this axis on one side: the face
             // feature still describes that contact without inventing an edge.
-            return Ok(Some(face));
+            return Ok(SeparationOutcome::Within(face));
         };
-        Ok(Some(ConvexSeparation {
+        Ok(SeparationOutcome::Within(ConvexSeparation {
             axis,
             separation,
             feature: ConvexFeature::Edges(closest_segment_points(own, theirs)),
         }))
+    }
+
+    /// One face's separating-axis gap, by exactly the arithmetic
+    /// [`Self::convex_separation_witnessed`] applies to that face: a gap above
+    /// its margin means that query reports no separation. A face without a
+    /// usable normal has no gap.
+    pub fn face_gap(&self, other: &Self, face: SeparatingFace) -> f64 {
+        let (receiving, opposing, row) = match face {
+            SeparatingFace::Own(row) => (self, other, row),
+            SeparatingFace::Other(row) => (other, self, row),
+        };
+        receiving
+            .planes
+            .get(row)
+            .and_then(|plane| plane.truncate().try_normalize())
+            .map_or(f64::NEG_INFINITY, |normal| {
+                project(&opposing.vertices, normal)[0] - project(&receiving.vertices, normal)[1]
+            })
     }
 
     /// Fan triangles of one face polygon, wound so each triangle's normal is the
@@ -448,5 +503,32 @@ mod tests {
                 .to_bits(),
             0.0_f64.to_bits()
         );
+    }
+
+    #[test]
+    fn a_named_separating_face_answers_exactly_as_the_full_test() {
+        let fixed = cube();
+        for step in 0..400 {
+            let t = f64::from(step) * 0.05;
+            let moving = cube()
+                .transformed(
+                    DVec3::new(1.1 * t.cos(), 0.6 * (1.3 * t).sin(), 0.9 * (0.7 * t).sin()),
+                    DQuat::from_euler(bevy_math::EulerRot::XYZ, t, 0.4 * t, -0.3 * t),
+                )
+                .unwrap();
+            for margin in [0.0, 0.02, 0.3] {
+                let within = moving.convex_separation_within(&fixed, margin).unwrap();
+                match moving.convex_separation_witnessed(&fixed, margin).unwrap() {
+                    SeparationOutcome::Within(separation) => {
+                        assert_eq!(within, Some(separation));
+                    }
+                    SeparationOutcome::Beyond(face) => {
+                        assert_eq!(within, None);
+                        assert!(moving.face_gap(&fixed, face) > margin);
+                    }
+                }
+            }
+        }
+        assert!(fixed.face_gap(&fixed, SeparatingFace::Own(6)).is_infinite());
     }
 }

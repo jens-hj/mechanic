@@ -1,6 +1,7 @@
 //! Coupled impulse response through factor solves, with bounded contact storage.
 
 mod articulated;
+pub(crate) use articulated::LaneScratch;
 mod constraints;
 mod factor;
 mod newton;

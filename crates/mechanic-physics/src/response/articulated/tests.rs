@@ -319,3 +319,92 @@ fn tree_com_velocities_match_dense_jacobians_in_rotated_mixed_mechanisms() {
         assert!(motion.linear.length() < 1e-12);
     }
 }
+
+// Right-hand sides that load one body's ancestors, many bodies, nothing, or
+// carry a non-finite value, as contact rows can.
+fn lane_sides(width: usize) -> Vec<Vec<f64>> {
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        #[expect(clippy::cast_precision_loss, reason = "test values")]
+        let unit = (seed >> 11) as f64 / (1_u64 << 53) as f64;
+        2.0 * unit - 1.0
+    };
+    let mut sides = vec![vec![0.0; width], vec![-0.0; width]];
+    for column in 0..width {
+        let mut unit = vec![0.0; width];
+        unit[column] = 1.0;
+        sides.push(unit);
+    }
+    for _ in 0..40 {
+        let sparse = next() > 0.0;
+        sides.push(
+            (0..width)
+                .map(|_| {
+                    let value = next();
+                    if sparse && value < 0.3 {
+                        0.0
+                    } else {
+                        value * 1e3
+                    }
+                })
+                .collect(),
+        );
+    }
+    let mut poisoned = vec![0.5; width];
+    poisoned[width / 2] = f64::NAN;
+    sides.push(poisoned);
+    sides
+}
+
+#[test]
+fn lanes_solve_each_side_bit_for_bit_as_a_lone_solve() {
+    let mut creations = vec![car()];
+    for anchored in [false, true] {
+        for reversed in [false, true] {
+            creations.push(chain(4, anchored, reversed));
+        }
+    }
+    for creation in &creations {
+        let mut roots = MachineDynamics::initial_roots(creation);
+        for root in &mut roots {
+            root.position += DVec3::new(4.0, -7.0, 2.0);
+            root.rotation = DQuat::from_euler(bevy_math::EulerRot::XYZ, 0.37, -0.24, 0.83);
+        }
+        let coordinates = vec![0.29; creation.dynamics.coordinate_bearings.len()];
+        let size = creation.dynamics.elimination_parent.len();
+        let factor =
+            DynamicsFactor::articulated(creation, &roots, &coordinates, &vec![0.73; size]).unwrap();
+        let mut scratch = LaneScratch::default();
+        let mut finite = Vec::new();
+        for component in &creation.dynamics.components {
+            let range = component.velocities.clone();
+            let Some(lane_component) = factor.lane_component(&range) else {
+                assert!(range.is_empty());
+                continue;
+            };
+            let sides = lane_sides(range.len());
+            let mut values = vec![0.0; range.len() * sides.len()];
+            for (lane, side) in sides.iter().enumerate() {
+                for (velocity, &value) in side.iter().enumerate() {
+                    values[velocity * sides.len() + lane] = value;
+                }
+            }
+            factor.solve_lanes(lane_component, &mut values, &mut finite, &mut scratch);
+            for (lane, side) in sides.iter().enumerate() {
+                let mut alone = vec![0.0; size];
+                alone[range.clone()].copy_from_slice(side);
+                let solved = factor.solve_ranges(&mut alone, std::slice::from_ref(&range));
+                assert_eq!(finite[lane], solved.is_ok(), "lane {lane}");
+                if solved.is_ok() {
+                    for (velocity, expected) in alone[range.clone()].iter().enumerate() {
+                        let actual = values[velocity * sides.len() + lane];
+                        assert_eq!(actual.to_bits(), expected.to_bits(), "lane {lane}");
+                    }
+                }
+            }
+        }
+    }
+}
