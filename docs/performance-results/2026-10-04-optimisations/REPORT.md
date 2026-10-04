@@ -7,9 +7,9 @@ output is bit-identical to the baseline.
 ## Conditions
 
 - Apple M1 Pro, 10 cores, macOS. `profiling` profile (release with debug info).
-- Baseline: `31b134b` (`main`). Candidate: this branch on the same base.
-- Runs were interleaved one at a time, baseline first. Load average before
-  each run was 2.9–3.9. Cycles and instructions come from `/usr/bin/time -l`.
+- Profiled and first measured against `31b134b`; final figures below are on
+  `e839c67`. Runs were interleaved one at a time, baseline first. Cycles and
+  instructions come from `/usr/bin/time -l`.
 - Profiles: macOS `sample` at 1 ms.
 
 ## The two offenders
@@ -58,43 +58,53 @@ result. Row storage was rewritten as plain loops in the same summation order.
 
 ## Results
 
+Remeasured on the integrated code: baseline `e839c67` (`main` after #71 and
+#73), candidate this branch. Both binaries were built through the managed
+Cargo storage launcher (baseline sha256 `65656031…`, candidate `27a9f250…`).
+Load average before runs was 3.0–5.1; a busier machine than the first
+measurement on `31b134b`, which gave the same picture within a few percent.
+
 | Workload | Measure | Baseline | Optimised | Change |
 |---|---|---|---|---|
-| Builder replay, 1 copy, 600 ticks (3 + 3 runs) | CPU cycles | 50.07–50.10 G | 35.66–35.73 G | −28.8 % |
-| | instructions | 205.5–205.7 G | 150.6–150.7 G | −26.7 % |
-| | wall time | 15.27–15.29 s | 10.76–10.78 s | −29.5 % |
-| | tick mean / median | 25.0 / 25.9–26.2 ms | 17.5 / 18.8–19.2 ms | −30 % / −27 % |
-| | tick p95 | 36.4–37.0 ms | 23.8–24.1 ms | −35 % |
-| | collision query, mean | 13.9 ms | 8.2 ms | −41 % |
-| | contact rows, mean | 8.1 ms | 6.3 ms | −22 % |
-| | peak resident memory | 123–131 MB | 112–113 MB | −10 % |
-| Builder replay, full 3,698 ticks | CPU cycles | 306.8 G | 206.0 G | −32.8 % |
-| | tick mean / p95 | 25.7 / 37.2 ms | 17.2 / 23.9 ms | −33 % / −36 % |
-| Builder, 10 copies, 60 + 240 ticks | CPU cycles | 172.2 G | 135.2 G | −21.5 % |
-| | tick mean / p95 | 175.2 / 373.3 ms | 135.8 / 269.7 ms | −22 % / −28 % |
-| Builder, 10 copies connected, 60 + 240 ticks | CPU cycles | 345.0 G | 265.4 G | −23.1 % |
-| | tick mean / p95 | 354.2 / 394.9 ms | 271.4 / 295.5 ms | −23 % / −25 % |
-| | contact rows, mean | 204.5 ms | 147.1 ms | −28 % |
-| `block-pile` | CPU cycles | 3.03 G | 2.79 G | −8.0 % |
-| `fast-motion` | CPU cycles | 16.35 G | 15.33 G | −6.3 % |
-| `four-bar` | CPU cycles | 227 M | 207 M | −8.7 % |
-| `car-drive`, `gear-train`, `wheel-roll`, `car-drop`, `fast-impacts` | CPU cycles | 112–316 M | 110–308 M | −2 % to −4.5 % |
-| `reference-fixtures` (exact reference solver) | CPU cycles | 24.47 G | 24.50 G | unchanged |
+| Builder replay, 1 copy, 600 ticks (3 + 3 runs) | CPU cycles | 50.2–52.1 G | 36.4–36.7 G | −28.6 % |
+| | instructions | 205.5–205.6 G | 150.7–150.8 G | −26.7 % |
+| | wall time | 15.3–16.2 s | 11.2–11.3 s | −28.6 % |
+| | tick mean / median | 25.0–26.5 / 26.2–27.1 ms | 18.1–18.3 / 19.1–19.8 ms | −29 % / −27 % |
+| | tick p95 | 36.9–39.7 ms | 24.9–25.4 ms | −34 % |
+| | collision query, mean | 13.8–14.9 ms | 8.5–8.6 ms | −40 % |
+| | contact rows, mean | 8.2–8.3 ms | 6.4–6.5 ms | −22 % |
+| | peak resident memory | 124–130 MB | 111–115 MB | −11 % |
+| Builder replay, full 3,698 ticks | CPU cycles | 317.8 G | 210.0 G | −33.9 % |
+| | tick mean / p95 | 27.1 / 39.2 ms | 17.8 / 24.9 ms | −34 % / −37 % |
+| Builder, 10 copies, 60 + 240 ticks | CPU cycles | 172.8 G | 141.0 G | −18.4 % |
+| | tick mean / p95 | 178.4 / 386.1 ms | 146.5 / 289.4 ms | −18 % / −25 % |
+| Builder, 10 copies connected, 60 + 240 ticks | CPU cycles | 350.0 G | 271.0 G | −22.6 % |
+| | tick mean / p95 | 368.3 / 423.9 ms | 279.7 / 308.6 ms | −24 % / −27 % |
+| | contact rows, mean | 211.3 ms | 150.6 ms | −29 % |
+| `block-pile` | CPU cycles | 3.04 G | 2.80 G | −8.0 % |
+| `four-bar` | CPU cycles | 226 M | 207 M | −8.3 % |
+| `fast-motion` | CPU cycles | 16.27 G | 15.34 G | −5.7 % |
+| `car-drop`, `car-drive`, `gear-train`, `wheel-roll`, `fast-impacts` | CPU cycles | 114–312 M | 111–307 M | −1.8 % to −5.0 % |
+| `reference-fixtures` (exact reference solver) | CPU cycles | 24.53 G | 24.52 G | unchanged |
 
 Constraint passes and the continuous sweep were not touched and measure the
 same, as expected. GPU physics, world generation and the app's rendering
-paths share no changed code.
+paths share no changed code. The small scenes are single runs that last well
+under a second, so their few percent are close to noise.
 
-The small scenes are single runs that last well under a second, so their
-few percent are close to noise.
+Memory: peak resident memory falls on one copy and on ten copies (765 → 726
+MB, connected 804 → 717 MB). The pair records persist across poses (about 80
+bytes per candidate pair ever seen, pruned after 128 pose changes without a
+visit); peak memory falls regardless.
 
 ## Correctness
 
 Each change preserves the arithmetic exactly; nothing was tuned or relaxed.
 
 - **Every reported field is identical.** All non-timing JSONL fields match
-  the baseline on every tick: the full 3,698-tick builder replay, 1 copy,
-  10 copies, 10 connected copies, and all ten other `cpu-physics` scenes.
+  the baseline on every tick, on both `31b134b` and the integrated `e839c67`:
+  the full 3,698-tick builder replay, 1 copy, 10 copies, 10 connected copies,
+  and the other `cpu-physics` scenes.
   The fields include the state hash, contact counts, penetration, degraded
   ticks, pair candidates and hierarchy node tests.
 - **The state hash alone was not enough.** In the first 600 builder ticks no
