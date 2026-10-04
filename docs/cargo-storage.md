@@ -179,12 +179,23 @@ The managed admission floor protects only launcher invocations. Existing direct
 Cargo commands, legacy shared targets and measurement exceptions can still grow
 without that guard; the recurrence reported below demonstrates this adoption gap.
 Until an explicitly coordinated integration/adoption step, workers must apply the
-same 20 GiB pre-build floor manually to the filesystem holding their actual target.
-Below it, defer new substantial builds and report current free bytes, target path
+same 20 GiB (21,474,836,480 bytes) pre-build floor manually to the filesystem holding their actual target.
+Below it, stop new build admissions and report current free bytes, target path
 and known users. Do not kill existing work or independently delete shared caches
 to make the next build fit. A low-space instruction is a recovery trigger, not
 cleanup authorization. No worker needs to wait merely because future rollout is
 queued when current capacity and normal task coordination permit its work.
+
+The exact superseded instruction was in the main checkout's `AGENTS.md`, Disk
+Space section (line 54 when inspected): "Below 20 GB free, first delete
+`target/*/incremental`, then stale profiles with `cargo clean --profile <name>`,
+and only then all of `target/`." `CLAUDE.md` is a symlink to `AGENTS.md`, so this
+one source also supplied that guidance there. This branch replaces that deletion
+sequence with admission refusal, reporting/preview and coordinated exclusive
+cleanup; the old wording must not survive integration. The current 20 GiB floor
+is explicit binary units, rather than interpreting the old ambiguous GB wording.
+This documentation change does not itself modify other checkouts while integration
+refresh remains queued.
 
 For any proposed legacy cleanup, assign one cleaner and coordinate an explicit
 no-new-users window for the exact target. Obtain release from all builders,
@@ -373,15 +384,18 @@ ENOSPC/no-space/disk-full message, and it cannot verify an original failed path.
 The original incident's path and cause are therefore recorded as unknown; no
 further request for that unavailable evidence is pending.
 
-New incident reported on 2026-10-04: mechanic-9 reported removing
-`/Users/jens/repos/mechanic/target/debug/incremental`, estimating 52 GB, after free
-space reached a reported 9.5 GB and citing the older repository disk guidance.
-The deletion time, exclusive ownership/locking and physical free-space delta are
-not confirmed. This is a separate worker report, not part of the audited 13.59 GiB
-recovery and not a measured total to add to it. No cleanup was performed by this
-task in response. The report shows that unmanaged legacy growth and independent
-cleanup remain operational gaps despite the launcher admission checks and limited
-pilot; broad adoption is not complete.
+New incident on 2026-10-04, attributed by mechanic-9: approximately 05:00–05:05
+CEST it ran `rm -rf /Users/jens/repos/mechanic/target/debug/incremental`, reporting
+`du` of 52G and `df` changing from 9.5 GiB before to 48 GiB immediately afterward.
+The roughly 38 GiB observed shared-volume change is worker-reported, not audited
+unique physical recovery, and is not summed with this task's 13.59 GiB audit.
+The only preceding user check was an empty `pgrep cargo|rustc`: there were no
+exclusive locks, `lsof` check or worker coordination. At 05:14 the worker reported
+no compiler/open debug files, 49,921,428 KiB free and recreated xtask incremental
+data. These later observations do not prove the earlier deletion was safe or
+that no corruption occurred. It cited the old below-20-GB instruction quoted above.
+No cleanup was performed by this task in response. The report demonstrates the
+unmanaged growth and independent-cleanup adoption gap, not completed rollout.
 
 The expanded lifecycle suite defines 16 tests, including hardlink accounting and a
 Windows-specific descendant-handle test. Lightweight Linux/macOS CI passed before
