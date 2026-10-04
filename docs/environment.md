@@ -84,7 +84,7 @@ a disposable world, waits for streamed terrain and textures, saves native screen
 and exits. Use `MECHANIC_SKY_TIME` to fix lighting. Normal launches are unaffected.
 Optional `size` (`[width, height]`, default `[1280, 720]`) sets the screenshot and
 rendered size. Optional `timing_frames` records that many unpaced frames per view
-once its terrain is ready, and adds the medians of frame time and of the world's
+once its terrain is ready and nothing is left to stream, and adds the medians of frame time and of the world's
 GPU, opaque and transparent pass timings to the view's JSON.
 Optional `timeout_minutes` (default 10) bounds how long each view may take.
 

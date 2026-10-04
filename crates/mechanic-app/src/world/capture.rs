@@ -289,10 +289,13 @@ fn capture(
         return;
     }
     // A view high above the ground has no local terrain; it is ready once
-    // everything it streams is drawn.
+    // everything it streams is drawn. A timed view always waits for that, so
+    // what is timed is the whole scene.
+    let drained = diagnostics.streaming_backlog == 0;
     let ready = !list.is_open()
         && runtime.terrain_textures.is_none()
-        && (diagnostics.local_total_nodes > 0 || diagnostics.streaming_backlog == 0)
+        && (diagnostics.local_total_nodes > 0 || drained)
+        && (capture.config.timing_frames == 0 || drained)
         && diagnostics.local_resolved_nodes == diagnostics.local_total_nodes
         && capture.started.elapsed() >= Duration::from_secs(30);
     capture.settled = if ready { capture.settled + 1 } else { 0 };
