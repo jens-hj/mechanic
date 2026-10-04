@@ -173,6 +173,44 @@ own inventory and retention policy.
 
 ## Rollout and evidence
 
+### Transition policy while legacy targets remain
+
+The managed admission floor protects only launcher invocations. Existing direct
+Cargo commands, legacy shared targets and measurement exceptions can still grow
+without that guard; the recurrence reported below demonstrates this adoption gap.
+Until an explicitly coordinated integration/adoption step, workers must apply the
+same 20 GiB pre-build floor manually to the filesystem holding their actual target.
+Below it, defer new substantial builds and report current free bytes, target path
+and known users. Do not kill existing work or independently delete shared caches
+to make the next build fit. A low-space instruction is a recovery trigger, not
+cleanup authorization. No worker needs to wait merely because future rollout is
+queued when current capacity and normal task coordination permit its work.
+
+For any proposed legacy cleanup, assign one cleaner and coordinate an explicit
+no-new-users window for the exact target. Obtain release from all builders,
+tests, apps and captures, including retained binaries and orphaned descendants;
+one worker's compilation finishing does not release everyone else's outputs.
+Inventory exact generated candidates and retained hardlinks, then acquire all
+actual Cargo locks used by that toolchain/profile exclusively. Recheck live users
+while holding those locks, and keep both locks and the no-new-users coordination
+in effect through deletion. Cargo locks alone do not protect later execution by
+unmanaged consumers. If any user, lock or ownership is uncertain, do not delete.
+Never remove lock files, source, reports, captures or other retained user outputs.
+Record before/after filesystem free bytes separately from logical/allocated file
+estimates and concurrent activity. Release the cleanup window explicitly afterward.
+
+After integration is activated, replace legacy low-space deletion advice in the
+consumer instructions with this policy, then have an idle worker adopt the common
+store for its next genuinely needed command. Include the entire build/execution
+pipeline, measure growth, and keep initial adoption to one invocation at a time.
+Do not create another cold target merely to demonstrate adoption. Retire legacy
+caches only through the independent review above; do not migrate live storage.
+As of 2026-10-04, integration refresh remains queued behind PR #71 and draft PR
+publication approval is pending. These are prepared instructions, not evidence
+that existing workers already use the managed workflow.
+
+### Validation status
+
 Latest validation (revision `f91f3ff`, 2026-10-03): the full lightweight lifecycle
 matrix passed on Windows, macOS and Ubuntu, including admission and checkout
 invalidation. The formerly proposed worker world-suite pilot was dropped after
@@ -334,6 +372,16 @@ and is not added to the audited physical recovery. Its retained logs contain no
 ENOSPC/no-space/disk-full message, and it cannot verify an original failed path.
 The original incident's path and cause are therefore recorded as unknown; no
 further request for that unavailable evidence is pending.
+
+New incident reported on 2026-10-04: mechanic-9 reported removing
+`/Users/jens/repos/mechanic/target/debug/incremental`, estimating 52 GB, after free
+space reached a reported 9.5 GB and citing the older repository disk guidance.
+The deletion time, exclusive ownership/locking and physical free-space delta are
+not confirmed. This is a separate worker report, not part of the audited 13.59 GiB
+recovery and not a measured total to add to it. No cleanup was performed by this
+task in response. The report shows that unmanaged legacy growth and independent
+cleanup remain operational gaps despite the launcher admission checks and limited
+pilot; broad adoption is not complete.
 
 The expanded lifecycle suite defines 16 tests, including hardlink accounting and a
 Windows-specific descendant-handle test. Lightweight Linux/macOS CI passed before

@@ -67,6 +67,15 @@ Old storage-format roots are refused, never migrated while workers use them.
 
 - Existing builds finish on their existing targets before adoption. Never clean
   another worker's target or change global Cargo configuration.
+- Below 20 GiB free on the build-storage filesystem, defer new substantial
+  builds and report the path, free bytes and known users for coordinated recovery.
+  The floor is not permission to delete incremental caches or run `cargo clean`
+  on a shared target. Do not independently clean shared legacy storage, even
+  after your own Cargo command exits: tests, apps and captures may still use it.
+  A designated cleaner must coordinate a no-new-users window, verify all users
+  have released the exact candidate, and hold its actual Cargo locks throughout
+  inspection and deletion. Missing PIDs or an idle-looking snapshot alone are
+  insufficient. If ownership or locking is uncertain, report it and do not clean.
 - Use `cargo-storage.py status` for owners and sizes, and `cargo-storage.py clean`
   for a preview. Add `--apply` only after reviewing it. Cleanup takes the same
   exclusive locks as builds and skips active or quarantined slots.
