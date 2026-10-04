@@ -210,6 +210,32 @@ Never remove lock files, source, reports, captures or other retained user output
 Record before/after filesystem free bytes separately from logical/allocated file
 estimates and concurrent activity. Release the cleanup window explicitly afterward.
 
+Use this fail-closed procedure for a concrete cleanup request:
+
+1. Name the exact storage root, filesystem and generated candidate paths. Record
+   current free bytes and preview reclaimable artifacts; do not start new builds
+   below the 20 GiB floor. Do not issue a deletion command at this step.
+2. For managed slots, run `cargo-storage.py --root <root> status` and
+   `cargo-storage.py --root <root> clean` for a preview. Review its exact scope
+   before `clean --apply`; the tool rechecks exclusive ownership and skips busy
+   or quarantined slots. Never bypass those skips by deleting metadata or locks.
+3. For legacy targets, designate one cleaner and obtain explicit agreement that
+   no new users will start. Collect release from every builder and dependent
+   test/app/capture consumer. If any consumer is unknown or has not released,
+   stop the cleanup request and report that blocker.
+4. Identify and acquire the actual toolchain/profile Cargo locks exclusively,
+   without unlinking them. Recheck open users under those locks. A lock failure,
+   process-inspection failure or unexplained user means no deletion; an empty
+   `pgrep` alone is insufficient. Keep the coordination window and locks held.
+5. Revalidate the inventoried paths as generated, target-owned artifacts and
+   exclude source, captures, reports, retained outputs and lock files. Reject
+   uncertain or symlinked paths. Use the documented scoped cleanup mechanism
+   only if its exact deletion scope and lifetime remain covered by these checks;
+   otherwise stop rather than substitute an uncoordinated `rm` or whole-target clean.
+6. Record the actual action and before/after free bytes, separately from `du`
+   estimates and concurrent-volume changes. Release locks and explicitly close
+   the no-new-users window. A later idle snapshot cannot certify earlier safety.
+
 After integration is activated, replace legacy low-space deletion advice in the
 consumer instructions with this policy, then have an idle worker adopt the common
 store for its next genuinely needed command. Include the entire build/execution
@@ -389,8 +415,11 @@ CEST it ran `rm -rf /Users/jens/repos/mechanic/target/debug/incremental`, report
 `du` of 52G and `df` changing from 9.5 GiB before to 48 GiB immediately afterward.
 The roughly 38 GiB observed shared-volume change is worker-reported, not audited
 unique physical recovery, and is not summed with this task's 13.59 GiB audit.
-The only preceding user check was an empty `pgrep cargo|rustc`: there were no
-exclusive locks, `lsof` check or worker coordination. At 05:14 the worker reported
+The only preceding user check was an empty `pgrep cargo|rustc`. The worker
+explicitly confirmed there were no exclusive locks, `lsof` check or worker
+coordination; their absence is confirmed by its report, not an inference from
+missing evidence. The exact timing and physical-byte recovery remain unverified.
+At 05:14 the worker reported
 no compiler/open debug files, 49,921,428 KiB free and recreated xtask incremental
 data. These later observations do not prove the earlier deletion was safe or
 that no corruption occurred. It cited the old below-20-GB instruction quoted above.
