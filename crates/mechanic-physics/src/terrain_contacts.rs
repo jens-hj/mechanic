@@ -714,6 +714,7 @@ impl TerrainContactScene {
                 ]
             })
             .collect::<Vec<_>>();
+        let mut pairs = shapes.pairs.borrow_mut();
         for &[first, second] in machine.candidate_pairs_groups(&bounds, groups).iter() {
             if groups.is_some_and(|g| {
                 !g.includes(
@@ -732,22 +733,25 @@ impl TerrainContactScene {
                     PAIR_ACTIVATION_DISTANCE
                 }
             };
-            let first_shape = shapes.shape(machine, poses, first)?;
-            let second_shape = shapes.shape(machine, poses, second)?;
-            let mut separations = shapes.separations.borrow_mut();
-            let cached = separations.get(&[first, second]).copied();
-            let separation = match cached {
-                Some((_, Some(separation))) => Some(separation),
-                Some((margin, None)) if margin >= reach => None,
-                _ => {
-                    let separation = first_shape
-                        .convex_separation_within(second_shape, reach)
-                        .map_err(|_| PhysicsError::InvalidCollision)?;
-                    separations.insert([first, second], (reach, separation));
-                    separation
-                }
-            };
-            drop(separations);
+            let separation = pairs.separation(
+                [first, second],
+                [
+                    machine.colliders[first].body,
+                    machine.colliders[second].body,
+                ],
+                [
+                    machine.colliders[first].radius,
+                    machine.colliders[second].radius,
+                ],
+                poses,
+                reach,
+                || {
+                    Ok([
+                        shapes.shape(machine, poses, first)?,
+                        shapes.shape(machine, poses, second)?,
+                    ])
+                },
+            )?;
             let Some(separation) = separation else {
                 continue;
             };
@@ -755,11 +759,15 @@ impl TerrainContactScene {
                 continue;
             }
             let (receiving, opposing, points) = pair_points(
-                [first_shape, second_shape],
+                [
+                    shapes.shape(machine, poses, first)?,
+                    shapes.shape(machine, poses, second)?,
+                ],
                 [first, second],
                 separation,
                 kind,
                 reach,
+                &mut shapes.clipping.borrow_mut(),
             )?;
             let collider = &machine.colliders[receiving];
             let pose = poses[collider.body];
@@ -809,6 +817,7 @@ impl TerrainContactScene {
                 group.append_unique(manifold, &mut result.contacts);
             }
         }
+        drop(pairs);
         result.contacts.sort_by_key(|contact| contact.feature);
         Ok(result)
     }

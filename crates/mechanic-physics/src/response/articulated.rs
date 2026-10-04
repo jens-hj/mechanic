@@ -33,6 +33,31 @@ struct Body {
     joint: Joint,
 }
 
+/// Retained per-lane wrenches for [`ArticulatedFactor::solve_lanes`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LaneScratch {
+    // Per body of the component, each wrench axis as one value per lane.
+    wrenches: Vec<f64>,
+    local: Vec<usize>,
+}
+
+impl LaneScratch {
+    pub(crate) fn retained_bytes(&self) -> usize {
+        (self.wrenches.capacity() + self.local.capacity()) * size_of::<f64>()
+    }
+}
+
+// Six consecutive runs of `lanes` values, one per spatial axis.
+fn axes(block: &[f64], lanes: usize) -> [&[f64]; 6] {
+    let mut runs = block.chunks_exact(lanes.max(1));
+    std::array::from_fn(|_| runs.next().unwrap_or_default())
+}
+
+fn axes_mut(block: &mut [f64], lanes: usize) -> [&mut [f64]; 6] {
+    let mut runs = block.chunks_exact_mut(lanes.max(1));
+    std::array::from_fn(|_| runs.next().unwrap_or_default())
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct ArticulatedFactor {
     bodies: Vec<Body>,
@@ -352,6 +377,171 @@ impl ArticulatedFactor {
             return Err(PhysicsError::InvalidDynamics);
         }
         Ok(())
+    }
+
+    /// The component whose velocities are exactly `range`.
+    pub(super) fn component_of(&self, range: &std::ops::Range<usize>) -> Option<usize> {
+        self.components
+            .iter()
+            .position(|component| !range.is_empty() && component.velocities == *range)
+    }
+
+    /// The velocity range of a component.
+    pub(super) fn component_velocities(&self, component: usize) -> std::ops::Range<usize> {
+        self.components[component].velocities.clone()
+    }
+
+    /// [`Self::solve_ranges`] for many right-hand sides confined to one
+    /// component, one lane each. `values` holds the component's velocities in
+    /// turn, each as one value per lane. Each lane sees exactly the arithmetic
+    /// a lone solve gives it; the lanes only share the walk over the bodies,
+    /// so their independent chains of dependent operations overlap, and one
+    /// operation can serve several lanes at once. `finite` receives, per lane,
+    /// whether both its input and its result are finite, which a lone solve
+    /// requires.
+    pub(super) fn solve_lanes(
+        &self,
+        component: usize,
+        values: &mut [f64],
+        finite: &mut Vec<bool>,
+        scratch: &mut LaneScratch,
+    ) {
+        let component = &self.components[component];
+        let width = component.velocities.len();
+        let offset = component.velocities.start;
+        let lanes = values.len().checked_div(width).unwrap_or(0);
+        finite.clear();
+        finite.resize(lanes, true);
+        let check = |values: &[f64], finite: &mut [bool]| {
+            for velocity in values.chunks_exact(lanes.max(1)).take(width) {
+                for (finite, value) in finite.iter_mut().zip(velocity) {
+                    *finite &= value.is_finite();
+                }
+            }
+        };
+        check(values, finite);
+        let bodies = &self.preorder[component.bodies.clone()];
+        // Each body's place in this component, for its lanes' wrenches.
+        scratch.local.resize(self.bodies.len(), usize::MAX);
+        for (local, &body) in bodies.iter().enumerate() {
+            scratch.local[body] = local;
+        }
+        scratch.wrenches.clear();
+        scratch.wrenches.resize(bodies.len() * 6 * lanes, 0.0);
+        self.lanes_up(bodies, offset, values, lanes, scratch);
+        self.lanes_down(bodies, offset, values, lanes, scratch);
+        check(values, finite);
+    }
+
+    // Backward sweep of `solve_lanes`: each body's own load and its children's
+    // pass up to its parent.
+    fn lanes_up(
+        &self,
+        bodies: &[usize],
+        offset: usize,
+        values: &mut [f64],
+        lanes: usize,
+        scratch: &mut LaneScratch,
+    ) {
+        let block = 6 * lanes;
+        let wrenches = &mut scratch.wrenches;
+        for (local, &index) in bodies.iter().enumerate().rev() {
+            let body = &self.bodies[index];
+            let Joint::Scalar {
+                motion,
+                projected,
+                pivot,
+            } = body.joint
+            else {
+                continue;
+            };
+            // A parent precedes its children, so its wrenches lie before these.
+            let Some(parent) = body.parent.map(|parent| scratch.local[parent]) else {
+                continue;
+            };
+            let (before, from) = wrenches.split_at_mut(local * block);
+            let own = axes(&from[..block], lanes);
+            let mut up = axes_mut(&mut before[parent * block..(parent + 1) * block], lanes);
+            let row = body.row - offset;
+            let value = &mut values[row * lanes..(row + 1) * lanes];
+            for lane in 0..lanes {
+                let own: Vector = std::array::from_fn(|axis| own[axis][lane]);
+                let rhs = value[lane] - dot(motion, own);
+                value[lane] = rhs;
+                // A body with no load of its own and none from below passes
+                // nothing up: a contact row only loads its body's ancestors.
+                let idle = rhs == 0.0 && own.iter().all(|value| *value == 0.0);
+                let mut wrench = own;
+                for axis in 0..6 {
+                    wrench[axis] += projected[axis] * (rhs / pivot);
+                }
+                let shifted = shift_force(wrench, body.arm);
+                for (entry, value) in up.iter_mut().map(|up| &mut up[lane]).zip(shifted) {
+                    *entry = if idle { *entry } else { *entry + value };
+                }
+            }
+        }
+    }
+
+    // Forward sweep of `solve_lanes`: velocities follow from the root down.
+    fn lanes_down(
+        &self,
+        bodies: &[usize],
+        offset: usize,
+        values: &mut [f64],
+        lanes: usize,
+        scratch: &mut LaneScratch,
+    ) {
+        let block = 6 * lanes;
+        let wrenches = &mut scratch.wrenches;
+        for (local, &index) in bodies.iter().enumerate() {
+            let body = &self.bodies[index];
+            let (before, from) = wrenches.split_at_mut(local * block);
+            let mut own = axes_mut(&mut from[..block], lanes);
+            match body.joint {
+                Joint::Fixed => {
+                    for axis in &mut own {
+                        axis.fill(0.0);
+                    }
+                }
+                Joint::Floating { lower } => {
+                    let row = body.row - offset;
+                    let rows = &mut values[row * lanes..(row + 6) * lanes];
+                    let rows = axes_mut(rows, lanes);
+                    for lane in 0..lanes {
+                        let mut rhs: Vector =
+                            std::array::from_fn(|axis| rows[axis][lane] - own[axis][lane]);
+                        solve_root(&lower, &mut rhs);
+                        for axis in 0..6 {
+                            rows[axis][lane] = rhs[axis];
+                            own[axis][lane] = rhs[axis];
+                        }
+                    }
+                }
+                Joint::Scalar {
+                    motion,
+                    projected,
+                    pivot,
+                } => {
+                    let parent = scratch.local[body.parent.expect("joint has parent")];
+                    let inherited = axes(&before[parent * block..(parent + 1) * block], lanes);
+                    let row = body.row - offset;
+                    let value = &mut values[row * lanes..(row + 1) * lanes];
+                    for lane in 0..lanes {
+                        let mut inherited = shift_motion(
+                            std::array::from_fn(|axis| inherited[axis][lane]),
+                            body.arm,
+                        );
+                        let speed = (value[lane] - dot(projected, inherited)) / pivot;
+                        value[lane] = speed;
+                        for axis in 0..6 {
+                            inherited[axis] += motion[axis] * speed;
+                            own[axis][lane] = inherited[axis];
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn solve_active<'a>(

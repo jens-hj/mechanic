@@ -261,14 +261,9 @@ impl Contact {
         .then_some(self.source.feature)
     }
 
-    fn rows(
-        &self,
-        model: &MachineKinematics,
-        factor: &DynamicsFactor,
-        output: &mut PointRows,
-        jacobians: &mut [Vec<f64>; 5],
-        responses: &mut [Vec<f64>; 5],
-    ) -> Result<(), PhysicsError> {
+    // The point the rows act at, its bodies' velocity ranges, the row count
+    // and directions, and the separation, at the model's poses.
+    fn row_inputs(&self, model: &MachineKinematics) -> RowInputs {
         let world = |body: usize, local: DVec3| {
             let pose = model.poses[body];
             pose.position + pose.rotation * local
@@ -295,14 +290,32 @@ impl Contact {
         let mut point = self.source;
         point.body_point = anchor;
         point.terrain_point = other;
-        let ranges = model.contact_ranges(&point);
-        let count = if self.rolling.is_some() { 5 } else { 3 };
+        RowInputs {
+            ranges: model.contact_ranges(&point),
+            point,
+            count: if self.rolling.is_some() { 5 } else { 3 },
+            directions: [normal, tangent_u, tangent_v, tangent_u, tangent_v],
+            separation,
+        }
+    }
+
+    fn rows(
+        &self,
+        model: &MachineKinematics,
+        factor: &DynamicsFactor,
+        output: &mut PointRows,
+        jacobians: &mut [Vec<f64>; 5],
+        responses: &mut [Vec<f64>; 5],
+    ) -> Result<(), PhysicsError> {
+        let RowInputs {
+            point,
+            ranges,
+            count,
+            directions,
+            separation,
+        } = self.row_inputs(model);
         output.rows.resize_with(count, Row::default);
-        for (row, direction) in [normal, tangent_u, tangent_v, tangent_u, tangent_v]
-            .into_iter()
-            .enumerate()
-            .take(count)
-        {
+        for (row, direction) in directions.into_iter().enumerate().take(count) {
             let jacobian = &mut jacobians[row];
             model.contact_row(&point, direction, row >= 3, jacobian)?;
             let response = &mut responses[row];
@@ -325,6 +338,196 @@ impl Contact {
         output.moved = 0.0;
         Ok(())
     }
+}
+
+// What a contact's rows are built from at one substep's starting pose.
+struct RowInputs {
+    point: TerrainContact,
+    ranges: [std::ops::Range<usize>; 2],
+    count: usize,
+    directions: [DVec3; 5],
+    separation: f64,
+}
+
+// Contacts whose rows are solved together. Enough rows to keep the lanes'
+// chains overlapping, few enough for their Jacobians to stay in cache.
+const ROW_CHUNK: usize = 64;
+
+/// Retained buffers for building a chunk of contacts' rows together.
+#[derive(Default)]
+pub(super) struct ChunkScratch {
+    inputs: Vec<RowInputs>,
+    grounds: Vec<Ground>,
+    // Five full-length Jacobians and responses per contact of the chunk.
+    jacobians: Vec<f64>,
+    responses: Vec<f64>,
+    // Per lane: component and the contact row slot it solves.
+    lanes: Vec<(usize, usize)>,
+    values: Vec<f64>,
+    finite: Vec<bool>,
+    failed: Vec<bool>,
+    solver: crate::response::LaneScratch,
+}
+
+impl ChunkScratch {
+    fn retained_bytes(&self) -> usize {
+        self.inputs.capacity() * size_of::<RowInputs>()
+            + self.grounds.capacity() * size_of::<Ground>()
+            + (self.jacobians.capacity() + self.responses.capacity() + self.values.capacity())
+                * size_of::<f64>()
+            + self.lanes.capacity() * size_of::<(usize, usize)>()
+            + self.finite.capacity()
+            + self.failed.capacity()
+            + self.solver.retained_bytes()
+    }
+}
+
+// Settles every contact's ground and builds its rows, exactly as settling and
+// calling `Contact::rows` one contact at a time does, failures included: the
+// contacts after the first one that fails are left unsettled. An articulated
+// factor solves a chunk of contacts' rows together, one lane per row and
+// component.
+#[expect(
+    clippy::too_many_lines,
+    reason = "settling, Jacobians, lane solves and stored rows of one chunk in order"
+)]
+fn contact_rows(
+    contacts: &mut [Contact],
+    points: &mut [PointRows],
+    (model, factor): (&MachineKinematics, &DynamicsFactor),
+    dt: f64,
+    (jacobians, responses): (&mut [Vec<f64>; 5], &mut [Vec<f64>; 5]),
+    chunk: &mut ChunkScratch,
+) -> Result<(), PhysicsError> {
+    let size = jacobians[0].len();
+    let batched = contacts.iter().all(|contact| {
+        let ranges = model.contact_ranges(&contact.source);
+        ranges
+            .iter()
+            .all(|range| range.is_empty() || factor.lane_component(range).is_some())
+    });
+    if !batched {
+        for (contact, point) in contacts.iter_mut().zip(points.iter_mut()) {
+            contact.settle_ground(dt);
+            contact.rows(model, factor, point, jacobians, responses)?;
+        }
+        return Ok(());
+    }
+    let mut start = 0;
+    while start < contacts.len() {
+        let end = (start + ROW_CHUNK).min(contacts.len());
+        chunk.inputs.clear();
+        chunk.grounds.clear();
+        chunk.jacobians.resize((end - start) * 5 * size, 0.0);
+        chunk.responses.resize((end - start) * 5 * size, 0.0);
+        let mut row_error = None;
+        for (index, contact) in contacts[start..end].iter_mut().enumerate() {
+            chunk.grounds.push(contact.ground);
+            contact.settle_ground(dt);
+            let inputs = contact.row_inputs(model);
+            for row in 0..inputs.count {
+                let slot = (index * 5 + row) * size;
+                let jacobian = &mut chunk.jacobians[slot..slot + size];
+                if let Err(error) =
+                    model.contact_row(&inputs.point, inputs.directions[row], row >= 3, jacobian)
+                {
+                    points[start + index]
+                        .rows
+                        .resize_with(inputs.count, Row::default);
+                    row_error = Some(error);
+                    break;
+                }
+                let response = &mut chunk.responses[slot..slot + size];
+                for range in &inputs.ranges {
+                    response[range.clone()].copy_from_slice(&jacobian[range.clone()]);
+                }
+            }
+            if row_error.is_some() {
+                break;
+            }
+            chunk.inputs.push(inputs);
+        }
+        // One lane per row and component its contact touches.
+        chunk.lanes.clear();
+        for (index, inputs) in chunk.inputs.iter().enumerate() {
+            for row in 0..inputs.count {
+                for range in inputs.ranges.iter().filter(|range| !range.is_empty()) {
+                    if let Some(component) = factor.lane_component(range) {
+                        chunk.lanes.push((component, index * 5 + row));
+                    }
+                }
+            }
+        }
+        chunk.lanes.sort_by_key(|&(component, _)| component);
+        chunk.failed.clear();
+        chunk.failed.resize(chunk.inputs.len(), false);
+        let mut first = 0;
+        while first < chunk.lanes.len() {
+            let component = chunk.lanes[first].0;
+            let last = first
+                + chunk.lanes[first..]
+                    .iter()
+                    .take_while(|&&(other, _)| other == component)
+                    .count();
+            let velocities = factor.lane_velocities(component);
+            let lanes = &chunk.lanes[first..last];
+            // Each velocity in turn, one value per lane.
+            chunk.values.clear();
+            chunk.values.resize(velocities.len() * lanes.len(), 0.0);
+            for (lane, &(_, slot)) in lanes.iter().enumerate() {
+                let response = &chunk.responses[slot * size + velocities.start..];
+                for (velocity, &value) in response[..velocities.len()].iter().enumerate() {
+                    chunk.values[velocity * lanes.len() + lane] = value;
+                }
+            }
+            factor.solve_lanes(
+                component,
+                &mut chunk.values,
+                &mut chunk.finite,
+                &mut chunk.solver,
+            );
+            for (lane, (&(_, slot), finite)) in lanes.iter().zip(&chunk.finite).enumerate() {
+                let response = &mut chunk.responses[slot * size + velocities.start..];
+                for (velocity, value) in response[..velocities.len()].iter_mut().enumerate() {
+                    *value = chunk.values[velocity * lanes.len() + lane];
+                }
+                if !finite {
+                    chunk.failed[slot / 5] = true;
+                }
+            }
+            first = last;
+        }
+        for (index, inputs) in chunk.inputs.iter().enumerate() {
+            let contact = start + index;
+            if chunk.failed[index] {
+                // Contacts after the failing one were never reached.
+                for (later, ground) in contacts[contact + 1..]
+                    .iter_mut()
+                    .zip(&chunk.grounds[index + 1..])
+                {
+                    later.ground = *ground;
+                }
+                return Err(PhysicsError::InvalidDynamics);
+            }
+            let output = &mut points[contact];
+            output.rows.resize_with(inputs.count, Row::default);
+            for (row, stored) in output.rows.iter_mut().enumerate() {
+                let slot = (index * 5 + row) * size;
+                stored.store_local(
+                    &chunk.jacobians[slot..slot + size],
+                    &chunk.responses[slot..slot + size],
+                    &inputs.ranges,
+                );
+            }
+            output.separation = inputs.separation;
+            output.moved = 0.0;
+        }
+        if let Some(error) = row_error {
+            return Err(error);
+        }
+        start = end;
+    }
+    Ok(())
 }
 
 /// A contact's rows at one substep's starting pose.
@@ -813,32 +1016,27 @@ impl Row {
         response: &[f64],
         ranges: &[std::ops::Range<usize>],
     ) {
-        let inverse = ranges
-            .iter()
-            .flat_map(Clone::clone)
-            .map(|row| jacobian[row] * response[row])
-            .sum::<f64>();
+        // Summed in row order from negative zero, as `Iterator::sum` does.
+        let mut inverse = -0.0;
+        self.jacobian.clear();
+        self.response.clear();
+        for range in ranges {
+            let (jacobian, response) = (&jacobian[range.clone()], &response[range.clone()]);
+            for (row, (&jacobian, &response)) in range.clone().zip(jacobian.iter().zip(response)) {
+                inverse += jacobian * response;
+                if jacobian != 0.0 {
+                    self.jacobian.push((row, jacobian));
+                }
+                if response != 0.0 {
+                    self.response.push((row, response));
+                }
+            }
+        }
         self.mass = if inverse > f64::EPSILON {
             1.0 / inverse
         } else {
             0.0
         };
-        self.jacobian.clear();
-        self.jacobian.extend(
-            ranges
-                .iter()
-                .flat_map(Clone::clone)
-                .map(|row| (row, jacobian[row]))
-                .filter(|(_, v)| *v != 0.0),
-        );
-        self.response.clear();
-        self.response.extend(
-            ranges
-                .iter()
-                .flat_map(Clone::clone)
-                .map(|row| (row, response[row]))
-                .filter(|(_, v)| *v != 0.0),
-        );
     }
 
     fn coupling(&self, other: &Self) -> f64 {
@@ -926,6 +1124,7 @@ pub(super) struct Scratch {
     pub(super) points: Vec<PointRows>,
     jacobians: [Vec<f64>; 5],
     responses: [Vec<f64>; 5],
+    chunk: ChunkScratch,
     factor: Option<DynamicsFactor>,
     diagonal: Vec<f64>,
 }
@@ -949,6 +1148,7 @@ impl Scratch {
                 .sum::<usize>()
                 + self.diagonal.capacity())
                 * size_of::<f64>()
+            + self.chunk.retained_bytes()
             + self
                 .factor
                 .as_ref()
@@ -1014,16 +1214,14 @@ pub(super) fn substep(
         jacobian.resize(state.velocities.len(), 0.0);
     }
     let points = &mut scratch.points[..contacts.len()];
-    for (contact, point) in contacts.iter_mut().zip(points.iter_mut()) {
-        contact.settle_ground(dt);
-        contact.rows(
-            &model,
-            factor,
-            point,
-            &mut scratch.jacobians,
-            &mut scratch.responses,
-        )?;
-    }
+    contact_rows(
+        contacts,
+        points,
+        (&model, factor),
+        dt,
+        (&mut scratch.jacobians, &mut scratch.responses),
+        &mut scratch.chunk,
+    )?;
     let mut closures = creation
         .dynamics
         .loops

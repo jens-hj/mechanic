@@ -9,23 +9,6 @@ use mechanic_core::{
 };
 
 // Finite points of one convex against one triangle for the requested query.
-pub(super) fn surface_points(
-    shape: &ContactPolytope,
-    triangle: [DVec3; 3],
-    kind: QueryKind,
-    margin: f64,
-    window: f64,
-) -> Result<Vec<TriangleContactPoint>, PhysicsError> {
-    surface_points_with_scratch(
-        shape,
-        triangle,
-        kind,
-        margin,
-        window,
-        &mut mechanic_core::TriangleClipScratch::default(),
-    )
-}
-
 pub(super) fn surface_points_with_scratch(
     shape: &ContactPolytope,
     triangle: [DVec3; 3],
@@ -65,6 +48,7 @@ pub(super) fn pair_points(
     separation: ConvexSeparation,
     kind: QueryKind,
     margin: f64,
+    scratch: &mut mechanic_core::TriangleClipScratch,
 ) -> Result<(usize, usize, Vec<TriangleContactPoint>), PhysicsError> {
     let (receiving, opposing, plane) = match separation.feature {
         ConvexFeature::OtherFace(plane) => (first, second, plane),
@@ -85,12 +69,13 @@ pub(super) fn pair_points(
         .face_triangles(plane)
         .map_err(|_| PhysicsError::InvalidCollision)?
     {
-        points.extend(surface_points(
+        points.extend(surface_points_with_scratch(
             shape(receiving),
             triangle,
             kind,
             margin,
             PAIR_ACTIVATION_DISTANCE,
+            scratch,
         )?);
     }
     Ok((receiving, opposing, points))
