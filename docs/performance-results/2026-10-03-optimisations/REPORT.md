@@ -64,6 +64,23 @@ The physics suite matches the baseline (250 pass; only
 `a_box_dropped_on_a_resting_box…` fails, as at `a2cd0d0`), and the ledge
 test's outcome is the baseline's by construction.
 
+**After the treads merge (`ff3faf3`).** Remeasured on the merged head against
+the same `a2cd0d0` binary, three interleaved runs each, load 2.5–9. The state
+hash still equals the baseline's on every tick, including 22 ticks past the
+breakup.
+
+| Builder replay | Baseline `a2cd0d0` | Exact rows on `ff3faf3` |
+|---|---|---|
+| 600 ticks: tick median | 32.9–33.3 ms | 25.9–26.3 ms (−21 %) |
+| 600 ticks: tick p95 | 46.8–47.2 ms | 36.2–36.7 ms (−22 %) |
+| 600 ticks: CPU cycles | 62.9–63.2 G | 49.8–50.1 G (−21 %) |
+| 3,698 ticks: tick median | 32.4–32.6 ms | 26.2–26.6 ms (−19 %) |
+| 3,698 ticks: tick p95 | 46.1–46.5 ms | 36.9–37.2 ms (−20 %) |
+| 3,698 ticks: CPU cycles | 381–384 G | 306–308 G (−20 %) |
+
+The longer run includes the late ticks, where the build is coming apart and
+contact rows are a smaller share of each tick.
+
 **Unknown save fields.** `stored_water_with_an_unknown_field_keeps_what_this_build_knows`
 loads a water save with an unrecognised 50,000-entry list and checks the
 known fields survive. It takes 0.12 s with the vendored ron and 72 s against
