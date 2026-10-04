@@ -13,6 +13,43 @@
 - Read-only questions and investigations do not require an issue unless the user
   requests one.
 
+### GitHub Project Status
+
+- Track implementation issues in the
+  [Mechanic project](https://github.com/users/jens-hj/projects/4) (owner `jens-hj`,
+  project number `4`). Add the issue if it is not already in the project.
+- Update the project's **Status** field as work changes, not just the issue's
+  open/closed state:
+
+  | Status | When to use it |
+  |---|---|
+  | Backlog | Work is captured but not scheduled. |
+  | Ready | Work is explicitly prioritized for pickup. Do not infer priority merely from creating an issue. |
+  | In progress | Implementation starts, or review feedback requires more implementation. Set this before editing files. |
+  | In review | Implementation and its checks are complete and the change awaits review, including review in a thread without a PR. |
+  | Done | The change is landed on the target branch, verification is complete, and the issue's full acceptance criteria are satisfied. |
+
+- Reflect actual events; do not cycle through statuses that did not occur.
+  Direct-to-main work can move from In progress to Done after landing and
+  verification. Local edits or an unmerged PR are not Done.
+- Keep partially completed parent issues open and out of Done. Track the
+  completed subtask separately and comment on the remaining parent scope.
+- Record blockers and the next action needed in an issue comment; keep the
+  appropriate existing status rather than creating a new status. If work is
+  explicitly paused or returned to the queue, use Ready or Backlog according
+  to its agreed priority.
+- Read the current item status before changing it and verify the result after
+  each update. Preserve unrelated fields and other contributors' changes; ask
+  when concurrent work makes the correct status ambiguous.
+- Use GitHub Projects access with read/write `project` permission. Discover the
+  project's field and option IDs with `gh project field-list` rather than
+  guessing them. If access or an expected status is missing, report it and ask
+  how to proceed instead of silently skipping tracking or changing the board.
+- Environment tokens override the GitHub CLI's saved login. When the user has
+  authorized the saved login for this project, use
+  `env -u GITHUB_TOKEN -u GH_TOKEN gh project ...` on Unix if an environment
+  token lacks project permissions. Never put credentials in repository files.
+
 ## Project Structure & Module Organization
 
 Mechanic is a Rust 2024 Cargo workspace. Dependencies point one way:
