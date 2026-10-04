@@ -258,6 +258,9 @@ Final verdicts:
   - `flora-gallery` writes `lod-<species>.png`: each level as lattices
     0.4, 0.8, 1.6 and 3.2 m apart draw it, beside the grown tree.
 
+    ![Oak octree levels](flora/lod-oak.png)
+    ![Spruce octree levels](flora/lod-spruce.png)
+
 **Bounds.**
 - `classify` and `interval` are tree-aware from cheap placement bounds, so no
   box holding a tree is ever judged empty.
