@@ -1,5 +1,18 @@
 # Repository Guidelines
 
+## GitHub Issue Tracking
+
+- Before changing repository files, link the task to a relevant open GitHub issue.
+- Use an issue supplied by the user; otherwise search existing issues and reuse
+  one if it covers the work. If none fits, create one with the task's scope and
+  acceptance criteria.
+- Post the issue link in the thread before implementation. If GitHub access is
+  unavailable, ask the user how to proceed rather than silently skipping tracking.
+- Reference the issue in pull requests. Use `Closes #…` only when the change fully
+  resolves it; otherwise use `Refs #…`.
+- Read-only questions and investigations do not require an issue unless the user
+  requests one.
+
 ## Project Structure & Module Organization
 
 Mechanic is a Rust 2024 Cargo workspace. Dependencies point one way:
