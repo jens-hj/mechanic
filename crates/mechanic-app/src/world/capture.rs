@@ -281,9 +281,11 @@ fn capture(
     if capture.readback {
         return;
     }
+    // A view high above the ground has no local terrain; it is ready once
+    // everything it streams is drawn.
     let ready = !list.is_open()
         && runtime.terrain_textures.is_none()
-        && diagnostics.local_total_nodes > 0
+        && (diagnostics.local_total_nodes > 0 || diagnostics.streaming_backlog == 0)
         && diagnostics.local_resolved_nodes == diagnostics.local_total_nodes
         && capture.started.elapsed() >= Duration::from_secs(30);
     capture.settled = if ready { capture.settled + 1 } else { 0 };
