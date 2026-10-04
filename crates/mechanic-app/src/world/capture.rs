@@ -372,7 +372,7 @@ fn save_capture(
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        event.data.clone(),
+        tight_rows(&event.data, capture.config.size),
         TextureFormat::Rgba8UnormSrgb,
         default(),
     )
@@ -413,4 +413,19 @@ fn timing_medians(timed: &[(f64, Snapshot)]) -> serde_json::Value {
         "opaque": of(|snapshot| snapshot.breakdown.opaque_ms),
         "transparent": of(|snapshot| snapshot.breakdown.transparent_ms),
     })
+}
+
+/// Readback rows padded to the copy alignment, packed tightly again.
+fn tight_rows(data: &[u8], [width, height]: [u32; 2]) -> Vec<u8> {
+    let row = width as usize * 4;
+    let rows = height as usize;
+    let stride = data.len() / rows.max(1);
+    if stride == row {
+        return data.to_vec();
+    }
+    data.chunks_exact(stride)
+        .take(rows)
+        .flat_map(|padded| &padded[..row])
+        .copied()
+        .collect()
 }

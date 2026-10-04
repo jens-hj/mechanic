@@ -34,6 +34,10 @@ const DRAWN_FILL: f64 = 0.4;
 /// piece ([`RESOLVED_RADIUS`] spacings).
 const CELL_SPACINGS: f64 = RESOLVED_RADIUS / (1.0 - DRAWN_FILL);
 
+/// Layers of cells each merge looks through, from the finest level up: the
+/// 80 cm level is a plain mean, coarser ones fill a porous crown.
+const MERGE_LAYERS: [i32; 3] = [1, 2, 3];
+
 /// Fullness stored per cell: 0 to this.
 const FULL: f64 = 255.0;
 
@@ -81,9 +85,10 @@ impl Level {
     }
 
     /// The level above. Each cell holds what its eight cells below hold, as
-    /// seen through three layers of them: a crown with gaps between its clumps
-    /// reads as solid from afar, while a lone twig still averages away.
-    fn merged(&self) -> Self {
+    /// seen through `layers` layers of them: with more than one, a crown with
+    /// gaps between its clumps reads as solid from afar, while a lone twig
+    /// still averages away.
+    fn merged(&self, layers: i32) -> Self {
         let dims = self.dims.map(|dim| dim.div_ceil(2));
         let mut fill = vec![[0_u8; 2]; dims[0] * dims[1] * dims[2]];
         for z in 0..dims[2] {
@@ -104,7 +109,7 @@ impl Level {
                     }
                     let mean = sum.map(|total| f64::from(total) / (8.0 * FULL));
                     let total = mean[0] + mean[1];
-                    let seen = 1.0 - (1.0 - total.min(1.0)).powi(3);
+                    let seen = 1.0 - (1.0 - total.min(1.0)).powi(layers);
                     let gain = if total > 0.0 { seen / total } else { 0.0 };
                     #[expect(
                         clippy::cast_possible_truncation,
@@ -379,8 +384,10 @@ impl TreeLod {
             stems: Vec::new(),
             stem_bounds: (DVec3::ZERO, DVec3::ZERO),
         };
-        for _ in 0..LEVELS {
-            let next = grown.merged();
+        for level in 0..LEVELS {
+            // Near levels keep the crown's own volume, so neighbouring crowns
+            // stay apart; only levels far enough for gaps to vanish fill them.
+            let next = grown.merged(MERGE_LAYERS[level.min(MERGE_LAYERS.len() - 1)]);
             let mut held = grown;
             let stem_top = held
                 .crown_bottom(min)
