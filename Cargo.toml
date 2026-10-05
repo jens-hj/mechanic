@@ -10,7 +10,7 @@ members = [
     "crates/xtask",
 ]
 resolver = "2"
-exclude = ["vendor/bevy_pbr", "vendor/mosaic-macros", "vendor/mosaic-text", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal", "vendor/ron"]
+exclude = ["vendor/bevy_pbr", "vendor/bevy_core_pipeline", "vendor/bevy_winit", "vendor/bevy_render", "vendor/wgpu-core", "vendor/wgpu-hal", "vendor/ron"]
 
 [patch.crates-io]
 wgpu-core = { path = "vendor/wgpu-core" }
@@ -54,14 +54,15 @@ png = "0.18"
 rustc-hash = "2.1"
 
 # Mosaic is pinned to an upstream main revision containing the external-device
-# renderer used by `bevy_mosaic`. Keep every crate on the same revision.
-mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
-mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
-mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
-mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
-mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
-mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
-mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+# renderer used by `bevy_mosaic` and the glyph outlines used by key legends.
+# Keep every crate on the same revision.
+mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
+mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
+mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
+mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
+mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
+mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
+mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0562943da3dfdd9ed687b52a06179befbe6c27f0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -89,7 +90,3 @@ codegen-units = 1
 [profile.profiling]
 inherits = "release"
 debug = 1
-
-[patch."ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git"]
-mosaic-text = { path = "vendor/mosaic-text" }
-mosaic-macros = { path = "vendor/mosaic-macros" }

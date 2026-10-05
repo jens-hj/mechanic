@@ -13,9 +13,17 @@ use mosaic_text::{FontContext, OutlineCommand, TextStyle};
 
 pub(crate) fn mesh(key: DriveKey, size: InputSize) -> Mesh {
     let mut fonts = FontContext::new();
-    let shaped = fonts.shape(&key.to_string(), &TextStyle::new(64.0), None);
+    let text = key.to_string();
+    let shaped = fonts.shape(&text, &TextStyle::new(64.0), None);
+    let outlines = shaped.outlines(&mut fonts, mosaic_core::Vector2::ZERO);
+    for range in &outlines.unavailable {
+        warn!(
+            "key legend `{text}`: no font has an outline for `{}`",
+            &text[range.clone()]
+        );
+    }
     let mut builder = Path::builder();
-    for outline in shaped.outlines(&mut fonts, mosaic_core::Vector2::ZERO) {
+    for outline in outlines.glyphs {
         for command in outline.commands {
             match command {
                 OutlineCommand::MoveTo(p) => {
@@ -27,7 +35,7 @@ pub(crate) fn mesh(key: DriveKey, size: InputSize) -> Mesh {
                 OutlineCommand::QuadTo(c, p) => {
                     builder.quadratic_bezier_to(point(c.x, c.y), point(p.x, p.y));
                 }
-                OutlineCommand::CurveTo(a, b, p) => {
+                OutlineCommand::CubicTo(a, b, p) => {
                     builder.cubic_bezier_to(point(a.x, a.y), point(b.x, b.y), point(p.x, p.y));
                 }
                 OutlineCommand::Close => {

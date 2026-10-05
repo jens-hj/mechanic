@@ -2011,7 +2011,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3087,12 +3087,12 @@ dependencies = [
 [[package]]
 name = "mosaic-core"
 version = "0.28.1"
-source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c#0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 
 [[package]]
 name = "mosaic-layout"
 version = "0.28.1"
-source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c#0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "mosaic-core",
 ]
@@ -3100,6 +3100,7 @@ dependencies = [
 [[package]]
 name = "mosaic-macros"
 version = "0.28.1"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "mosaic-syntax",
  "proc-macro-crate",
@@ -3111,7 +3112,7 @@ dependencies = [
 [[package]]
 name = "mosaic-render"
 version = "0.28.1"
-source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c#0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "mosaic-core",
 ]
@@ -3119,7 +3120,7 @@ dependencies = [
 [[package]]
 name = "mosaic-render-wgpu"
 version = "0.28.1"
-source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c#0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "bytemuck",
  "log",
@@ -3132,7 +3133,7 @@ dependencies = [
 [[package]]
 name = "mosaic-syntax"
 version = "0.28.1"
-source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c#0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3142,6 +3143,7 @@ dependencies = [
 [[package]]
 name = "mosaic-text"
 version = "0.28.1"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "cosmic-text",
  "mosaic-core",
@@ -3152,7 +3154,7 @@ dependencies = [
 [[package]]
 name = "mosaic-widgets"
 version = "0.28.1"
-source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c#0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c"
+source = "git+ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git?rev=0562943da3dfdd9ed687b52a06179befbe6c27f0#0562943da3dfdd9ed687b52a06179befbe6c27f0"
 dependencies = [
  "accesskit",
  "image",
@@ -3655,7 +3657,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4209,7 +4211,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -5404,7 +5406,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -40,12 +40,8 @@ Focused UI verification also passed all 140 tests before the final refinements.
 Final `cargo xtask lint` passed across every workspace target. The final
 `cargo xtask consistency` check passed as well.
 
-The standalone Mosaic outline tests passed all three cases:
-
-```
-CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=/tmp/mechanic-mosaic-target \
-  cargo test --manifest-path vendor/mosaic-text/Cargo.toml --lib outlines
-```
+The Mosaic outline tests passed all three cases. They now live upstream with
+the API, in `mosaic-text`'s own test suite.
 
 Eight focused GPU linear-drive tests passed on Metal. Shared solver-row tests
 also cover angular and linear dial updates with an unchanged compiled creation.

@@ -1,5 +1,0 @@
-error: unknown attribute `fil` — did you mean `fill`?
-  --> tests/ui/style_unknown_attr.rs:11:15
-   |
-11 |     pub #card fil:(blue())
-   |               ^^^

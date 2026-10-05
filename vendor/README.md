@@ -10,8 +10,6 @@ them. CI runs the wgpu fence regression test separately.
 | `bevy_pbr` | [`MECHANIC-PATCH.md`](bevy_pbr/MECHANIC-PATCH.md) | Environment refresh control, shared overlay shadows, atmosphere timing spans |
 | `bevy_core_pipeline` | [`MECHANIC-PATCH.md`](bevy_core_pipeline/MECHANIC-PATCH.md) | `OpaquePassPartition` |
 | `bevy_render` | [`MECHANIC-PATCH.md`](bevy_render/MECHANIC-PATCH.md) | Render-pass timestamp hook |
-| `mosaic-macros` | [`MECHANIC-PATCH.md`](mosaic-macros/MECHANIC-PATCH.md) | Reactive shape geometry with static appearance |
-| `mosaic-text` | [`MECHANIC-PATCH.md`](mosaic-text/MECHANIC-PATCH.md) | Positioned scalable glyph outlines from existing shaping |
 | `bevy_winit` | [`MECHANIC-PATCH.md`](bevy_winit/MECHANIC-PATCH.md) | `WinitPlugin::prevent_activation` |
 | `ron` | [`MECHANIC-PATCH.md`](ron/MECHANIC-PATCH.md) | Upstream fixes for quadratic float and escaped-string parsing |
 | `wgpu-core`, `wgpu-hal` | [`WGPU-FENCE-BACKPORT.md`](WGPU-FENCE-BACKPORT.md) | Fence-acquisition backport; the literal patch is [`wgpu-fence-upstream.patch`](wgpu-fence-upstream.patch) |

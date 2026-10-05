@@ -34,9 +34,9 @@ the same graph configuration. Stable new dial names start at `Dial 1`.
 Six independently authored baked assets retain core-owned material legends and
 mesh ownership. The app caches part meshes and extruded key meshes. Mosaic's
 `ShapedText::outlines` exposes its existing shaped glyphs as scalable geometry;
-the app tessellates/extrudes that output, including glyph holes. The source patch
-and the reactive shape-geometry fix are recorded in `vendor/mosaic-text` and
-`vendor/mosaic-macros`, each with its upstream revision and licenses.
+the app tessellates/extrudes that output, including glyph holes, and logs any
+character the font cannot outline. Both that API and the reactive shape-geometry
+fix are upstream in Mosaic, at the revision the workspace pins.
 
 `MECHANIC_INPUT_CAPTURE_DIR=/tmp/mechanic-inputs cargo run -p mechanic-app`
 produces native released and illuminated/depressed showcases at all three sizes.
@@ -57,4 +57,4 @@ Native screenshots were inspected on Metal, and final app/core, lint, and
 consistency results are recorded in [Verification](VERIFICATION.md). Full CI
 remains red on ten GPU physics behaviour failures and one CPU stacking failure;
 those failures are unresolved. The earlier suspension overlay reactivity failure
-was addressed by the Mosaic patch.
+was fixed upstream in Mosaic.
