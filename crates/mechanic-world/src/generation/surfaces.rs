@@ -1,11 +1,13 @@
 //! Surface palette and the per-biome rules that paint it onto the ground.
 
+use std::cell::Cell;
+
 use serde::{Deserialize, Serialize};
 
 use super::WorldgenError;
 use super::compile::{Scope, compile};
 use super::flora::TreeTexture;
-use super::spec::{Cond, SurfaceDoc, SurfaceRuleDoc, TextureSet};
+use super::spec::{Cond, Expr, SurfaceDoc, SurfaceRuleDoc, TextureSet};
 use super::tape::Tape;
 use crate::TerrainMaterial;
 
@@ -211,7 +213,8 @@ enum CompiledCond {
     WaterDepth(f64, f64),
     Up(f64, f64),
     Altitude(f64, f64),
-    Field(Tape, f64, f64),
+    /// A field, by index into the rules' distinct field tapes, within bounds.
+    Field(usize, f64, f64),
     NearRiver(f64),
     /// Carve layer plus one, or zero for any layer.
     Carved(u8),
@@ -220,8 +223,39 @@ enum CompiledCond {
     Not(Box<Self>),
 }
 
+/// Fields read while painting one point. Rules that read the same field
+/// share one evaluation, which gives each the value it would compute.
+struct FieldValues<'a> {
+    tapes: &'a [Tape],
+    values: [Cell<Option<f64>>; REMEMBERED_FIELDS],
+}
+
+/// Distinct fields per biome whose values a probe remembers; any beyond are
+/// evaluated each time they are read.
+const REMEMBERED_FIELDS: usize = 8;
+
+impl<'a> FieldValues<'a> {
+    fn new(tapes: &'a [Tape]) -> Self {
+        Self {
+            tapes,
+            values: Default::default(),
+        }
+    }
+
+    fn get(&self, index: usize, position: [f64; 3]) -> f64 {
+        let Some(value) = self.values.get(index) else {
+            return self.tapes[index].eval(position, &[]);
+        };
+        value.get().unwrap_or_else(|| {
+            let fresh = self.tapes[index].eval(position, &[]);
+            value.set(Some(fresh));
+            fresh
+        })
+    }
+}
+
 impl CompiledCond {
-    fn holds(&self, probe: &SurfaceProbe) -> bool {
+    fn holds(&self, probe: &SurfaceProbe, fields: &FieldValues<'_>) -> bool {
         let within = |value: f64, lo: f64, hi: f64| lo <= value && value <= hi;
         match self {
             Self::Always => true,
@@ -231,13 +265,13 @@ impl CompiledCond {
                 .is_some_and(|depth| within(depth, *lo, *hi)),
             Self::Up(lo, hi) => within(probe.up, *lo, *hi),
             Self::Altitude(lo, hi) => within(probe.position[1], *lo, *hi),
-            Self::Field(tape, lo, hi) => within(tape.eval(probe.position, &[]), *lo, *hi),
+            Self::Field(index, lo, hi) => within(fields.get(*index, probe.position), *lo, *hi),
             Self::NearRiver(distance) => probe.river_distance <= *distance,
             Self::Carved(0) => probe.carved != 0,
             Self::Carved(layer) => probe.carved == *layer,
-            Self::All(conds) => conds.iter().all(|cond| cond.holds(probe)),
-            Self::Any(conds) => conds.iter().any(|cond| cond.holds(probe)),
-            Self::Not(cond) => !cond.holds(probe),
+            Self::All(conds) => conds.iter().all(|cond| cond.holds(probe, fields)),
+            Self::Any(conds) => conds.iter().any(|cond| cond.holds(probe, fields)),
+            Self::Not(cond) => !cond.holds(probe, fields),
         }
     }
 }
@@ -246,6 +280,8 @@ impl CompiledCond {
 #[derive(Debug)]
 pub(crate) struct SurfaceRules {
     rules: Vec<(CompiledCond, SurfaceId, TerrainMaterial)>,
+    /// Each distinct field the rules read, compiled once.
+    fields: Vec<Tape>,
 }
 
 impl SurfaceRules {
@@ -258,6 +294,7 @@ impl SurfaceRules {
         context: &str,
     ) -> Result<Self, WorldgenError> {
         let mut rules = Vec::with_capacity(docs.len());
+        let mut fields = Vec::new();
         for (index, doc) in docs.iter().enumerate() {
             let context = format!("{context} surface rule {index}");
             let surface = palette
@@ -266,7 +303,7 @@ impl SurfaceRules {
                     context: context.clone(),
                     message: format!("unknown surface `{}`", doc.surface),
                 })?;
-            let cond = compile_cond(&doc.when, carves, scope, seed, &context)?;
+            let cond = compile_cond(&doc.when, carves, scope, seed, &context, &mut fields)?;
             rules.push((cond, surface, palette.look(surface).material));
         }
         if !matches!(rules.last(), Some((CompiledCond::Always, ..))) {
@@ -275,29 +312,36 @@ impl SurfaceRules {
                 message: "the last surface rule must be `when: Always`".to_owned(),
             });
         }
-        Ok(Self { rules })
+        Ok(Self {
+            rules,
+            fields: fields.into_iter().map(|(_, tape)| tape).collect(),
+        })
     }
 
     pub(crate) fn paint(&self, probe: &SurfaceProbe) -> (TerrainMaterial, SurfaceId) {
+        let fields = FieldValues::new(&self.fields);
         self.rules
             .iter()
-            .find(|(cond, ..)| cond.holds(probe))
+            .find(|(cond, ..)| cond.holds(probe, &fields))
             .map(|(_, surface, material)| (*material, *surface))
             .expect("the last rule always holds")
     }
 }
 
+/// Compiles a condition. Fields are compiled into `fields`, once for each
+/// distinct expression.
 fn compile_cond(
     cond: &Cond,
     carves: &[String],
     scope: Scope<'_>,
     seed: u64,
     context: &str,
+    fields: &mut Vec<(Expr, Tape)>,
 ) -> Result<CompiledCond, WorldgenError> {
-    let many = |conds: &[Cond]| {
+    let many = |conds: &[Cond], fields: &mut Vec<(Expr, Tape)>| {
         conds
             .iter()
-            .map(|cond| compile_cond(cond, carves, scope, seed, context))
+            .map(|cond| compile_cond(cond, carves, scope, seed, context, fields))
             .collect::<Result<Vec<_>, _>>()
     };
     Ok(match cond {
@@ -308,7 +352,13 @@ fn compile_cond(
         Cond::Ceiling => CompiledCond::Up(-1.0, -0.2),
         Cond::Altitude(lo, hi) => CompiledCond::Altitude(*lo, *hi),
         Cond::Field(expr, lo, hi) => {
-            CompiledCond::Field(compile(expr, scope, &[], seed, context)?, *lo, *hi)
+            let index = if let Some(index) = fields.iter().position(|(seen, _)| seen == expr) {
+                index
+            } else {
+                fields.push((expr.clone(), compile(expr, scope, &[], seed, context)?));
+                fields.len() - 1
+            };
+            CompiledCond::Field(index, *lo, *hi)
         }
         Cond::NearRiver(distance) => CompiledCond::NearRiver(*distance),
         Cond::Carved(None) => CompiledCond::Carved(0),
@@ -322,18 +372,26 @@ fn compile_cond(
                 })?;
             CompiledCond::Carved(u8::try_from(layer + 1).expect("carve layers are capped"))
         }
-        Cond::All(conds) => CompiledCond::All(many(conds)?),
-        Cond::Any(conds) => CompiledCond::Any(many(conds)?),
-        Cond::Not(cond) => {
-            CompiledCond::Not(Box::new(compile_cond(cond, carves, scope, seed, context)?))
-        }
+        Cond::All(conds) => CompiledCond::All(many(conds, fields)?),
+        Cond::Any(conds) => CompiledCond::Any(many(conds, fields)?),
+        Cond::Not(cond) => CompiledCond::Not(Box::new(compile_cond(
+            cond, carves, scope, seed, context, fields,
+        )?)),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CompiledCond, SurfaceId, SurfacePalette, SurfaceProbe, parse_tint};
+    use std::collections::BTreeMap;
+
+    use super::{
+        CompiledCond, FieldValues, SurfaceId, SurfacePalette, SurfaceProbe, SurfaceRules,
+        parse_tint,
+    };
     use crate::TerrainMaterial;
+    use crate::generation::compile::{Scope, compile};
+    use crate::generation::load::parse;
+    use crate::generation::spec::{Expr, SurfaceRuleDoc};
 
     #[test]
     fn water_depth_matches_beds_and_shores_but_not_dry_or_absent_water() {
@@ -356,7 +414,11 @@ mod tests {
             (Some(3.01), false),
         ] {
             probe.water_depth = depth;
-            assert_eq!(condition.holds(&probe), expected, "{depth:?}");
+            assert_eq!(
+                condition.holds(&probe, &FieldValues::new(&[])),
+                expected,
+                "{depth:?}"
+            );
         }
     }
 
@@ -378,5 +440,63 @@ mod tests {
         let mid = parse_tint("#808080").unwrap()[0];
         assert!((mid - 0.2158).abs() < 1.0e-3);
         assert_eq!(parse_tint("fff"), None);
+    }
+
+    #[test]
+    fn rules_reading_one_field_share_it_and_paint_as_if_each_read_it() {
+        let docs: Vec<SurfaceRuleDoc> = parse(
+            "rules",
+            r#"[
+                (when: All([Field(Noise(freq: 0.1, seed: 4), 0.2, 1), Up(0.9, 1)]), use: "rock"),
+                (when: Not(Field(Noise(freq: 0.1, seed: 4), -1, 0.2)), use: "soil"),
+                (when: Field(Noise(freq: 0.1, seed: 5), 0, 1), use: "sand"),
+                (when: Always, use: "iron"),
+            ]"#,
+        )
+        .expect("valid rules");
+        let empty = BTreeMap::new();
+        let scope = Scope {
+            local: &empty,
+            library: &empty,
+            fields: None,
+        };
+        let palette = SurfacePalette::new(&[]).unwrap();
+        let rules = SurfaceRules::new(&docs, &palette, &[], scope, 3, "test").unwrap();
+        assert_eq!(rules.fields.len(), 2, "the repeated field is compiled once");
+        let field = |text: &str| {
+            let expr: Expr = parse("field", text).unwrap();
+            compile(&expr, scope, &[], 3, "test").unwrap()
+        };
+        let (first, second) = (
+            field("Noise(freq: 0.1, seed: 4)"),
+            field("Noise(freq: 0.1, seed: 5)"),
+        );
+        let mut painted = [0; 4];
+        for step in 0..400_u32 {
+            let t = f64::from(step);
+            let probe = SurfaceProbe {
+                position: [(t * 0.37).sin() * 40.0, t * 0.05, (t * 0.11).cos() * 40.0],
+                depth: 0.0,
+                water_depth: None,
+                up: if step % 3 == 0 { 0.5 } else { 1.0 },
+                river_distance: f64::INFINITY,
+                carved: 0,
+            };
+            let a = first.eval(probe.position, &[]);
+            let b = second.eval(probe.position, &[]);
+            let expected = if (0.2..=1.0).contains(&a) && probe.up >= 0.9 {
+                0
+            } else if !(-1.0..=0.2).contains(&a) {
+                1
+            } else if (0.0..=1.0).contains(&b) {
+                2
+            } else {
+                3
+            };
+            let names = ["rock", "soil", "sand", "iron"];
+            assert_eq!(rules.paint(&probe).1, palette.id(names[expected]).unwrap());
+            painted[expected] += 1;
+        }
+        assert!(painted.iter().all(|&count| count > 0), "{painted:?}");
     }
 }

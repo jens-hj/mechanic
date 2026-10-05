@@ -10,7 +10,7 @@ use std::sync::Arc;
 use super::fields::FieldSlot;
 use super::interval::Interval;
 use super::noise::NoiseGen;
-use super::scatter::{SCATTER_FLOOR, ScatterGen};
+use super::scatter::{SCATTER_FLOOR, ScatterGen, ScatterScratch};
 
 /// Index of an op's result.
 pub(crate) type Reg = u32;
@@ -137,6 +137,20 @@ pub(crate) struct PlanarCache {
     values: Vec<Option<Vec<f64>>>,
 }
 
+/// Bounds of a tape's height-independent ops over one x and z extent, kept
+/// for boxes stacked over the same columns.
+#[derive(Debug, Default)]
+pub(crate) struct PlanarIntervals {
+    values: Vec<Option<Interval>>,
+}
+
+impl PlanarIntervals {
+    /// Forgets every bound, for a box over other columns.
+    pub(crate) fn clear(&mut self) {
+        self.values.iter_mut().for_each(|value| *value = None);
+    }
+}
+
 /// An op's input registers in [`Op::inputs`] order, gathered once so the
 /// evaluators index them instead of re-deriving them at every point.
 #[derive(Clone, Copy, Debug, Default)]
@@ -243,6 +257,43 @@ impl Tape {
         *values.last().expect("tapes are never empty")
     }
 
+    /// [`Self::interval`] without inputs, reusing the bounds of ops that do
+    /// not depend on height from `cache`. The cache belongs to one x and z
+    /// extent; clear it before a box over other columns.
+    pub(crate) fn interval_columns(
+        &self,
+        domain: [Interval; 3],
+        cache: &mut PlanarIntervals,
+    ) -> Interval {
+        const STACK_OPS: usize = 96;
+        if cache.values.len() != self.ops.len() {
+            cache.values.clear();
+            cache.values.resize(self.ops.len(), None);
+        }
+        let mut stack = [Interval::point(0.0); STACK_OPS];
+        let mut heap = Vec::new();
+        let values: &mut [Interval] = if self.ops.len() <= STACK_OPS {
+            &mut stack[..self.ops.len()]
+        } else {
+            heap.resize(self.ops.len(), Interval::point(0.0));
+            &mut heap
+        };
+        for (index, (op, arguments)) in self.ops.iter().zip(&self.arguments).enumerate() {
+            let planar = self.axes[index] & AXIS_Y == 0;
+            values[index] = match cache.values[index] {
+                Some(value) if planar => value,
+                _ => {
+                    let value = apply_interval(op, arguments, &values[..index], domain, &[]);
+                    if planar {
+                        cache.values[index] = Some(value);
+                    }
+                    value
+                }
+            };
+        }
+        values[self.ops.len() - 1]
+    }
+
     /// [`Self::eval_grid_varying`] without inputs or a cache.
     #[cfg(test)]
     pub(crate) fn eval_grid(
@@ -260,9 +311,13 @@ impl Tape {
     /// holds per-point inputs, each a full grid in the output's order. With
     /// a cache, values that do not vary with height are kept for the next
     /// grid over the same columns.
+    ///
+    /// Each op runs once over its whole extent: an input over fewer axes is
+    /// spread over the op's extent first, so every op is one tight loop
+    /// rather than one short loop per grid row.
     #[expect(
         clippy::too_many_lines,
-        reason = "one row loop per op kind keeps the hot path monomorphic"
+        reason = "one extent loop per op kind keeps the hot path monomorphic"
     )]
     pub(crate) fn eval_grid_varying(
         &self,
@@ -309,6 +364,8 @@ impl Tape {
         }
         let planar = |index: usize| self.axes[index] & AXIS_Y == 0;
         let mut nearby = Vec::new();
+        let mut spread: [Vec<f64>; 5] = Default::default();
+        let mut scatter_scratch = ScatterScratch::default();
         for (index, op) in self.ops.iter().enumerate() {
             let mask = self.axes[index];
             if planar(index)
@@ -320,125 +377,82 @@ impl Tape {
                 continue;
             }
             let extent = shape(mask);
+            let count = extent[0] * extent[1] * extent[2];
             let mut buffer = free.pop().unwrap_or_default();
             buffer.clear();
-            buffer.reserve(extent[0] * extent[1] * extent[2]);
+            buffer.reserve(count);
             let registers = self.arguments[index].registers();
-            let arity = registers.len();
-            let mut sources: [(&[f64], [usize; 3]); 5] = [(&[], [0; 3]); 5];
+            let input_values = |slot: usize| {
+                buffers[registers[slot] as usize]
+                    .as_deref()
+                    .expect("inputs are evaluated before use")
+            };
+            // An input over some but not all of the op's axes is spread
+            // over the op's extent, read where the old row loop read it.
             for (slot, &input) in registers.iter().enumerate() {
-                sources[slot] = (
-                    buffers[input as usize]
-                        .as_deref()
-                        .expect("inputs are evaluated before use"),
-                    strides(self.axes[input as usize]),
-                );
-            }
-            if let Op::Scatter(_, scatter) = op {
-                // The block's coordinates, possibly warped, span this box;
-                // only instances reaching it can matter to any point.
-                let span = |slot: usize| {
-                    sources[slot].0.iter().fold(
-                        Interval::new(f64::INFINITY, f64::NEG_INFINITY),
-                        |bounds, &value| Interval::new(bounds.lo.min(value), bounds.hi.max(value)),
-                    )
-                };
-                scatter.instances_near([span(0), span(1), span(2)], &mut nearby);
-            }
-            for (k, &z) in zs.iter().enumerate().take(extent[2]) {
-                for (j, &y) in ys.iter().enumerate().take(extent[1]) {
-                    // Each input's row for this (j, k), read at `i * stride`.
-                    let rows = sources.map(|(values, stride)| {
-                        let start = j * stride[1] + k * stride[2];
-                        (values.get(start..).unwrap_or(&[]), stride[0])
-                    });
-                    let at = |slot: usize, i: usize| rows[slot].0[i * rows[slot].1];
-                    let count = extent[0];
-                    macro_rules! each {
-                        ($value:expr) => {
-                            buffer.extend((0..count).map($value))
-                        };
-                    }
-                    // A row that varies along x is contiguous; one that does
-                    // not is a single value. Either way each element sees the
-                    // same arithmetic as `at`, in a loop the compiler can
-                    // keep tight.
-                    let lane = |slot: usize| {
-                        let (values, stride) = rows[slot];
-                        if stride == 0 {
-                            Lane::Splat(values[0])
-                        } else {
-                            Lane::Row(&values[..count])
+                let input_mask = self.axes[input as usize];
+                if input_mask != mask && input_mask != 0 {
+                    let values = input_values(slot);
+                    let stride = strides(input_mask);
+                    let target = &mut spread[slot];
+                    target.clear();
+                    for k in 0..extent[2] {
+                        for j in 0..extent[1] {
+                            let row = j * stride[1] + k * stride[2];
+                            target.extend((0..extent[0]).map(|i| values[row + i * stride[0]]));
                         }
-                    };
-                    macro_rules! unary {
-                        ($f:expr) => {
-                            match lane(0) {
-                                Lane::Row(a) => buffer.extend(a.iter().map(|&a| $f(a))),
-                                Lane::Splat(a) => buffer.extend(std::iter::repeat_n($f(a), count)),
-                            }
-                        };
-                    }
-                    macro_rules! binary {
-                        ($f:expr) => {
-                            match (lane(0), lane(1)) {
-                                (Lane::Row(a), Lane::Row(b)) => {
-                                    buffer.extend(a.iter().zip(b).map(|(&a, &b)| $f(a, b)));
-                                }
-                                (Lane::Row(a), Lane::Splat(b)) => {
-                                    buffer.extend(a.iter().map(|&a| $f(a, b)));
-                                }
-                                (Lane::Splat(a), Lane::Row(b)) => {
-                                    buffer.extend(b.iter().map(|&b| $f(a, b)));
-                                }
-                                (Lane::Splat(a), Lane::Splat(b)) => {
-                                    buffer.extend(std::iter::repeat_n($f(a, b), count));
-                                }
-                            }
-                        };
-                    }
-                    match op {
-                        Op::X => buffer.extend_from_slice(&xs[..count]),
-                        Op::Varying(input) => {
-                            let start = count * (j + extent[1] * k);
-                            buffer
-                                .extend_from_slice(&varying[*input as usize][start..start + count]);
-                        }
-                        Op::Y => each!(|_| y),
-                        Op::Z => each!(|_| z),
-                        Op::Const(value) => each!(|_| *value),
-                        Op::Add(..) => binary!(|a: f64, b: f64| a + b),
-                        Op::Sub(..) => binary!(|a: f64, b: f64| a - b),
-                        Op::Mul(..) => binary!(|a: f64, b: f64| a * b),
-                        Op::Div(..) => binary!(|a: f64, b: f64| a / b),
-                        Op::Neg(_) => unary!(|a: f64| -a),
-                        Op::Min(..) => binary!(f64::min),
-                        Op::Max(..) => binary!(f64::max),
-                        Op::Abs(_) => unary!(f64::abs),
-                        Op::Scatter(..) if nearby.is_empty() => each!(|_| SCATTER_FLOOR),
-                        Op::Scatter(_, scatter) => {
-                            each!(|i| scatter.sample_among(
-                                &nearby,
-                                [at(0, i), at(1, i), at(2, i)],
-                                at(3, i)
-                            ));
-                        }
-                        Op::Noise(_, noise) => {
-                            if noise.is_planar() {
-                                each!(|i| noise.sample(at(0, i), 0.0, at(1, i)));
-                            } else {
-                                each!(|i| noise.sample(at(0, i), at(1, i), at(2, i)));
-                            }
-                        }
-                        _ => each!(|i| {
-                            let mut arguments = [0.0; 5];
-                            for (slot, argument) in arguments.iter_mut().enumerate().take(arity) {
-                                *argument = at(slot, i);
-                            }
-                            apply_gathered(op, &arguments[..arity], [xs[i.min(xs.len() - 1)], y, z])
-                        }),
                     }
                 }
+            }
+            let lanes: [Lane<'_>; 5] = core::array::from_fn(|slot| {
+                let Some(&input) = registers.get(slot) else {
+                    return Lane::Splat(0.0);
+                };
+                let input_mask = self.axes[input as usize];
+                if input_mask == mask {
+                    Lane::Row(input_values(slot))
+                } else if input_mask == 0 {
+                    Lane::Splat(input_values(slot)[0])
+                } else {
+                    Lane::Row(&spread[slot])
+                }
+            });
+            match op {
+                Op::X => buffer.extend_from_slice(&xs),
+                Op::Y => buffer.extend_from_slice(&ys),
+                Op::Z => buffer.extend_from_slice(&zs),
+                Op::Const(value) => buffer.push(*value),
+                Op::Input(_) => unreachable!("grids take per-point inputs as varying"),
+                Op::Varying(input) => {
+                    buffer.extend_from_slice(&varying[*input as usize][..count]);
+                }
+                Op::Scatter(_, scatter) => {
+                    // The block's coordinates, possibly warped, span this
+                    // box; only instances reaching it can matter to any
+                    // point.
+                    let span = |slot: usize| {
+                        input_values(slot).iter().fold(
+                            Interval::new(f64::INFINITY, f64::NEG_INFINITY),
+                            |bounds, &value| {
+                                Interval::new(bounds.lo.min(value), bounds.hi.max(value))
+                            },
+                        )
+                    };
+                    scatter.instances_near([span(0), span(1), span(2)], &mut nearby);
+                    if nearby.is_empty() {
+                        buffer.resize(count, SCATTER_FLOOR);
+                    } else {
+                        scatter.sample_among_many(
+                            &nearby,
+                            [lanes[0], lanes[1], lanes[2]],
+                            lanes[3],
+                            count,
+                            &mut scatter_scratch,
+                            &mut buffer,
+                        );
+                    }
+                }
+                _ => apply_lanes(op, &lanes[..registers.len()], count, &mut buffer),
             }
             buffers[index] = Some(buffer);
             for &input in registers {
@@ -478,13 +492,200 @@ impl Tape {
             }
         }
     }
+
+    /// Values at `count` points at once, appended to `out`, each equal bit
+    /// for bit to [`Self::eval`] there. Coordinates and inputs are lanes, so
+    /// a value shared by every point is passed once. Ops that depend only on
+    /// shared values are evaluated once; the rest run op by op over chunks
+    /// of points small enough to stay in cache.
+    pub(crate) fn eval_many(
+        &self,
+        point: [Lane<'_>; 3],
+        inputs: &[Lane<'_>],
+        count: usize,
+        scratch: &mut ManyScratch,
+        out: &mut Vec<f64>,
+    ) {
+        let ManyScratch { shared, rows } = scratch;
+        if rows.len() < self.ops.len() {
+            rows.resize_with(self.ops.len(), Vec::new);
+        }
+        shared.clear();
+        for (index, op) in self.ops.iter().enumerate() {
+            let splat = |lane: Lane<'_>| match lane {
+                Lane::Splat(value) => Some(value),
+                Lane::Row(_) => None,
+            };
+            let value = match op {
+                Op::X => splat(point[0]),
+                Op::Y => splat(point[1]),
+                Op::Z => splat(point[2]),
+                Op::Const(value) => Some(*value),
+                Op::Input(input) | Op::Varying(input) => splat(inputs[*input as usize]),
+                _ => {
+                    let registers = self.arguments[index].registers();
+                    let mut arguments = [0.0; 5];
+                    let mut every = true;
+                    for (argument, &input) in arguments.iter_mut().zip(registers) {
+                        match shared[input as usize] {
+                            Some(value) => *argument = value,
+                            None => every = false,
+                        }
+                    }
+                    every.then(|| apply_gathered(op, &arguments[..registers.len()], [0.0; 3]))
+                }
+            };
+            shared.push(value);
+        }
+        let last = self.ops.len() - 1;
+        if let Some(value) = shared[last] {
+            out.extend(std::iter::repeat_n(value, count));
+            return;
+        }
+        let mut start = 0;
+        while start < count {
+            let end = (start + MANY_CHUNK).min(count);
+            for (index, op) in self.ops.iter().enumerate() {
+                if shared[index].is_some() {
+                    continue;
+                }
+                let (done, rest) = rows.split_at_mut(index);
+                let buffer = &mut rest[0];
+                buffer.clear();
+                match op {
+                    Op::X => buffer.extend_from_slice(point[0].part(start..end)),
+                    Op::Y => buffer.extend_from_slice(point[1].part(start..end)),
+                    Op::Z => buffer.extend_from_slice(point[2].part(start..end)),
+                    Op::Input(input) | Op::Varying(input) => {
+                        buffer.extend_from_slice(inputs[*input as usize].part(start..end));
+                    }
+                    _ => {
+                        let registers = self.arguments[index].registers();
+                        let lanes: [Lane<'_>; 5] = core::array::from_fn(|slot| {
+                            registers.get(slot).map_or(Lane::Splat(0.0), |&input| {
+                                shared[input as usize]
+                                    .map_or_else(|| Lane::Row(&done[input as usize]), Lane::Splat)
+                            })
+                        });
+                        apply_lanes(op, &lanes[..registers.len()], end - start, buffer);
+                    }
+                }
+            }
+            out.extend_from_slice(&rows[last]);
+            start = end;
+        }
+    }
 }
 
-/// One input's values along a grid row.
-#[derive(Clone, Copy)]
-enum Lane<'a> {
+/// Points per chunk of [`Tape::eval_many`]: a chunk of every op's values
+/// stays within the first-level cache.
+const MANY_CHUNK: usize = 128;
+
+/// Reusable buffers for [`Tape::eval_many`].
+#[derive(Debug, Default)]
+pub(crate) struct ManyScratch {
+    shared: Vec<Option<f64>>,
+    rows: Vec<Vec<f64>>,
+}
+
+/// One argument's values over a run of points: a contiguous row, or one
+/// value shared by every point.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Lane<'a> {
     Row(&'a [f64]),
     Splat(f64),
+}
+
+impl<'a> Lane<'a> {
+    /// The value at point `index`.
+    pub(crate) fn at(self, index: usize) -> f64 {
+        match self {
+            Self::Row(values) => values[index],
+            Self::Splat(value) => value,
+        }
+    }
+
+    /// A row's values over `range`; shared values are never read this way.
+    fn part(self, range: core::ops::Range<usize>) -> &'a [f64] {
+        match self {
+            Self::Row(values) => &values[range],
+            Self::Splat(_) => unreachable!("shared values are evaluated once"),
+        }
+    }
+}
+
+/// Appends `op`'s values at `count` points whose arguments are `lanes`.
+/// Every point goes through exactly [`apply_gathered`]'s arithmetic, so the
+/// results match point evaluation bit for bit. Coordinates, constants, and
+/// inputs are the caller's.
+fn apply_lanes(op: &Op, lanes: &[Lane<'_>], count: usize, out: &mut Vec<f64>) {
+    macro_rules! unary {
+        ($f:expr) => {
+            match lanes[0] {
+                Lane::Row(a) => out.extend(a[..count].iter().map(|&a| $f(a))),
+                Lane::Splat(a) => out.extend(std::iter::repeat_n($f(a), count)),
+            }
+        };
+    }
+    macro_rules! binary {
+        ($f:expr) => {
+            match (lanes[0], lanes[1]) {
+                (Lane::Row(a), Lane::Row(b)) => {
+                    out.extend(a[..count].iter().zip(&b[..count]).map(|(&a, &b)| $f(a, b)));
+                }
+                (Lane::Row(a), Lane::Splat(b)) => {
+                    out.extend(a[..count].iter().map(|&a| $f(a, b)));
+                }
+                (Lane::Splat(a), Lane::Row(b)) => {
+                    out.extend(b[..count].iter().map(|&b| $f(a, b)));
+                }
+                (Lane::Splat(a), Lane::Splat(b)) => {
+                    out.extend(std::iter::repeat_n($f(a, b), count));
+                }
+            }
+        };
+    }
+    match op {
+        Op::X | Op::Y | Op::Z | Op::Const(_) | Op::Input(_) | Op::Varying(_) => {
+            unreachable!("coordinates, constants, and inputs are read directly")
+        }
+        Op::Add(..) => binary!(|a: f64, b: f64| a + b),
+        Op::Sub(..) => binary!(|a: f64, b: f64| a - b),
+        Op::Mul(..) => binary!(|a: f64, b: f64| a * b),
+        Op::Div(..) => binary!(|a: f64, b: f64| a / b),
+        Op::Neg(_) => unary!(|a: f64| -a),
+        Op::Min(..) => binary!(f64::min),
+        Op::Max(..) => binary!(f64::max),
+        Op::Abs(_) => unary!(f64::abs),
+        Op::Sqrt(_) => unary!(|a: f64| a.max(0.0).sqrt()),
+        Op::Clamp(_, lo, hi) => unary!(|a: f64| a.clamp(*lo, *hi)),
+        Op::Smoothstep(_, lo, hi) => unary!(|a: f64| smoothstep(*lo, *hi, a)),
+        Op::Pow(_, exponent) => unary!(|a: f64| signed_pow(a, *exponent)),
+        Op::Terrace(_, step, sharpness) => unary!(|a: f64| terrace(a, *step, *sharpness)),
+        Op::SmoothMax(_, _, k) => binary!(|a: f64, b: f64| smooth_max(a, b, *k)),
+        Op::SmoothMin(_, _, k) => binary!(|a: f64, b: f64| -smooth_max(-a, -b, *k)),
+        Op::Solid(primitive, ..) => out.extend((0..count).map(|i| {
+            solid(
+                *primitive,
+                [lanes[0].at(i), lanes[1].at(i), lanes[2].at(i)],
+                [3, 4].map(|slot| lanes.get(slot).map_or(0.0, |lane| lane.at(i))),
+            )
+        })),
+        Op::Noise(_, noise) => {
+            if noise.is_planar() {
+                noise.sample_many([lanes[0], Lane::Splat(0.0), lanes[1]], count, out);
+            } else {
+                noise.sample_many([lanes[0], lanes[1], lanes[2]], count, out);
+            }
+        }
+        _ => out.extend((0..count).map(|i| {
+            let mut arguments = [0.0; 5];
+            for (argument, lane) in arguments.iter_mut().zip(lanes) {
+                *argument = lane.at(i);
+            }
+            apply_gathered(op, &arguments[..lanes.len()], [0.0; 3])
+        })),
+    }
 }
 
 fn apply(op: &Op, registers: &Arguments, values: &[f64], point: [f64; 3], inputs: &[f64]) -> f64 {
