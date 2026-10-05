@@ -53,15 +53,15 @@ getrandom = "0.3"
 png = "0.18"
 rustc-hash = "2.1"
 
-# Mosaic is pinned to the first upstream revision containing the external-device
+# Mosaic is pinned to an upstream main revision containing the external-device
 # renderer used by `bevy_mosaic`. Keep every crate on the same revision.
-mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-core = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-layout = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-macros = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-render = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-render-wgpu = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-text = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-widgets = { git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

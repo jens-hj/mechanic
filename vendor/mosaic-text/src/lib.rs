@@ -1309,27 +1309,76 @@ pub(crate) fn selection_rects(buffer: &Buffer, start: Cursor, end: Cursor) -> Ve
     rects
 }
 
+/// The words of `text`, as byte ranges in order.
+///
+/// Words are the Unicode ones (UAX #29) with the colon taken out of the
+/// punctuation that joins letters, as AppKit's text views take it out.
+/// Untailored, a colon between two letters is part of the word, for Swedish
+/// and Finnish abbreviations (`S:t`), which makes `align:center` or
+/// `fill:mocha.base` a single word. unicode-segmentation implements the rules
+/// untailored, so each colon is swapped for an exclamation mark of the same
+/// encoded length before segmenting, which leaves every offset valid for
+/// `text`. Selecting by word and walking by word both resolve against these
+/// boundaries, so the two agree.
+fn words(text: &str) -> Vec<core::ops::Range<usize>> {
+    let separated: String = text
+        .chars()
+        .map(|c| match c {
+            ':' => '!',
+            '\u{FE55}' => '\u{FE57}', // SMALL COLON, SMALL EXCLAMATION MARK
+            '\u{FF1A}' => '\u{FF01}', // FULLWIDTH COLON, FULLWIDTH EXCLAMATION MARK
+            c => c,
+        })
+        .collect();
+    separated
+        .unicode_word_indices()
+        .map(|(start, word)| start..start + word.len())
+        .collect()
+}
+
 /// The word enclosing `offset`, as a byte range into `text`.
 ///
-/// Words are the Unicode ones (UAX #29), which is what cosmic-text resolves its
-/// own word motions with, so selecting a word agrees with walking over it. An
-/// offset between words expands over the whole run separating them instead, so
-/// a double-click always resolves to something.
+/// Words are the ones [`words`] finds. An offset on either edge of a word
+/// takes the word: a caret offset cannot tell a click on the right half of a
+/// word's last glyph from one on the left half of the separator after it, and
+/// it is the word a double-click is after. An offset strictly between words
+/// expands over the whole run separating them instead, so a double-click
+/// always resolves to something.
 pub(crate) fn word_range(text: &str, offset: usize) -> core::ops::Range<usize> {
     let offset = offset.min(text.len());
     let mut previous_end = 0;
-    for (start, word) in text.unicode_word_indices() {
-        let end = start + word.len();
-        if offset < start {
+    for word in words(text) {
+        if offset < word.start {
             // Landed in the gap that ended at this word.
-            return previous_end..start;
+            return previous_end..word.start;
         }
-        if offset < end || (offset == end && end == text.len()) {
-            return start..end;
+        if offset <= word.end {
+            return word;
         }
-        previous_end = end;
+        previous_end = word.end;
     }
     previous_end..text.len()
+}
+
+/// Where a caret walking forward by words from `offset` lands: the end of the
+/// first word ending past it, or the end of `text` once no word does.
+pub(crate) fn next_word_end(text: &str, offset: usize) -> usize {
+    words(text)
+        .into_iter()
+        .map(|word| word.end)
+        .find(|&end| end > offset)
+        .unwrap_or(text.len())
+}
+
+/// Where a caret walking backward by words from `offset` lands: the start of
+/// the last word starting before it, or the start of `text` once no word does.
+pub(crate) fn previous_word_start(text: &str, offset: usize) -> usize {
+    words(text)
+        .into_iter()
+        .rev()
+        .map(|word| word.start)
+        .find(|&start| start < offset)
+        .unwrap_or(0)
 }
 
 /// The logical line enclosing `offset`, as a byte range into `text`, excluding
@@ -1548,8 +1597,9 @@ mod tests {
         let text = "the quick brown fox";
         assert_eq!(word_range(text, 0), 0..3);
         assert_eq!(word_range(text, 2), 0..3);
-        // The offset at a word's trailing edge belongs to that word.
         assert_eq!(word_range(text, 6), 4..9);
+        // An offset on either edge of a word belongs to that word.
+        assert_eq!(word_range(text, 9), 4..9);
         assert_eq!(word_range(text, 16), 16..19);
         // Past the last word.
         assert_eq!(word_range(text, text.len()), 16..19);
@@ -1564,6 +1614,33 @@ mod tests {
         // The whole separator, punctuation and the spaces flanking it alike.
         let punctuated = "a -- b";
         assert_eq!(word_range(punctuated, 2), 1..5);
+    }
+
+    /// A colon separates the words either side of it, whichever side the
+    /// double-click lands on, as code like `align:center` reads.
+    #[test]
+    fn a_word_selection_stops_at_a_colon() {
+        let text = "align:center";
+        assert_eq!(word_range(text, 2), 0..5);
+        assert_eq!(word_range(text, 5), 0..5);
+        assert_eq!(word_range(text, 6), 6..12);
+        assert_eq!(word_range(text, 9), 6..12);
+        // The small and fullwidth colons separate alike.
+        assert_eq!(word_range("a\u{FE55}b", 0), 0..1);
+        assert_eq!(word_range("a\u{FF1A}b", 4), 4..5);
+        // Only the colon: a period still joins, as in `e.g.` or `mocha.base`.
+        assert_eq!(word_range("fill:mocha.base", 7), 5..15);
+    }
+
+    #[test]
+    fn word_walks_stop_at_a_colon() {
+        let text = "fill:mocha.base x";
+        assert_eq!(next_word_end(text, 0), 4);
+        assert_eq!(next_word_end(text, 4), 15);
+        assert_eq!(next_word_end(text, 17), text.len());
+        assert_eq!(previous_word_start(text, 15), 5);
+        assert_eq!(previous_word_start(text, 5), 0);
+        assert_eq!(previous_word_start(text, 0), 0);
     }
 
     #[test]

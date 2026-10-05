@@ -8,8 +8,8 @@ license = "MIT OR Apache-2.0"
 authors = ["Jens <jens4173@gmail.com>"]
 
 [dependencies]
-mosaic-core = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
-mosaic-render = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "ae4923ab76ea17ce8a9a27e2054ae642f70dae00" }
+mosaic-core = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
+mosaic-render = { version = "0.28.1", git = "ssh://git@gitlab.com/unincorporated/mosaic/mosaic.git", rev = "0e6e7b55d827bbacd94c0e1a54cb43fe714e9b5c" }
 cosmic-text = "0.19.0"
 unicode-segmentation = "1.13.3"
 

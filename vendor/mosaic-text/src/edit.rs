@@ -553,9 +553,36 @@ impl EditBuffer {
         } else {
             self.editor.set_selection(Selection::None);
         }
+        let from = self.editor.cursor();
         self.editor
             .action(&mut ctx.font_system, Action::Motion(motion.as_cosmic()));
+        if matches!(motion, CaretMotion::WordLeft | CaretMotion::WordRight) {
+            self.land_on_word_boundary(from);
+        }
         self.sync(ctx);
+    }
+
+    /// Moves a word motion's landing, made from `from`, onto the boundary
+    /// mosaic-text's own words put it at (see `crate::words`).
+    ///
+    /// cosmic-text has settled everything else about the motion — which way a
+    /// right-to-left line walks, stepping onto the neighbouring line from an
+    /// edge, clearing the column Up and Down return to — but it walks the
+    /// untailored words, so a landing within the line is resolved again.
+    fn land_on_word_boundary(&mut self, from: Cursor) {
+        let to = self.editor.cursor();
+        if to.line != from.line || to.index == from.index {
+            return;
+        }
+        let index = self.editor.with_buffer(|buffer| {
+            let text = buffer.lines[from.line].text();
+            if to.index > from.index {
+                crate::next_word_end(text, from.index)
+            } else {
+                crate::previous_word_start(text, from.index)
+            }
+        });
+        self.editor.set_cursor(Cursor { index, ..to });
     }
 
     /// Places the caret at `position` (a click), or extends the selection
@@ -863,6 +890,35 @@ mod tests {
 
         buf.move_caret(&mut ctx, CaretMotion::WordLeft, true);
         assert_eq!(buf.selected_text().as_deref(), Some("beta gamma"));
+    }
+
+    /// Walking by word stops at the colon a double-click splits on, so the
+    /// two agree on what a word is.
+    #[test]
+    fn word_motion_stops_at_a_colon() {
+        let mut ctx = ctx();
+        let mut buf = buffer(&mut ctx, "align:center");
+        buf.move_caret(&mut ctx, CaretMotion::WordLeft, true);
+        assert_eq!(buf.selected_text().as_deref(), Some("center"));
+        buf.move_caret(&mut ctx, CaretMotion::WordLeft, true);
+        assert_eq!(buf.selected_text().as_deref(), Some("align:center"));
+
+        buf.move_caret(&mut ctx, CaretMotion::TextStart, false);
+        buf.move_caret(&mut ctx, CaretMotion::WordRight, true);
+        assert_eq!(buf.selected_text().as_deref(), Some("align"));
+
+        buf.move_caret(&mut ctx, CaretMotion::TextEnd, false);
+        buf.delete_word_backward(&mut ctx);
+        assert_eq!(buf.text(), "align:");
+    }
+
+    #[test]
+    fn double_click_selection_stops_at_a_colon() {
+        let mut ctx = ctx();
+        let mut buf = buffer(&mut ctx, "align:center");
+        buf.caret_to_offset(&mut ctx, 2, false);
+        buf.select_word(&mut ctx);
+        assert_eq!(buf.selected_text().as_deref(), Some("align"));
     }
 
     #[test]

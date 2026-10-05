@@ -4784,6 +4784,9 @@ fn attr_value_tokens(name: &str, value: &Value) -> TokenStream2 {
         "basis" | "width" | "height" => value.dimension(),
         "min_width" | "max_width" | "min_height" | "max_height" => value.size_bound(),
         "pad" | "margin" => value.edges(),
+        "safe_area" => {
+            safe_area_value_tokens(value).unwrap_or_else(|error| error.to_compile_error())
+        }
         "align" | "place" => resolve_theme_if_token(value, value.align(), quote!(Align::Start)),
         "justify" => resolve_theme_if_token(value, value.justify(), quote!(Justify::Start)),
         "role" => value.role(),
@@ -4822,7 +4825,7 @@ fn style_frag(name: &Ident, value: &Value) -> Option<TokenStream2> {
         "gap" | "row_gap" | "grow" | "shrink" | "basis" | "width" | "height" | "min_width"
         | "max_width" | "min_height" | "max_height" | "margin" | "justify" | "grid_column"
         | "grid_row" | "column_span" | "row_span" | "content_align" | "items_align"
-        | "self_align" => key.as_str(),
+        | "self_align" | "safe_area" => key.as_str(),
         "col_gap" => "column_gap",
         "grid_col" => "grid_column",
         "col_span" => "column_span",
@@ -4969,6 +4972,50 @@ fn participation_stmt(elem: &Ident, name: &Ident, value: &Value) -> TokenStream2
     } else {
         quote!(#elem.#method(#tokens);)
     }
+}
+
+/// Lowers a `safe-area:` value — one edge word or a parenthesized set of them —
+/// to a `SafeAreaEdges` expression. Anything else is Rust that already
+/// evaluates to one.
+fn safe_area_value_tokens(value: &Value) -> Result<TokenStream2> {
+    let Value::Static(expr) = value else {
+        return Ok(value.tokens());
+    };
+    let expr = if let Expr::Paren(paren) = expr {
+        paren.expr.as_ref()
+    } else {
+        expr
+    };
+    let edge = |expr: &Expr| -> Result<TokenStream2> {
+        let Expr::Path(path) = expr else {
+            return Err(syn::Error::new(
+                expr.span(),
+                "safe-area edge must be `left`, `right`, `top`, `bottom`, `all`, or `none`",
+            ));
+        };
+        let Some(word) = path.path.get_ident().map(ToString::to_string) else {
+            return Ok(quote!((#expr)));
+        };
+        match word.as_str() {
+            "left" => Ok(quote!(SafeAreaEdges::LEFT)),
+            "right" => Ok(quote!(SafeAreaEdges::RIGHT)),
+            "top" => Ok(quote!(SafeAreaEdges::TOP)),
+            "bottom" => Ok(quote!(SafeAreaEdges::BOTTOM)),
+            "all" => Ok(quote!(SafeAreaEdges::ALL)),
+            "none" => Ok(quote!(SafeAreaEdges::NONE)),
+            _ => Err(syn::Error::new(
+                path.span(),
+                format!(
+                    "unknown safe-area edge `{word}`; expected left, right, top, bottom, all, or none"
+                ),
+            )),
+        }
+    };
+    let edges = match expr {
+        Expr::Tuple(tuple) => tuple.elems.iter().map(edge).collect::<Result<Vec<_>>>()?,
+        other => vec![edge(other)?],
+    };
+    Ok(quote!(SafeAreaEdges::NONE #(| #edges)*))
 }
 
 fn resize_value_tokens(value: &Value) -> Result<TokenStream2> {
