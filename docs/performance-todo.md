@@ -5,6 +5,26 @@ The active architectural redesign follows
 checkpoint and exact acceptance gates. The dated profiling pauses below are
 historical; they do not pause the authorized CPU/GPU and production-rendering work.
 
+## Terrain generation pass (2026-10-05)
+
+[Evidence](performance-results/2026-10-05-terrain-generation/REPORT.md),
+issue #82. Every output is bit-identical. Results:
+
+- `terrain-cut`, all nine biomes: −30 % cycles. titan_crags −37 %,
+  verdant_hills −27 %.
+- `terrain_dig`: +45 % meshing jobs per second, and the local area now
+  resolves.
+- `water-breach`: −7 % cycles.
+
+- [x] Op-major lane evaluation for grid blocks, scattered shapes (instance
+  by instance) and lattice columns.
+- [x] Exact eight-lane kernels for 3D Perlin and 2D `OpenSimplex2`/`2S`.
+- [x] Interval cull reuses x/z-only bounds across stacked blocks; surface
+  rules share repeated fields.
+- [ ] Batch the mesher's per-vertex painting and density probes.
+- [ ] Kernels for `Value` and cellular noise; batched octave probes for
+  noise intervals.
+
 ## Optimisation pass (2026-10-03)
 
 [Evidence](performance-results/2026-10-03-optimisations/REPORT.md). Builder
