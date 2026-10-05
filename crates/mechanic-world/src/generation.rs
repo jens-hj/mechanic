@@ -8,6 +8,7 @@
 //! palette. The sea, lakes and rivers fill the result: see `water`. See
 //! `docs/world-generation.md`.
 
+mod columns;
 mod compile;
 mod fields;
 mod flora;
@@ -22,6 +23,7 @@ mod surfaces;
 mod tape;
 mod water;
 
+use std::cell::OnceCell;
 use std::sync::{Arc, Mutex};
 
 use bevy_math::{DVec3, IVec3};
@@ -40,7 +42,7 @@ use self::rivers::{DRAINAGE_CELL_METRES, RIVER_LIFT_METRES, RiverNetwork, draina
 pub(crate) use self::scatter::mix;
 use self::spec::{BiomeDoc, CarveDoc, Dims, Expr, Fractal, NoiseDoc, NoiseKind};
 use self::surfaces::{SurfaceProbe, SurfaceRules};
-use self::tape::{PlanarCache, Tape, smoothstep};
+use self::tape::{PlanarCache, PlanarIntervals, Tape, smoothstep};
 use self::water::{ColumnWater, SEALED_ROOF_METRES, WaterBodies, cell_rain, sea_points};
 use crate::{
     TERRAIN_CELL_METERS, TerrainDensityClass, WORLD_HALF_EXTENT_METERS, WorldCell,
@@ -334,6 +336,69 @@ impl Weights {
         self.iter()
             .find(|(candidate, _)| *candidate == biome)
             .map_or(0.0, |(_, weight)| weight)
+    }
+}
+
+/// The bounds [`CompiledWorld::ground_interval`] takes from x and z alone,
+/// for the boxes stacked over one extent of columns.
+#[derive(Debug, Default)]
+struct GroundColumns {
+    /// The extent's x and z bounds, bit for bit.
+    extent: Option<[u64; 4]>,
+    climate: Option<[Interval; 4]>,
+    weights: Option<[Interval; MAX_BIOMES]>,
+    densities: Vec<PlanarIntervals>,
+    lowest_valley: OnceCell<Option<f64>>,
+    carves: Vec<CarveBounds>,
+    water_floor: OnceCell<Option<f64>>,
+    river_levels: OnceCell<Option<(f64, f64)>>,
+}
+
+/// A carve layer's planar bounds over one extent of columns.
+#[derive(Debug, Default)]
+struct CarveBounds {
+    roof: Option<Interval>,
+    floor: Option<Interval>,
+    top: Option<Interval>,
+}
+
+impl GroundColumns {
+    /// Keeps the bounds for boxes over `x` and `z`, or forgets them for a
+    /// new extent.
+    fn select(&mut self, world: &CompiledWorld, x: Interval, z: Interval) {
+        let extent = [x.lo, x.hi, z.lo, z.hi].map(f64::to_bits);
+        if self.extent == Some(extent) {
+            return;
+        }
+        self.extent = Some(extent);
+        self.climate = None;
+        self.weights = None;
+        self.densities
+            .resize_with(world.biomes.len(), PlanarIntervals::default);
+        self.densities.iter_mut().for_each(PlanarIntervals::clear);
+        self.lowest_valley = OnceCell::new();
+        self.carves.clear();
+        self.carves
+            .resize_with(world.carves.len(), CarveBounds::default);
+        self.water_floor = OnceCell::new();
+        self.river_levels = OnceCell::new();
+    }
+}
+
+/// `slot`'s value, computed into it on first use; without a slot, computed
+/// afresh.
+fn remembered<T: Copy>(slot: Option<&mut Option<T>>, compute: impl FnOnce() -> T) -> T {
+    match slot {
+        Some(slot) => *slot.get_or_insert_with(compute),
+        None => compute(),
+    }
+}
+
+/// [`remembered`] for a value that may itself be absent.
+fn remembered_once<T: Copy>(slot: Option<&OnceCell<T>>, compute: impl FnOnce() -> T) -> T {
+    match slot {
+        Some(slot) => *slot.get_or_init(compute),
+        None => compute(),
     }
 }
 
@@ -1530,31 +1595,67 @@ impl CompiledWorld {
 
     fn column(&self, x: f64, z: f64) -> Column {
         if x.abs() >= WORLD_HALF_EXTENT_METERS || z.abs() >= WORLD_HALF_EXTENT_METERS {
-            return Column {
-                inside: false,
-                weights: Weights {
-                    biome: [0; MAX_BIOMES],
-                    weight: [0.0; MAX_BIOMES],
-                    len: 0,
-                },
-                ground: self.vertical.0,
-                valley: f64::INFINITY,
-                river_distance: f64::INFINITY,
-                water: ColumnWater::DRY,
-                climate: [0.0; 4],
-                carves: [CarveColumn::default(); MAX_CARVES],
-                dominant: self.spawn,
-            };
+            return self.outside_column();
         }
         let climate = self.climate_at(x, z);
         let weights = self.weights_in(climate, x, z);
+        let point = [x, 0.0, z];
+        self.inside_column(
+            [x, z],
+            climate,
+            weights,
+            |biome| self.biomes[biome].height.eval(point, &[]),
+            |layer| {
+                let compiled = &self.carves[layer];
+                [
+                    compiled.roof.eval(point, &climate),
+                    compiled.floor.eval(point, &climate),
+                    compiled
+                        .top
+                        .as_ref()
+                        .map_or(f64::INFINITY, |top| top.eval(point, &climate)),
+                ]
+            },
+        )
+    }
+
+    /// The column beyond the world's edge.
+    fn outside_column(&self) -> Column {
+        Column {
+            inside: false,
+            weights: Weights {
+                biome: [0; MAX_BIOMES],
+                weight: [0.0; MAX_BIOMES],
+                len: 0,
+            },
+            ground: self.vertical.0,
+            valley: f64::INFINITY,
+            river_distance: f64::INFINITY,
+            water: ColumnWater::DRY,
+            climate: [0.0; 4],
+            carves: [CarveColumn::default(); MAX_CARVES],
+            dominant: self.spawn,
+        }
+    }
+
+    /// A column inside the world from its climate and biome weights, with
+    /// each weighted biome's height and each open carve layer's roof, floor,
+    /// and top supplied by the caller.
+    fn inside_column(
+        &self,
+        [x, z]: [f64; 2],
+        climate: [f64; 4],
+        weights: Weights,
+        height: impl Fn(usize) -> f64,
+        mut carve_bounds: impl FnMut(usize) -> [f64; 3],
+    ) -> Column {
         let mut ground = 0.0;
         let mut river_factor = 0.0;
         let mut carves = [CarveColumn::default(); MAX_CARVES];
         let mut dominant = (self.spawn, f64::NEG_INFINITY);
         for (biome, weight) in weights.iter() {
             let compiled = &self.biomes[biome];
-            ground += weight * compiled.height.eval([x, 0.0, z], &[]);
+            ground += weight * height(biome);
             river_factor += weight * compiled.rivers;
             for (carve, factor) in carves.iter_mut().zip(compiled.carves) {
                 carve.factor += weight * factor;
@@ -1582,15 +1683,9 @@ impl CompiledWorld {
             )
         });
         let water = self.water.column(x, z, river);
-        for (carve, compiled) in carves.iter_mut().zip(&self.carves) {
+        for (layer, carve) in carves.iter_mut().take(self.carves.len()).enumerate() {
             if carve.factor > 0.0 {
-                let point = [x, 0.0, z];
-                carve.roof = compiled.roof.eval(point, &climate);
-                carve.floor = compiled.floor.eval(point, &climate);
-                carve.top = compiled
-                    .top
-                    .as_ref()
-                    .map_or(f64::INFINITY, |top| top.eval(point, &climate));
+                [carve.roof, carve.floor, carve.top] = carve_bounds(layer);
             }
         }
         Column {
@@ -1685,9 +1780,8 @@ impl CompiledWorld {
         self.density_in_column(&column, position)
     }
 
-    /// [`Self::column`] through this thread's column cache.
-    fn cached_column(&self, x: f64, z: f64) -> Column {
-        let key = [x.to_bits(), z.to_bits()];
+    /// This world's slot for a column in each thread's column cache.
+    fn column_slot(&self, key: [u64; 2]) -> usize {
         #[expect(
             clippy::cast_possible_truncation,
             reason = "coordinates are hashed bit for bit"
@@ -1696,6 +1790,13 @@ impl CompiledWorld {
             ^ key[0].wrapping_mul(0x9e37_79b9_7f4a_7c15)
             ^ key[1].rotate_left(29)) as usize)
             % COLUMN_CACHE_SLOTS;
+        slot
+    }
+
+    /// [`Self::column`] through this thread's column cache.
+    fn cached_column(&self, x: f64, z: f64) -> Column {
+        let key = [x.to_bits(), z.to_bits()];
+        let slot = self.column_slot(key);
         if let Some(column) = COLUMNS.with(|cache| {
             cache.borrow()[slot]
                 .and_then(|(id, cached, column)| (id == self.id && cached == key).then_some(column))
@@ -2179,10 +2280,7 @@ impl CompiledWorld {
         parts: Parts,
     ) -> (Vec<f64>, Vec<Column>, Vec<u8>) {
         let [nx, ny, nz] = lattice.dims;
-        let columns: Vec<Column> = (0..nz)
-            .flat_map(|k| (0..nx).map(move |i| (i, k)))
-            .map(|(i, k)| self.cached_column(lattice.coordinate(0, i), lattice.coordinate(2, k)))
-            .collect();
+        let columns = self.lattice_columns(lattice);
         let mut densities = vec![0.0; lattice.len()];
         let mut carved = vec![0; lattice.len()];
         let block = if cull { CULL_BLOCK } else { nx.max(ny).max(nz) };
@@ -2192,6 +2290,7 @@ impl CompiledWorld {
             biomes: self.biomes.iter().map(|_| PlanarCache::default()).collect(),
             carves: self.carves.iter().map(|_| PlanarCache::default()).collect(),
         };
+        let mut ground_columns = GroundColumns::default();
         for k0 in (0..nz).step_by(block) {
             for i0 in (0..nx).step_by(block) {
                 for j0 in (0..ny).step_by(block) {
@@ -2210,10 +2309,11 @@ impl CompiledWorld {
                         };
                         // The ground's own bounds: trees are raised over
                         // the whole lattice afterwards, filled blocks too.
-                        let bounds = self.ground_interval(
+                        let bounds = self.ground_interval_in(
                             corner(start) - margin,
                             corner([i0 + dims[0] - 1, j0 + dims[1] - 1, k0 + dims[2] - 1]) + margin,
                             enclosed,
+                            Some(&mut ground_columns),
                         );
                         let fill = if bounds.hi < 0.0 {
                             Some(bounds.hi)
@@ -2484,6 +2584,23 @@ impl CompiledWorld {
 
     /// Bounds on the ground's density in a box, without trees.
     fn ground_interval(&self, minimum: DVec3, maximum: DVec3, enclosed: bool) -> Interval {
+        self.ground_interval_in(minimum, maximum, enclosed, None)
+    }
+
+    /// [`Self::ground_interval`], with `columns` reusing every bound that
+    /// depends only on x and z, so boxes stacked over the same columns
+    /// compute them once.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each bound in the order the exact density applies it"
+    )]
+    fn ground_interval_in(
+        &self,
+        minimum: DVec3,
+        maximum: DVec3,
+        enclosed: bool,
+        mut columns: Option<&mut GroundColumns>,
+    ) -> Interval {
         let (bottom, top) = self.vertical;
         let y = Interval::new(minimum.y, maximum.y);
         if minimum.y >= top {
@@ -2504,11 +2621,21 @@ impl CompiledWorld {
         let x = Interval::new(minimum.x, maximum.x);
         let z = Interval::new(minimum.z, maximum.z);
         let domain = [x, y, z];
-        let climate = self
-            .climate
-            .each_ref()
-            .map(|tape| tape.interval([x, Interval::point(0.0), z], &[]));
-        let weights = self.blend_weight_bounds(x, z, climate);
+        if let Some(columns) = columns.as_deref_mut() {
+            columns.select(self, x, z);
+        }
+        let climate = remembered(
+            columns.as_deref_mut().map(|columns| &mut columns.climate),
+            || {
+                self.climate
+                    .each_ref()
+                    .map(|tape| tape.interval([x, Interval::point(0.0), z], &[]))
+            },
+        );
+        let weights = remembered(
+            columns.as_deref_mut().map(|columns| &mut columns.weights),
+            || self.blend_weight_bounds(x, z, climate),
+        );
         let mut present_weights = Vec::with_capacity(self.biomes.len());
         let mut densities = Vec::with_capacity(self.biomes.len());
         let mut rivers_possible = false;
@@ -2518,7 +2645,12 @@ impl CompiledWorld {
                 continue;
             }
             present_weights.push(weights[index]);
-            densities.push(biome.density.interval(domain, &[]));
+            densities.push(match columns.as_deref_mut() {
+                Some(columns) => biome
+                    .density
+                    .interval_columns(domain, &mut columns.densities[index]),
+                None => biome.density.interval(domain, &[]),
+            });
             rivers_possible |= biome.rivers > 0.0;
             for (factor, biome_factor) in factors.iter_mut().zip(biome.carves) {
                 *factor = factor.max(biome_factor);
@@ -2526,21 +2658,38 @@ impl CompiledWorld {
         }
         let blended = blend_bounds(&present_weights, &densities);
         let mut density = blended;
-        if rivers_possible && let Some(lowest) = self.rivers.lowest_valley(x, z) {
+        if rivers_possible
+            && let Some(lowest) = remembered_once(
+                columns.as_deref().map(|columns| &columns.lowest_valley),
+                || self.rivers.lowest_valley(x, z),
+            )
+        {
             density = Interval::new(density.lo.min(lowest - y.hi), density.hi);
         }
         let planar = [x, Interval::point(0.0), z];
-        for (carve, factor) in self.carves.iter().zip(factors) {
+        for (layer, (carve, factor)) in self.carves.iter().zip(factors).enumerate() {
             if factor <= 0.0 {
                 continue;
             }
-            let roof = carve.roof.interval(planar, &climate);
+            let mut bounds = columns
+                .as_deref_mut()
+                .map(|columns| &mut columns.carves[layer]);
+            let roof = remembered(bounds.as_deref_mut().map(|bounds| &mut bounds.roof), || {
+                carve.roof.interval(planar, &climate)
+            });
             if blended.hi <= roof.lo
-                || y.hi <= carve.floor.interval(planar, &climate).lo
-                || carve
-                    .top
-                    .as_ref()
-                    .is_some_and(|top| y.lo >= top.interval(planar, &climate).hi)
+                || y.hi
+                    <= remembered(
+                        bounds.as_deref_mut().map(|bounds| &mut bounds.floor),
+                        || carve.floor.interval(planar, &climate),
+                    )
+                    .lo
+                || carve.top.as_ref().is_some_and(|top| {
+                    y.lo >= remembered(bounds.map(|bounds| &mut bounds.top), || {
+                        top.interval(planar, &climate)
+                    })
+                    .hi
+                })
                 || (!enclosed && (roof.lo >= DISTANT_ROOF_METRES || blended.lo >= carve.visible))
             {
                 continue;
@@ -2552,9 +2701,17 @@ impl CompiledWorld {
             density = Interval::new(density.lo.min(-void.hi - widest), density.hi);
         }
         let shores = [
-            self.water.floor_bound(x, z),
+            remembered_once(
+                columns.as_deref().map(|columns| &columns.water_floor),
+                || self.water.floor_bound(x, z),
+            ),
             rivers_possible
-                .then(|| self.rivers.level_range(x, z, water::BANK_TOTAL_METRES))
+                .then(|| {
+                    remembered_once(
+                        columns.as_deref().map(|columns| &columns.river_levels),
+                        || self.rivers.level_range(x, z, water::BANK_TOTAL_METRES),
+                    )
+                })
                 .flatten()
                 .map(|(_, hi)| hi + self.water.margin()),
         ];

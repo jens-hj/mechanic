@@ -682,8 +682,9 @@ mod tests {
 
     use super::{Scope, compile, compile_planar};
     use crate::generation::interval::Interval;
+    use crate::generation::load::parse;
     use crate::generation::spec::{Dims, Expr, Fractal, NoiseDoc, NoiseKind};
-    use crate::generation::tape::{AXIS_X, AXIS_Y, AXIS_Z};
+    use crate::generation::tape::{AXIS_X, AXIS_Y, AXIS_Z, Lane, ManyScratch};
 
     fn noise(dims: Dims) -> Expr {
         Expr::Noise(NoiseDoc {
@@ -794,5 +795,69 @@ mod tests {
             grid.iter()
                 .all(|value| bounds.lo <= *value && *value <= bounds.hi)
         );
+    }
+
+    #[test]
+    fn many_points_evaluate_exactly_as_one_at_a_time() {
+        let expr: Expr = parse(
+            "many",
+            r#"SmoothUnion(1.5, [
+                Height(Add([Mul([Ref("a"), C(3)]), Noise(freq: 0.03, octaves: 3, amp: 4, dims: Two)])),
+                Warp(
+                    by: (kind: SimplexSmooth, freq: 0.05, amp: 2),
+                    vertical: 0.4,
+                    of: Translate((2, -1, 3), Torus(major: Add([C(3), Ref("b")]), minor: C(0.8))),
+                ),
+                Intersect([
+                    Box(half: (2, 1.5, 3), round: 0.3),
+                    Gyroid(period: 4, thickness: Lerp(C(0.5), C(1.5), Clamp(Ref("b"), 0, 1))),
+                ]),
+                Sub(Terrace(of: Mul([Y, Smoothstep(Ref("a"), -1, 1)]), step: 2, sharpness: 0.4), C(6)),
+                Pow(Remap(Noise(kind: Cells, freq: 0.1), (-1, 1), (0, 1)), 1.7),
+                Spline(Length([X, Z]), [(0, 4), (5, -2), (9, -8)]),
+                Mul([Repeat((5, 0, 5), Sphere(Ref("a"))), Sin(X), Cos(Z)]),
+                SmoothIntersect(0.7, [Sphere(C(4)), Cylinder(radius: C(2), half_height: Ref("b"))]),
+            ])"#,
+        )
+        .expect("valid expression");
+        let empty = BTreeMap::new();
+        let scope = Scope {
+            local: &empty,
+            library: &empty,
+            fields: None,
+        };
+        let names = ["a".to_owned(), "b".to_owned()];
+        let tape = compile(&expr, scope, &names, 5, "test").expect("compiles");
+        // Spans several chunks, with a short last one.
+        let count = 301;
+        let coordinate = |index: usize, scale: f64, offset: f64| {
+            (f64::from(u32::try_from(index).unwrap()) * scale).sin() * 9.0 + offset
+        };
+        let xs: Vec<f64> = (0..count).map(|i| coordinate(i, 0.73, 1.0)).collect();
+        let ys: Vec<f64> = (0..count).map(|i| coordinate(i, 1.31, -2.0)).collect();
+        let zs: Vec<f64> = (0..count).map(|i| coordinate(i, 0.29, 0.5)).collect();
+        let a_values: Vec<f64> = (0..count).map(|i| coordinate(i, 2.1, 0.0) * 0.2).collect();
+        let mut scratch = ManyScratch::default();
+        for (y_lane, a_lane) in [
+            (Lane::Row(&ys), Lane::Row(&a_values)),
+            (Lane::Splat(1.25), Lane::Splat(-0.4)),
+            (Lane::Row(&ys), Lane::Splat(0.7)),
+        ] {
+            let inputs = [a_lane, Lane::Splat(0.35)];
+            let mut many = Vec::new();
+            tape.eval_many(
+                [Lane::Row(&xs), y_lane, Lane::Row(&zs)],
+                &inputs,
+                count,
+                &mut scratch,
+                &mut many,
+            );
+            assert_eq!(many.len(), count);
+            for (index, value) in many.iter().enumerate() {
+                let point = [xs[index], y_lane.at(index), zs[index]];
+                let single = tape.eval(point, &[a_lane.at(index), 0.35]);
+                assert_eq!(value.to_bits(), single.to_bits(), "point {index}");
+            }
+        }
     }
 }

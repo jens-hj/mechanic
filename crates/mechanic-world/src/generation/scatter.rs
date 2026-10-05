@@ -8,7 +8,7 @@ use std::cell::RefCell;
 
 use super::grid::{JitterGrid, cache_slot};
 use super::interval::Interval;
-use super::tape::Tape;
+use super::tape::{Lane, ManyScratch, Tape};
 
 /// Density far from every instance. Low enough that unions and fillets with
 /// the ground never see it.
@@ -25,6 +25,16 @@ pub(crate) struct Instance {
 }
 
 pub(crate) const MAX_VARS: usize = 8;
+
+/// Reusable buffers for [`ScatterGen::sample_among_many`].
+#[derive(Debug, Default)]
+pub(crate) struct ScatterScratch {
+    selected: Vec<usize>,
+    local: [Vec<f64>; 3],
+    rocks: Vec<f64>,
+    values: Vec<f64>,
+    tape: ManyScratch,
+}
 
 #[derive(Debug)]
 pub(crate) struct ScatterGen {
@@ -140,10 +150,95 @@ impl ScatterGen {
 
     /// The scatter's value at a point among a box's nearby instances; equal
     /// to [`Self::sample`] for every point inside that box.
+    #[cfg(test)]
     pub(crate) fn sample_among(&self, instances: &[Instance], point: [f64; 3], rock: f64) -> f64 {
         instances.iter().fold(SCATTER_FLOOR, |best, instance| {
             self.sample_instance(instance, point, rock, best)
         })
+    }
+
+    /// The scatter's values at `count` points among a box's nearby
+    /// instances, appended to `out` and equal bit for bit to
+    /// [`Self::sample`] at each point inside that box. Instances are taken
+    /// one at a time, in the same order, so every point folds the same
+    /// values; each instance's shape runs once over all the points within
+    /// its reach, its own vars shared by them.
+    pub(crate) fn sample_among_many(
+        &self,
+        instances: &[Instance],
+        point: [Lane<'_>; 3],
+        rock: Lane<'_>,
+        count: usize,
+        scratch: &mut ScatterScratch,
+        out: &mut Vec<f64>,
+    ) {
+        let start = out.len();
+        out.resize(start + count, SCATTER_FLOOR);
+        let best = &mut out[start..];
+        // Squared offsets past this are certainly beyond reach, however the
+        // exact distance below rounds; nearer points take the exact test.
+        let beyond = (self.reach * (1.0 + 1.0e-9)).powi(2);
+        let ScatterScratch {
+            selected,
+            local,
+            rocks,
+            values,
+            tape,
+        } = scratch;
+        for instance in instances {
+            selected.clear();
+            local.iter_mut().for_each(Vec::clear);
+            rocks.clear();
+            for (index, best) in best.iter().enumerate() {
+                let offset = [
+                    point[0].at(index) - instance.origin[0],
+                    point[1].at(index) - instance.origin[1],
+                    point[2].at(index) - instance.origin[2],
+                ];
+                if offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2] > beyond {
+                    continue;
+                }
+                let distance = offset[0].hypot(offset[1]).hypot(offset[2]);
+                if distance > self.reach || self.reach - distance <= *best {
+                    continue;
+                }
+                for (axis, row) in instance.rotation.iter().enumerate() {
+                    local[axis].push(
+                        row[0].mul_add(offset[0], row[1].mul_add(offset[1], row[2] * offset[2])),
+                    );
+                }
+                if let Lane::Row(_) = rock {
+                    rocks.push(rock.at(index));
+                }
+                selected.push(index);
+            }
+            if selected.is_empty() {
+                continue;
+            }
+            let mut inputs = [Lane::Splat(0.0); MAX_VARS + 1];
+            for (input, &var) in inputs.iter_mut().zip(&instance.vars) {
+                *input = Lane::Splat(var);
+            }
+            inputs[self.vars.len()] = match rock {
+                Lane::Row(_) => Lane::Row(rocks),
+                shared @ Lane::Splat(_) => shared,
+            };
+            values.clear();
+            self.shape.eval_many(
+                [
+                    Lane::Row(&local[0]),
+                    Lane::Row(&local[1]),
+                    Lane::Row(&local[2]),
+                ],
+                &inputs,
+                selected.len(),
+                tape,
+                values,
+            );
+            for (&index, &value) in selected.iter().zip(values.iter()) {
+                best[index] = best[index].max(value);
+            }
+        }
     }
 
     fn sample_instance(&self, instance: &Instance, point: [f64; 3], rock: f64, best: f64) -> f64 {
@@ -263,10 +358,12 @@ pub(crate) const fn mix(mut value: u64) -> u64 {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::super::compile::{Scope, compile};
+    use super::super::compile::{Scope, compile, compile_varying};
+    use super::super::interval::Interval;
     use super::super::load::parse;
     use super::super::spec::Expr;
-    use super::rotation;
+    use super::super::tape::{Lane, Op};
+    use super::{ScatterScratch, rotation};
 
     /// Sum of a jittered, masked, lifted, tilted scatter's densities over a
     /// fixed set of points, bit for bit.
@@ -321,6 +418,100 @@ mod tests {
                     assert!((dot - expected).abs() < 1.0e-9);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn many_points_sample_exactly_as_one_at_a_time() {
+        let expr: Expr = parse(
+            "scatter",
+            r#"Scatter(
+                cell: 5, reach: 4.5, chance: 0.8, jitter: 0.9,
+                lift: (-0.5, 0.5), tilt: 25,
+                vars: {"r": (1.0, 2.5), "w": (0.5, 1.5)},
+                shape: Add([
+                    Sphere(Mul([Ref("r"), Ref("w")])),
+                    Mul([Noise(freq: 0.4, octaves: 2), C(0.6)]),
+                    Mul([Ref("rock"), C(0.05)]),
+                ]),
+            )"#,
+        )
+        .expect("valid scatter");
+        let empty = BTreeMap::new();
+        let scope = Scope {
+            local: &empty,
+            library: &empty,
+            fields: None,
+        };
+        let tape =
+            compile_varying(&expr, scope, &["rock".to_owned()], 11, "test").expect("compiles");
+        let scatter = tape
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                Op::Scatter(_, scatter) => Some(scatter),
+                _ => None,
+            })
+            .expect("a scatter op");
+        let dims = [9, 7, 8];
+        let mut points: [Vec<f64>; 3] = Default::default();
+        for k in 0..dims[2] {
+            for j in 0..dims[1] {
+                for i in 0..dims[0] {
+                    for (axis, index) in [i, j, k].into_iter().enumerate() {
+                        let step = f64::from(u32::try_from(index).unwrap());
+                        points[axis].push(
+                            step.mul_add(1.37, -5.0) + 0.1 * f64::from(u8::try_from(axis).unwrap()),
+                        );
+                    }
+                }
+            }
+        }
+        let count = points[0].len();
+        let rocks: Vec<f64> = (0..count)
+            .map(|index| (f64::from(u32::try_from(index).unwrap()) * 0.37).sin() * 4.0)
+            .collect();
+        let span = |axis: usize| {
+            let values = &points[axis];
+            Interval::new(
+                values.iter().copied().fold(f64::INFINITY, f64::min),
+                values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            )
+        };
+        let mut nearby = Vec::new();
+        scatter.instances_near([span(0), span(1), span(2)], &mut nearby);
+        assert!(nearby.len() > 3, "the box should reach several instances");
+        let mut scratch = ScatterScratch::default();
+        for rock in [Lane::Row(&rocks), Lane::Splat(1.5)] {
+            let mut many = vec![7.0];
+            scatter.sample_among_many(
+                &nearby,
+                [
+                    Lane::Row(&points[0]),
+                    Lane::Row(&points[1]),
+                    Lane::Row(&points[2]),
+                ],
+                rock,
+                count,
+                &mut scratch,
+                &mut many,
+            );
+            assert_eq!(many.len(), count + 1, "appends after existing values");
+            let mut reached = 0;
+            for index in 0..count {
+                let point = [points[0][index], points[1][index], points[2][index]];
+                let one = scatter.sample_among(&nearby, point, rock.at(index));
+                assert_eq!(many[index + 1].to_bits(), one.to_bits(), "point {index}");
+                assert_eq!(
+                    one.to_bits(),
+                    scatter.sample(point, rock.at(index)).to_bits()
+                );
+                reached += usize::from(one > super::SCATTER_FLOOR);
+            }
+            assert!(
+                reached > count / 4,
+                "most points lie within some instance's reach"
+            );
         }
     }
 }

@@ -354,6 +354,24 @@ heightfield's noise is therefore computed once per column, and grid values
 match point evaluation bit for bit, which edits rely on. Blocks stacked over
 the same columns reuse those planar values.
 
+Everything that evaluates many points runs op by op over all of them
+rather than point by point, and stays bit-identical to point evaluation:
+
+- **Grid blocks** run each op once over its whole extent.
+- **Scattered shapes** run one instance at a time over every point the
+  instance can reach. Parts that depend only on the instance's vars are
+  evaluated once per instance.
+- **Lattice columns** (climate, heights, carve roofs) run together for
+  every column a lattice needs.
+- **Noise** goes through lane kernels for 3D Perlin and 2D `OpenSimplex2`
+  and `OpenSimplex2S`, eight points at a time. They repeat
+  `fastnoise-lite`'s arithmetic statement for statement and are pinned to
+  it bit for bit. Other kinds are looked up point by point.
+
+The interval cull reuses every bound that depends only on x and z across
+the blocks stacked over one extent. Surface rules that read the same field
+evaluate it once per painted point.
+
 A carve only shapes ground within 16 m of its void. Each block bounds every
 layer first and skips those that cannot come that close, so a tunnel costs
 nothing to the blocks away from it. `Fissure` is bounded from its value,
@@ -390,8 +408,9 @@ a layer's cost can be isolated by removing it from a copy.
   ramps to tunnels, are likely rather than guaranteed.
 - **Faster sampling.**
   - Scattered shapes with 3D-warped detail (Arch Steppe, Shelf Mire) still
-    cost about 10× a heightfield biome per block.
-  - Candidate approaches: band-limited evaluation (coarse interpolation of
-    low-frequency subtrees) and batched noise.
+    cost several times a heightfield biome per block.
+  - Candidate approach: band-limited evaluation (coarse interpolation of
+    low-frequency subtrees). Batched noise is done (see
+    [Evaluation and caching](#evaluation-and-caching)).
 - **Structures.** Deliberately out of scope for this system. Trees are
   [flora](flora.md).
