@@ -770,6 +770,26 @@ fn a_box_dropped_on_a_resting_box_comes_to_rest_on_top_of_it() {
 }
 
 #[test]
+fn a_box_set_on_an_equal_box_stays_still_on_it() {
+    let creation = loose_cubes();
+    let state = MachineState {
+        poses: vec![pose(DVec3::Y * 0.5), pose(DVec3::Y * 1.5)],
+        ..MachineState::at_rest(&creation)
+    };
+    let mut world = World::new(creation, state);
+    for tick in 1..=240 {
+        let state = world.tick(GRAVITY);
+        let drift = (state.poses[1].position - DVec3::Y * 1.5)
+            .with_y(0.0)
+            .length();
+        assert!(drift < 0.005, "tick {tick}: top box drifted {drift} m");
+        if tick > 60 {
+            assert!(fastest(&state) < 0.05, "tick {tick}: {state:?}");
+        }
+    }
+}
+
+#[test]
 fn a_held_box_stays_put_under_a_dropped_box_and_falls_once_released() {
     let creation = loose_cubes();
     let state = MachineState {

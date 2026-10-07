@@ -101,6 +101,27 @@ fn reused_proximity_geometry_tracks_pose_normal_margin_and_finite_edges() {
 }
 
 #[test]
+fn a_hair_tilted_box_over_a_matching_face_keeps_its_corners_on_that_face() {
+    // A box face's triangle reaching a hair past the box's own sides, as when
+    // two equal boxes stand stacked.
+    let overhang = DVec3::new(-1e-4, 0.0, -1e-4);
+    let triangle = [
+        DVec3::new(-0.5, 0.0, -0.5) + overhang,
+        DVec3::new(-0.5, 0.0, 0.5),
+        DVec3::new(0.5, 0.0, -0.5),
+    ];
+    let body = cube()
+        .transformed(DVec3::Y * 0.5001, DQuat::from_rotation_z(1e-4))
+        .unwrap();
+    let points = body.triangle_proximity(triangle, 0.02).unwrap();
+    assert_eq!(points.len(), 3);
+    for point in points {
+        let gap = (point.body_point - point.triangle_point).dot(point.normal);
+        assert!(gap < 1e-3, "{point:?} is {gap} m up a side face");
+    }
+}
+
+#[test]
 fn oblique_proximity_extrusion_preserves_the_actual_convex_silhouette() {
     let rotation = DQuat::from_rotation_x(0.4) * DQuat::from_rotation_z(0.7);
     let body = cube().transformed(DVec3::Y, rotation).unwrap();
