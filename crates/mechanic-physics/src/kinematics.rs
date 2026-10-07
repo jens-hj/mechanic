@@ -218,6 +218,39 @@ impl<'a> MachineKinematics<'a> {
         Ok(result)
     }
 
+    /// Kinetic energy of every moving body plus its potential energy in
+    /// `gravity`, measured from the world origin, in joules.
+    ///
+    /// # Errors
+    /// Rejects invalid generalized velocities or gravity.
+    pub fn mechanical_energy(
+        &self,
+        creation: &CompiledCreation,
+        velocities: &[f64],
+        gravity: DVec3,
+    ) -> Result<f64, PhysicsError> {
+        if !gravity.is_finite() {
+            return Err(PhysicsError::InvalidDynamics);
+        }
+        let motions = self.body_motions(velocities)?;
+        Ok(creation
+            .dynamics
+            .inertias
+            .iter()
+            .enumerate()
+            .filter(|&(body, _)| !creation.compounds[body].is_static)
+            .map(|(body, inertia)| {
+                let mass = f64::from(inertia.mass);
+                let rotation = DMat3::from_quat(self.poses[body].rotation);
+                let world = rotation * inertia.rotational.as_dmat3() * rotation.transpose();
+                let motion = motions[body];
+                0.5 * mass * motion.linear.length_squared()
+                    + 0.5 * motion.angular.dot(world * motion.angular)
+                    - mass * gravity.dot(self.centers[body])
+            })
+            .sum())
+    }
+
     /// World position of a body's centre of mass.
     pub(crate) fn centre(&self, body: usize) -> DVec3 {
         self.centers[body]
@@ -618,5 +651,41 @@ mod tests {
             .unwrap();
         assert!(machine.snapshot().state.poses[body].position.y < poses[body].position.y);
         assert!(!machine.diagnostics().degraded);
+    }
+
+    #[test]
+    fn mechanical_energy_sums_motion_and_height() {
+        let mut graph = ConstructionGraph::new();
+        graph
+            .apply(BuildCommand::Spawn(
+                CuboidSpec::new(
+                    [4, 4, 4],
+                    BuildPose::from_position_ticks(
+                        bevy_math::IVec3::ZERO,
+                        mechanic_core::GridRotation::default(),
+                    ),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let creation = graph.compile().unwrap();
+        let mut state = MachineState::at_rest(&creation);
+        state.poses[0].position.y = 2.0;
+        state
+            .velocities
+            .copy_from_slice(&[1.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
+        let model =
+            MachineKinematics::assemble(&creation, &state.poses, &state.coordinates).unwrap();
+        let energy = model
+            .mechanical_energy(&creation, &state.velocities, mechanic_core::GRAVITY)
+            .unwrap();
+        // A 1 m cube's moment of inertia about any centre axis is m / 6.
+        let mass = f64::from(creation.compounds[0].mass_properties.mass);
+        let expected =
+            0.5 * mass + 0.5 * mass / 6.0 * 4.0 + mass * mechanic_core::STANDARD_GRAVITY_M_S2 * 2.0;
+        assert!(
+            (energy - expected).abs() < 1e-6 * expected,
+            "{energy} != {expected}"
+        );
     }
 }

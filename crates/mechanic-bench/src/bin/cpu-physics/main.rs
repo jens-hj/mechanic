@@ -24,6 +24,8 @@ const WALL: f32 = 5.0;
 
 use mechanic_bench::finite_support;
 
+mod energy;
+
 mod scale;
 
 mod motion;
@@ -122,6 +124,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         "car-drive" => car(true, floor),
         "block-pile" => block_pile(),
         "fast-impacts" => fast_impacts(),
+        "energy-drift" => energy::run(),
         "four-bar" => four_bar(),
         "gear-train" => gear_train(),
         "wheel-roll" => rolling::run(),
@@ -135,8 +138,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         other => Err(format!(
             "unknown scenario {other}; expected reference-fixtures, car-drop, car-drive, \
-             block-pile, fast-impacts, four-bar, gear-train, wheel-roll, large-surface or \
-             world-drive"
+             block-pile, fast-impacts, energy-drift, four-bar, gear-train, wheel-roll, \
+             large-surface or world-drive"
         )
         .into()),
     }

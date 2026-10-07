@@ -1,5 +1,6 @@
 //! Behaviour of the soft-step solver, with tolerances suited to a game.
 
+mod energy;
 mod fits;
 mod gears;
 mod treads;

@@ -38,6 +38,12 @@ pub(super) struct Machine<'a> {
 /// immovable body.
 const HELD_INERTIA: f64 = 1.0e12;
 
+/// Fixed-point passes toward the midpoint inertial bias. With one pass a
+/// coupled rotation at `ω` grows by `√(1 + (ω dt)²)` every substep, and with
+/// two by `√(1 + (ω dt)⁴ / 4)`; three gain none while `ω dt ≤ 2`, up to
+/// 480 rad/s at the default substeps.
+const INERTIAL_PASSES: usize = 3;
+
 /// The ground a contact's terrain manifold presses on, shared by its points.
 #[derive(Clone, Copy)]
 pub(super) struct Footprint {
@@ -1270,12 +1276,8 @@ pub(super) fn substep(
 
     diagnostics.rows_ms += rows_started.elapsed().as_secs_f64() * 1000.0;
     let dynamics_started = std::time::Instant::now();
-    // Gravity, gyroscopic bias and suspension, stiffened by the passive slope.
+    // Gravity and suspension, stiffened by the passive slope.
     let mut force = model.gravity_force(creation, gravity)?;
-    let bias = model.inertial_bias(creation, &state.velocities)?;
-    for (value, bias) in force.iter_mut().zip(bias) {
-        *value -= bias;
-    }
     for (coordinate, &row) in creation.dynamics.coordinate_velocities.iter().enumerate() {
         force[row] +=
             machine.passive[coordinate].force(state.coordinates[coordinate], state.velocities[row]);
@@ -1292,11 +1294,27 @@ pub(super) fn substep(
     if let Some((probes, water)) = machine.water {
         probes.add_forces(water, &model, &state.velocities, gravity, dt, &mut force)?;
     }
-    for value in &mut force {
-        *value *= dt;
+    // Coriolis, centripetal and gyroscopic forces act at the substep's
+    // midpoint velocity, found by fixed-point passes on one factor. Taken at
+    // the start velocity they feed every coupled rotation: an unbalanced rotor
+    // on a free body reached the speed limit within seconds.
+    let mut change = vec![0.0; state.velocities.len()];
+    for _ in 0..INERTIAL_PASSES {
+        let midpoint = state
+            .velocities
+            .iter()
+            .zip(&change)
+            .map(|(velocity, change)| velocity + 0.5 * change)
+            .collect::<Vec<_>>();
+        let bias = model.inertial_bias(creation, &midpoint)?;
+        change = force
+            .iter()
+            .zip(bias)
+            .map(|(force, bias)| (force - bias) * dt)
+            .collect();
+        factor.solve(&mut change)?;
     }
-    factor.solve(&mut force)?;
-    for (velocity, change) in state.velocities.iter_mut().zip(force) {
+    for (velocity, change) in state.velocities.iter_mut().zip(change) {
         *velocity += change;
     }
 
