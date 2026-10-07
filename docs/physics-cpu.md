@@ -53,7 +53,8 @@ Each 60 Hz tick:
    vertices (see [Rolling cylinders](#rolling-cylinders)).
 4. Runs 4 substeps. Each one:
    - factors `M + implicit suspension slope`
-   - integrates gravity, gyroscopic bias and suspension force
+   - integrates gravity, suspension force and the inertial forces at the
+     substep's midpoint velocity (see [Inertial forces](#inertial-forces))
    - warm starts
    - runs one biased Gauss–Seidel pass over drive, limit and contact rows
      (8 when a contact arrived faster than 5 cm per substep)
@@ -253,6 +254,46 @@ though a rolling wheel never arrives buried. The internal body pairs, mostly
 wishbone pipes against each other, were re-queried every substep because the
 whole car moved and its wheels spun.
 
+### Inertial forces
+
+Coriolis, centripetal and gyroscopic forces (`ω × Iω`) depend on velocity.
+Taken at the substep's start velocity, they made every coupled rotation gain
+energy by a factor `√(1 + (ω·dt)²)` per substep: a spinning part on a free body
+sped up until it hit the speed clamp ([#55]). The soft step now evaluates
+them at the substep's midpoint velocity, found by three fixed-point passes on
+the substep's one factor (`INERTIAL_PASSES` in `solve.rs`). Two passes still
+grow, as `√(1 + (ω·dt)⁴ / 4)`; three gain no energy while `ω·dt ≤ 2`.
+
+The tree joints add no energy of their own. A frictionless bearing keeps its
+energy, so a free spin or swing never stops by itself. Contacts, end stops and
+suspension dampers are what dissipate energy.
+
+`energy-drift` runs each case for 30 s without contacts and reports the range
+of its kinetic plus potential energy and its trend: the mean change over the
+second fifteen seconds less the first. At the default 4 substeps (release
+build, worst of the range):
+
+| Case | Energy | Before | After |
+| --- | --- | --- | --- |
+| Balanced rotor, anchored, 10 rad/s | 50 kJ | 0 | 0 |
+| Unbalanced arm swinging, anchored | 18 kJ swing | ±106 J, no trend | unchanged |
+| Unbalanced arm, anchored, 10 rad/s | 88 kJ spin | +755 J, no trend | unchanged |
+| Balanced rotor on a free body, 20 rad/s with wobble | 8.5 kJ | +7 J, rising 3.9 J per 15 s | ±0.02 J, no trend |
+| Unbalanced arm on a free body, 20 rad/s | 290 kJ | speed limit at tick 598 | ±8.6 kJ, no trend |
+| 0.95 m steel wheel, 150 rad/s with 3 rad/s wobble | 1.8 MJ | speed limit at tick 11 | −0.4 kJ |
+
+The anchored cases' wobble is the semi-implicit step's own `O(dt)` error: it
+halves with each doubling of substeps and does not accumulate. The RK4
+reference (`CpuFreeMotion`) holds the free cases within 0.01 J, so the
+dynamics model was never at fault.
+
+The two extra passes cost a bias evaluation and a solve each. `car-drop` went
+from 0.23 to 0.24 ms per tick at p50 and `car-drive` from 0.27 to 0.28 ms;
+`four-bar`, `wheel-roll` and `block-pile` stayed within run-to-run noise, and
+every scenario's travel and penetration stayed the same.
+
+[#55]: https://github.com/jens-hj/mechanic/issues/55
+
 ### Fast collisions
 
 Speed is handled in three layers, as in Box2D v3:
@@ -320,10 +361,9 @@ Known limits:
   5 cm per substep, the end-of-substep recovery check runs every substep too.
   At 18 m/s it still takes about 15 ms per tick, close to the 16.7 ms a 60 Hz
   tick allows.
-- **Fast spin in flight grows.** A 0.95 m steel wheel spinning at 150 rad/s
-  that leaves the floor with a few rad/s of wobble gains wobble every tick and
-  reaches the speed clamp within about 15 ticks. The gyroscopic bias is applied
-  once per substep, which at that speed is 0.6 rad of turn.
+- **Very fast coupled rotation.** The inertial passes gain no energy only
+  while `ω·dt ≤ 2`: up to 480 rad/s at the default 4 substeps, but only
+  120 rad/s at one substep, where a 150 rad/s wobbling wheel still diverges.
 
 ## Exact reference solver
 
@@ -351,6 +391,7 @@ cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario car-drop
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario car-drive
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario block-pile
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario fast-impacts
+cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario energy-drift
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario four-bar
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario wheel-roll
 cargo run -p mechanic-bench --release --bin cpu-physics -- --scenario world-drive --instance <world directory>
@@ -368,6 +409,10 @@ The soft-step scenarios print one JSONL record:
 `fast-impacts` prints one record per case with p50/p95 tick time, deepest
 penetration, `tunnelled` (a collider ended more than one block past a surface),
 degraded ticks, re-queries and continuous hits.
+
+`energy-drift` prints one record per case and substep count with the starting
+energy, the lowest and highest change, the trend and the tick that degraded,
+if any.
 
 `wheel-roll` prints one record per floor and speed with the axle height range,
 speed kept, lateral drift, axle tilt, mean query, sweep and solve time, and

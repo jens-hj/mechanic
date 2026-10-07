@@ -24,7 +24,7 @@ bevy_render = { path = "vendor/bevy_render" }
 bevy_winit = { path = "vendor/bevy_winit" }
 
 [workspace.package]
-version = "0.6.7"
+version = "0.6.8"
 edition = "2024"
 rust-version = "1.97.1"
 license = "MIT OR Apache-2.0"
