@@ -39,8 +39,9 @@ fn deep(pattern: TreadPattern) -> TreadSpec {
 #[test]
 fn lugs_hold_on_overloaded_soil_that_a_smooth_face_slides_over() {
     // A steel cube's own weight is more than loose soil carries, and the
-    // failed soil holds a smooth face back with well under half of it.
-    let pull = DVec3::new(0.45, -1.0, 0.0) * STANDARD_GRAVITY_M_S2;
+    // failed soil under its whole face holds a smooth face back with about
+    // half of it.
+    let pull = DVec3::new(0.6, -1.0, 0.0) * STANDARD_GRAVITY_M_S2;
     let travelled = |tread| {
         let mut world = cube_on(TerrainMaterial::Soil, tread);
         let mut last = world.tick(pull);
