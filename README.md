@@ -66,6 +66,14 @@ cargo run -p mechanic-app
 The flake supports Intel and Apple Silicon macOS plus x86-64 and AArch64 Linux.
 A working Metal or Vulkan driver is still required to run the GPU application.
 
+On NixOS, the development shell's glibc must satisfy the host graphics driver's
+requirements. A Vulkan startup error such as `GLIBC_2.44 not found` means the
+project's Nix runtime is older than the installed driver; it can also cause
+adapter selection to fall back to another GPU. Update the pin with
+`nix flake update nixpkgs`, reload the development shell (`direnv reload` when
+using `.envrc`), and rebuild the app. Selecting `WGPU_ADAPTER_NAME=radeon` alone
+cannot fix a driver that fails to load.
+
 ### Native Windows
 
 Install Git, [rustup](https://rustup.rs/), and Visual Studio 2022 Build Tools
